@@ -1,0 +1,11 @@
+{
+  "release-type": "python",
+  "target-branch": "main",
+  "packages": {
+    ".": {
+      "component": "llmcli",
+      "package-name": "llmcli",
+      "tag-separator": "/"
+    }
+  }
+}
