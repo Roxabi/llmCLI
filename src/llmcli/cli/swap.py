@@ -11,7 +11,14 @@ from llmcli.cli._app import app, console, err_console
 
 
 @app.command()
-def swap(name: str) -> None:
+def swap(
+    name: str,
+    timeout: float = typer.Option(
+        300.0,
+        "--timeout",
+        help="Seconds to wait for the daemon to load the model (default: 300s for large models).",
+    ),
+) -> None:
     """Hot-swap the running model via the daemon socket."""
     import llmcli.cli as _cli
 
@@ -23,7 +30,7 @@ def swap(name: str) -> None:
         raise typer.Exit(code=1)
 
     try:
-        resp = _cli.daemon_request(f"SWAP {name}")
+        resp = _cli.daemon_request(f"SWAP {name}", timeout=timeout)
     except Exception as exc:
         console.print(f"[yellow]Daemon not running or unreachable: {exc}[/yellow]")
         raise typer.Exit(code=1)
