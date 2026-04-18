@@ -1,0 +1,34 @@
+# llmCLI catalog — per-host. Copy to ~/.config/llmcli/llmcli.toml and edit.
+
+[host]
+bind              = "0.0.0.0"
+public_base_url   = "http://roxabitower.lan"
+api_key_env       = "LLMCLI_API_KEY"
+
+# --- Local (roxabitower, RTX 5070 Ti, 16 GB) --------------------------------
+
+[models.qwen3_6-35b-a3b-tq3]
+engine     = "llamacpp_tq3"
+repo       = "YTan2000/Qwen3.6-35B-A3B-TQ3_4S"
+file       = "Qwen3.6-35B-A3B-TQ3_4S.gguf"
+mmproj     = "mmproj-BF16.gguf"
+port       = 8091
+vram_gib   = 13
+flags      = ["-ngl", "99", "-c", "8192", "-ctk", "q4_0", "-ctv", "tq3_0", "-fa", "on", "--jinja"]
+
+[models.qwen3-14b-q5]
+engine   = "llamacpp"
+repo     = "Qwen/Qwen3-14B-GGUF"
+file     = "qwen3-14b-q5_k_m.gguf"
+port     = 8092
+vram_gib = 11
+flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
+
+# --- Prod (roxabituwer, RTX 3080, 10 GB) — example --------------------------
+# [models.qwen3-8b-q4]
+# engine   = "llamacpp"
+# repo     = "Qwen/Qwen3-8B-GGUF"
+# file     = "qwen3-8b-q4_k_m.gguf"
+# port     = 8091
+# vram_gib = 6
+# flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
