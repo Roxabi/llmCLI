@@ -8,3 +8,5 @@ dist/
 build/
 .env
 uv.lock.local
+
+.claude/dev-core.yml

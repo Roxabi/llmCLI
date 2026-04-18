@@ -1,0 +1,50 @@
+schema_version: "1.0"
+
+runtime: python
+package_manager: uv
+
+backend:
+  framework: typer
+  path: src/llmcli
+
+docs:
+  framework: none
+  path: docs
+  format: md
+
+build:
+  formatter: ruff
+  formatter_config: pyproject.toml
+  formatter_fix_cmd: "uv run ruff format . && uv run ruff check --fix ."
+
+testing:
+  unit: pytest
+  secrets: trufflehog
+
+deploy:
+  platform: none
+
+commands:
+  dev: uv run llmcli
+  test: uv run pytest
+  lint: uv run ruff check .
+  format: uv run ruff format .
+  typecheck: uv run ruff check --select=PYI .
+  install: uv sync
+
+artifacts:
+  analyses: artifacts/analyses
+  specs: artifacts/specs
+  frames: artifacts/frames
+  plans: artifacts/plans
+
+standards:
+  backend: docs/standards/backend-patterns.md
+  testing: docs/standards/testing.md
+  code_review: docs/standards/code-review.md
+  architecture: docs/architecture/
+  contributing: docs/contributing.md
+
+lsp:
+  enabled: true
+  server: pyright
