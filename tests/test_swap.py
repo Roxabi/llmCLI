@@ -612,14 +612,14 @@ class TestCliSwapCommand:
     """CLI `llmcli swap <name>` sends SWAP via daemon socket."""
 
     def test_swap_sends_swap_command_to_daemon(self, fake_catalog_patch) -> None:
-        """llmcli swap <name> calls daemon_request with 'SWAP <name>'."""
+        """llmcli swap <name> calls daemon_request with 'SWAP <name>' and timeout=300.0 (B1)."""
         # Arrange
         with patch("llmcli.cli.daemon_request", return_value="OK model-b pid=2002 port=8092") as mock_req:
             # Act
             runner.invoke(app, ["swap", "model-b"])
 
-        # Assert
-        mock_req.assert_called_once_with("SWAP model-b")
+        # Assert — B1 fix: timeout=300.0 must be passed for large model loads
+        mock_req.assert_called_once_with("SWAP model-b", timeout=300.0)
 
     def test_swap_ok_response_exits_zero(self, fake_catalog_patch) -> None:
         """llmcli swap exits 0 when daemon returns OK."""
