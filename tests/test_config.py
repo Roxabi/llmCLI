@@ -243,7 +243,13 @@ class TestCheckVramBudget:
             check_vram_budget(spec, catalog.host)
 
     def test_vram_guard_passes_when_budget_is_none(self, tmp_path: Path) -> None:
-        """check_vram_budget is a no-op when host.vram_budget_gib is None."""
+        """check_vram_budget static stage is a no-op when host.vram_budget_gib is None.
+
+        The dynamic probe is mocked to return sufficient free VRAM so this test
+        only exercises the static (catalog) check — not GPU state.
+        """
+        from unittest.mock import patch
+
         # Arrange
         toml = """\
             [host]
@@ -259,8 +265,10 @@ class TestCheckVramBudget:
         toml_path = _write_toml(tmp_path, toml)
         catalog = load(toml_path)
         spec = catalog.models["huge"]
-        # Act / Assert — no budget set → must not raise
-        check_vram_budget(spec, catalog.host)
+        # Act / Assert — no static budget set → static check must not raise.
+        # Dynamic probe mocked to 0.0 (GPU tools unavailable) so it is skipped too.
+        with patch("llmcli.config.probe_free_vram_gib", return_value=0.0):
+            check_vram_budget(spec, catalog.host)
 
 
 # ---------------------------------------------------------------------------

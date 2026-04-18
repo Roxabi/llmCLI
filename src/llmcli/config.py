@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from .gpu import kv_overhead_gib, probe_free_vram_gib
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG_PATH = Path(
@@ -61,14 +66,40 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Catalog:
 
 
 def check_vram_budget(spec: ModelSpec, host: HostSettings) -> None:
-    """Raise ValueError if spec.vram_gib exceeds host.vram_budget_gib.
+    """Raise ValueError if spec.vram_gib exceeds the host budget or current free VRAM.
 
-    No-op when host.vram_budget_gib is None (unconstrained host).
+    Two-stage check:
+    1. Static: compare spec.vram_gib against host.vram_budget_gib (catalog ceiling).
+    2. Dynamic: probe actual free VRAM via pynvml/nvidia-smi and factor in KV-cache overhead.
+       Skipped when the probe returns 0.0 (GPU tools unavailable — logged as a warning).
+
+    No-op for stage 1 when host.vram_budget_gib is None (unconstrained host).
     """
-    if host.vram_budget_gib is None:
+    # Stage 1 — static catalog ceiling
+    if host.vram_budget_gib is not None:
+        if spec.vram_gib > host.vram_budget_gib:
+            raise ValueError(
+                f"Model '{spec.name}' requires {spec.vram_gib} GiB VRAM but this host's budget is "
+                f"{host.vram_budget_gib} GiB. Choose a smaller model that fits within the budget."
+            )
+
+    # Stage 2 — dynamic free-VRAM probe
+    free_gib = probe_free_vram_gib()
+    if free_gib == 0.0:
+        # Probe unavailable — skip dynamic check (warning already logged in probe_free_vram_gib)
         return
-    if spec.vram_gib > host.vram_budget_gib:
+
+    overhead = kv_overhead_gib(spec.flags)
+    required = spec.vram_gib + overhead
+    if free_gib < required:
+        held_gib = round(
+            (host.vram_budget_gib - free_gib) if host.vram_budget_gib is not None else 0.0,
+            2,
+        )
         raise ValueError(
-            f"Model '{spec.name}' requires {spec.vram_gib} GiB VRAM but this host's budget is "
-            f"{host.vram_budget_gib} GiB. Choose a smaller model that fits within the budget."
+            f"Model '{spec.name}' requires {required:.2f} GiB "
+            f"({spec.vram_gib} GiB model + {overhead:.2f} GiB KV cache); "
+            f"only {free_gib:.2f} GiB free now "
+            f"(desktop/other processes holding {held_gib:.2f} GiB). "
+            "Free VRAM or pick a smaller model."
         )
