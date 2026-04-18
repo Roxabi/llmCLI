@@ -11,6 +11,8 @@ dependencies = [
     "huggingface-hub>=0.26",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    "openai>=1.0",
+    "rich>=13.0",
 ]
 
 [project.scripts]
@@ -31,12 +33,17 @@ line-length = 100
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "no_gpu: tests that do not require a GPU (safe for CI)",
+    "gpu: tests that require a live GPU (skipped in CI)",
+]
 
 [dependency-groups]
 dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout>=0.5",
     "pre-commit>=4.5.1",
     "pip-licenses>=5.5.1",
 ]

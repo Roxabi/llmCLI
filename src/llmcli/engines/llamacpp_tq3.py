@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-from ..config import ModelSpec
-from ..engine import EngineInstance
+import os
+
+from .llamacpp import LlamaCppEngine
 
 
-class LlamaCppTQ3Engine:
-    """TurboQuant fork of llama.cpp — required for TQ3_4S mixed-quant models."""
+class LlamaCppTQ3Engine(LlamaCppEngine):
+    """TurboQuant fork of llama.cpp — required for TQ3_4S mixed-quant models.
 
-    binary: str = "llama-server-tq3"
+    Drop-in replacement for vanilla llama-server: same CLI args, different binary.
+    The binary defaults to ``llama-server-tq3`` but can be overridden via the
+    ``LLMCLI_TQ3_BINARY`` environment variable.
+    """
 
-    def start(self, spec: ModelSpec) -> EngineInstance:
-        raise NotImplementedError
-
-    def stop(self, instance: EngineInstance) -> None:
-        raise NotImplementedError
-
-    def health(self, instance: EngineInstance) -> bool:
-        raise NotImplementedError
-
-    @property
-    def base_url(self) -> str:
-        raise NotImplementedError
+    binary: str = os.environ.get("LLMCLI_TQ3_BINARY", "llama-server-tq3")

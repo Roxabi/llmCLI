@@ -4,6 +4,8 @@
 bind              = "0.0.0.0"
 public_base_url   = "http://roxabitower.lan"
 api_key_env       = "LLMCLI_API_KEY"
+default_model     = "qwen3_6-35b-a3b-tq3"
+vram_budget_gib   = 16.0
 
 # --- Local (roxabitower, RTX 5070 Ti, 16 GB) --------------------------------
 
