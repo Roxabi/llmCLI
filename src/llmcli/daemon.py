@@ -18,7 +18,8 @@ import socket
 import time
 from pathlib import Path
 
-from .engine import EngineInstance
+from .config import ModelSpec, check_vram_budget
+from .engine import Engine, EngineInstance
 
 SOCKET_PATH = Path(
     os.environ.get(
@@ -139,11 +140,57 @@ class Daemon:
         uptime = int(time.monotonic() - self._started_at)
         return f"OK model={instance.model_name} port={instance.port} uptime={uptime}"
 
+    def _engine_for_spec(self, spec: ModelSpec) -> Engine:
+        """Select the appropriate engine class for a ModelSpec and return an instance.
+
+        Uses LlamaCppTQ3Engine when the model name or quant field signals TQ3_4S;
+        falls back to LlamaCppEngine otherwise.
+        """
+        from .engines.llamacpp import LlamaCppEngine
+        from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
+
+        quant = getattr(spec, "quant", "") or ""
+        if "tq3" in spec.name.lower() or "TQ3_4S" in quant:
+            return LlamaCppTQ3Engine()
+        return LlamaCppEngine()
+
     def _cmd_swap(self, arg: str) -> str:
         name = arg.strip()
         if not name:
             return "ERR swap requires model name"
-        # Real swap logic wired in T5.2.  For now: acknowledge the name.
+
+        # Unknown model guard
+        if self.catalog is None or name not in self.catalog.models:
+            return f"ERR unknown model: {name}"
+
+        spec = self.catalog.models[name]
+
+        # VRAM budget guard (C2) — reject before touching current engine
+        if self.catalog is not None:
+            try:
+                check_vram_budget(spec, self.catalog.host)
+            except ValueError as exc:
+                return f"ERR vram budget exceeded: {exc}"
+
+        # Same-model fast-path — no stop/start needed
+        if name in self.instances:
+            return f"OK already running {name}"
+
+        # Stop all currently running engines (stop-before-start for VRAM safety)
+        old_items = list(self.instances.items())
+        for old_name, old_inst in old_items:
+            old_engine = self._engine_for_spec(self.catalog.models[old_name])
+            old_engine.stop(old_inst)
+            del self.instances[old_name]
+
+        # Start new engine
+        engine = self._engine_for_spec(spec)
+        try:
+            new_inst = engine.start(spec)
+        except Exception as exc:
+            return f"ERR swap failed: {exc}"
+
+        self.instances[name] = new_inst
         return f"OK swapped to {name}"
 
     # ------------------------------------------------------------------

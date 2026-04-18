@@ -1,24 +1,9 @@
-"""RED-phase tests for T1.6 — CLI commands (SC-2, SC-3, SC-4, SC-7).
+"""Tests for CLI commands (SC-2, SC-3, SC-4, SC-7, SC-9).
 
-These tests MUST fail against the current scaffold because all commands
-just `raise typer.Exit(code=0)` without producing any output.
-
-The stubs in cli.py only import `typer`, so patching names like
-`llmcli.cli.config` / `llmcli.cli.daemon_request` / etc. requires
-`create=True` — the GREEN implementation will add the real imports and the
-patches will then intercept the actual calls.
-
-Expected RED failures (representative):
-- test_list_prints_model_name: exit 0 but output is empty
-- test_pull_invokes_hf_download_for_known_model: mock never called (stub)
-- test_pull_nonzero_on_unknown_model: stub exits 0, expected != 0
-- test_serve_rejects_vram_exceeded_nonzero: stub exits 0, expected != 0
-- test_stop_sends_shutdown_via_socket: mock never called (stub)
-- test_status_shows_running_engine: output is empty
-- test_chat_prints_response: output is empty
-- test_register_proxy_calls_build_block: mock never called
-
-GREEN phase (T1.12): cli.py wires real implementations → all pass.
+RED phase (T1.6): stubs fail with empty output / wrong exit codes.
+GREEN phase (T1.12): wires real implementations.
+GREEN phase (T2.4): register-proxy fully implements SC-9 (--config flag,
+reload graceful failure, confirmation output, friendly error on bad path).
 """
 
 from __future__ import annotations
@@ -423,41 +408,219 @@ class TestChatCommand:
 
 
 class TestRegisterProxyCommand:
-    def test_register_proxy_exits_zero(self, fake_catalog) -> None:
+    def _default_patches(self):
+        """Return a context manager stacking the three default mocks."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def _ctx():
+            with (
+                patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+                patch("llmcli.cli.write_block", create=True),
+                patch("llmcli.cli.reload_proxy", create=True),
+            ):
+                yield
+
+        return _ctx()
+
+    def test_register_proxy_exits_zero(self, fake_catalog, tmp_path) -> None:
         """register-proxy exits 0 on success."""
-        # Arrange
+        config_file = str(tmp_path / "config.yaml")
         with (
             patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
             patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
         ):
-            # Act
-            result = runner.invoke(app, ["register-proxy"])
-        # Assert
+            result = runner.invoke(app, ["register-proxy", "--config", config_file])
         assert result.exit_code == 0
 
-    def test_register_proxy_calls_build_block(self, fake_catalog) -> None:
+    def test_register_proxy_calls_build_block(self, fake_catalog, tmp_path) -> None:
         """register-proxy calls build_block with the loaded catalog."""
-        # Arrange
+        config_file = str(tmp_path / "config.yaml")
         with (
             patch("llmcli.cli.build_block", create=True, return_value="# block\n") as mock_build,
             patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
         ):
-            # Act
-            runner.invoke(app, ["register-proxy"])
-        # Assert — RED: stub never calls build_block
+            runner.invoke(app, ["register-proxy", "--config", config_file])
         mock_build.assert_called_once()
 
-    def test_register_proxy_calls_write_block(self, fake_catalog) -> None:
+    def test_register_proxy_calls_write_block(self, fake_catalog, tmp_path) -> None:
         """register-proxy calls write_block to persist the LiteLLM block."""
-        # Arrange
+        config_file = str(tmp_path / "config.yaml")
         with (
             patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
             patch("llmcli.cli.write_block", create=True) as mock_write,
+            patch("llmcli.cli.reload_proxy", create=True),
         ):
-            # Act
-            runner.invoke(app, ["register-proxy"])
-        # Assert — RED: stub never calls write_block
+            runner.invoke(app, ["register-proxy", "--config", config_file])
         mock_write.assert_called_once()
+
+    def test_register_proxy_write_block_receives_config_path(self, fake_catalog, tmp_path) -> None:
+        """write_block is called with the resolved Path, not a string."""
+        from pathlib import Path
+
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True) as mock_write,
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            runner.invoke(app, ["register-proxy", "--config", config_file])
+        _, call_kwargs = mock_write.call_args_list[0][0], mock_write.call_args_list[0][1]
+        positional = mock_write.call_args.args
+        assert len(positional) >= 2
+        assert positional[1] == Path(config_file)
+
+    def test_register_proxy_calls_reload_proxy(self, fake_catalog, tmp_path) -> None:
+        """register-proxy calls reload_proxy after writing the block (SC-9)."""
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True) as mock_reload,
+        ):
+            runner.invoke(app, ["register-proxy", "--config", config_file])
+        mock_reload.assert_called_once()
+
+    def test_register_proxy_config_flag_overrides_default_path(
+        self, fake_catalog, tmp_path
+    ) -> None:
+        """--config flag passes the custom path to write_block (SC-9 override)."""
+        from pathlib import Path
+
+        custom_cfg = str(tmp_path / "my_litellm.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True) as mock_write,
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", custom_cfg])
+        assert result.exit_code == 0
+        positional = mock_write.call_args.args
+        assert positional[1] == Path(custom_cfg)
+
+    def test_register_proxy_env_var_sets_config_path(self, fake_catalog, tmp_path) -> None:
+        """LITELLM_CONFIG_PATH env var is respected when --config flag is absent."""
+        from pathlib import Path
+
+        env_cfg = str(tmp_path / "env_config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True) as mock_write,
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(
+                app,
+                ["register-proxy"],
+                env={"LITELLM_CONFIG_PATH": env_cfg},
+            )
+        assert result.exit_code == 0
+        positional = mock_write.call_args.args
+        assert positional[1] == Path(env_cfg)
+
+    def test_register_proxy_reload_failure_is_graceful(self, fake_catalog, tmp_path) -> None:
+        """Reload failure (non-zero exit) is a warning, not a fatal error (SC-9)."""
+        import subprocess
+
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch(
+                "llmcli.cli.reload_proxy",
+                create=True,
+                side_effect=subprocess.CalledProcessError(1, "make"),
+            ),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", config_file])
+        # Must exit 0 — write succeeded is the critical outcome
+        assert result.exit_code == 0
+
+    def test_register_proxy_reload_failure_prints_warning(self, fake_catalog, tmp_path) -> None:
+        """Reload failure emits a warning message mentioning the reload problem."""
+        import subprocess
+
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch(
+                "llmcli.cli.reload_proxy",
+                create=True,
+                side_effect=subprocess.CalledProcessError(1, "make"),
+            ),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", config_file])
+        combined = result.output + (result.stderr or "")
+        assert any(
+            kw in combined.lower() for kw in ("reload", "warn", "failed", "succeeded")
+        ), f"Expected warning in output, got: {combined!r}"
+
+    def test_register_proxy_success_output_contains_path(self, fake_catalog, tmp_path) -> None:
+        """Success output contains part of the config path that was updated (SC-9 confirmation).
+
+        Rich may line-wrap long paths; we verify the path fragment appears somewhere
+        in the combined output (stripping whitespace) rather than matching verbatim.
+        """
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", config_file])
+        # Collapse whitespace/newlines introduced by Rich wrapping before checking
+        collapsed = "".join(result.output.split())
+        collapsed_path = "".join(config_file.split())
+        assert collapsed_path in collapsed, (
+            f"Expected config path fragment in output, got: {result.output!r}"
+        )
+
+    def test_register_proxy_success_output_contains_model_count(
+        self, fake_catalog, tmp_path
+    ) -> None:
+        """Success output contains the number of models written (SC-9 confirmation)."""
+        config_file = str(tmp_path / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", config_file])
+        # fake_catalog has 2 models: small-q4 + big-model
+        assert "2" in result.output, (
+            f"Expected model count (2) in output, got: {result.output!r}"
+        )
+
+    def test_register_proxy_missing_parent_dir_exits_nonzero(
+        self, fake_catalog, tmp_path
+    ) -> None:
+        """register-proxy exits non-zero with a helpful error when parent dir is missing."""
+        nonexistent = str(tmp_path / "does_not_exist" / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", nonexistent])
+        assert result.exit_code != 0
+
+    def test_register_proxy_missing_parent_dir_mentions_mkdir(
+        self, fake_catalog, tmp_path
+    ) -> None:
+        """Friendly error for missing parent dir mentions how to create it."""
+        nonexistent = str(tmp_path / "does_not_exist" / "config.yaml")
+        with (
+            patch("llmcli.cli.build_block", create=True, return_value="# block\n"),
+            patch("llmcli.cli.write_block", create=True),
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            result = runner.invoke(app, ["register-proxy", "--config", nonexistent])
+        combined = result.output + (result.stderr or "")
+        assert "mkdir" in combined.lower() or "does_not_exist" in combined, (
+            f"Expected mkdir hint or dir name in error output, got: {combined!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

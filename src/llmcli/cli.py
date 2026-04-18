@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import subprocess
+from pathlib import Path
 from typing import Optional
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from llmcli import config
 from llmcli.daemon import Daemon, daemon_request
-from llmcli.litellm_config import build_block, write_block
+from llmcli.litellm_config import build_block, reload_proxy, write_block
 
 try:
     from huggingface_hub import hf_hub_download
@@ -129,14 +133,18 @@ def serve(
 
     spec = catalog.models[model_name]
 
-    # VRAM guard (C2)
+    # VRAM guard (C2 / SC-13)
     try:
         config.check_vram_budget(spec, catalog.host)
     except ValueError as exc:
         err_console.print(
-            f"[red]VRAM budget exceeded: {exc}[/red]\n"
-            f"Model [yellow]{spec.name}[/yellow] requires [bold]{spec.vram_gib}[/bold] GiB, "
-            f"budget is [bold]{catalog.host.vram_budget_gib}[/bold] GiB."
+            Panel(
+                f"[bold]{exc}[/bold]\n\n"
+                f"[dim]See [link=docs/guides/deployment.md]docs/guides/deployment.md[/link] "
+                "for VRAM budgeting.[/dim]",
+                title="[red]VRAM budget exceeded[/red]",
+                border_style="red",
+            )
         )
         raise typer.Exit(code=1)
 
@@ -208,11 +216,26 @@ def status() -> None:
 @app.command()
 def swap(name: str) -> None:
     """Hot-swap the running model via the daemon socket."""
+    catalog = _load_catalog()
+
+    if name not in catalog.models:
+        available = ", ".join(catalog.models.keys())
+        err_console.print(
+            f"[red]Unknown model '{name}'. Available: {available}[/red]"
+        )
+        raise typer.Exit(code=1)
+
     try:
         resp = daemon_request(f"SWAP {name}")
-        console.print(f"Daemon: {resp}")
     except Exception as exc:
         console.print(f"[yellow]Daemon not running or unreachable: {exc}[/yellow]")
+        raise typer.Exit(code=1)
+
+    if resp.startswith("ERR"):
+        err_console.print(f"[red]{resp}[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"Daemon: {resp}")
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +285,67 @@ def chat(name: str, prompt: str) -> None:
 
 
 @app.command(name="register-proxy")
-def register_proxy() -> None:
+def register_proxy(
+    config_path: Optional[str] = typer.Option(
+        None,
+        "--config",
+        envvar="LITELLM_CONFIG_PATH",
+        help="Path to LiteLLM config.yaml (default: ~/.litellm/config.yaml)",
+    ),
+) -> None:
     """Refresh the llmCLI block in ~/.litellm/config.yaml and reload."""
+    # 1. Load catalog
     catalog = _load_catalog()
 
+    # 2. Determine host
+    hostname = socket.gethostname()
+
+    # 3. Resolve config path: --config flag > env var > default
+    resolved_path = Path(config_path) if config_path else Path.home() / ".litellm" / "config.yaml"
+
+    # 4. Friendly error when parent directory doesn't exist or is not writable
+    if not resolved_path.parent.exists():
+        err_console.print(
+            f"[red]Config directory does not exist: {resolved_path.parent}[/red]\n"
+            f"Create it first:  mkdir -p {resolved_path.parent}"
+        )
+        raise typer.Exit(code=1)
+
+    # 5. Build and write block
     block = build_block(catalog, catalog.host.public_base_url)
-    write_block(block)
-    console.print("[green]LiteLLM proxy config updated.[/green]")
+    try:
+        write_block(block, resolved_path)
+    except PermissionError as exc:
+        err_console.print(
+            f"[red]Permission denied writing to {resolved_path}: {exc}[/red]\n"
+            f"Check file permissions or run with appropriate privileges."
+        )
+        raise typer.Exit(code=1)
+    except OSError as exc:
+        err_console.print(f"[red]Failed to write config: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    model_count = len(catalog.models)
+
+    # 6. Reload proxy — warn on failure, don't fail the command
+    try:
+        reload_proxy()
+        reload_status = "[green]reloaded[/green]"
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        reload_status = f"[yellow]reload failed (write succeeded): {exc}[/yellow]"
+        err_console.print(
+            f"[yellow]Warning: proxy reload failed — {exc}[/yellow]\n"
+            "The config file was updated successfully. Reload the proxy manually."
+        )
+
+    # 7. Confirmation output
+    console.print(
+        f"[green]LiteLLM proxy config updated.[/green] "
+        f"host=[cyan]{hostname}[/cyan] "
+        f"path=[cyan]{resolved_path}[/cyan] "
+        f"models=[bold]{model_count}[/bold] "
+        f"reload={reload_status}"
+    )
 
 
 if __name__ == "__main__":
