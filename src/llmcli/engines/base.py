@@ -43,7 +43,7 @@ def build_argv(
     return argv
 
 
-def _spawn_llama_server(binary: str, spec: ModelSpec, host: HostSettings) -> NoReturn:
+def spawn_llama_server(binary: str, spec: ModelSpec, host: HostSettings) -> NoReturn:
     if shutil.which(binary) is None:
         raise BinaryNotFoundError(binary)
     model_path = _resolve_gguf_path(spec.repo, spec.file)

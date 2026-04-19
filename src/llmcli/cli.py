@@ -4,6 +4,7 @@ from dataclasses import replace
 
 import httpx
 import typer
+from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError
 from rich.console import Console
 from rich.table import Table
 
@@ -90,6 +91,10 @@ def serve(
         engine_cls(host_settings).start(spec)
     except BinaryNotFoundError as e:
         console.print(f"[red]Binary not found on PATH:[/red] {e.binary}")
+        raise typer.Exit(code=1) from e
+    except (HfHubHTTPError, EntryNotFoundError) as e:
+        console.print(f"[red]Could not resolve GGUF from HF hub:[/red] {e}")
+        console.print(f"Check that [cyan]{spec.repo}/{spec.file}[/cyan] exists.")
         raise typer.Exit(code=1) from e
 
 

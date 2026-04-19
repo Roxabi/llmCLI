@@ -4,7 +4,7 @@ from typing import NoReturn
 
 from ..config import HostSettings, ModelSpec
 from ..engine import EngineInstance
-from .base import _spawn_llama_server
+from .base import spawn_llama_server
 
 
 class LlamaCppTQ3Engine:
@@ -16,7 +16,7 @@ class LlamaCppTQ3Engine:
         self.host = host
 
     def start(self, spec: ModelSpec) -> NoReturn:
-        _spawn_llama_server(self.binary, spec, self.host)
+        spawn_llama_server(self.binary, spec, self.host)
 
     def stop(self, instance: EngineInstance) -> None:
         raise NotImplementedError

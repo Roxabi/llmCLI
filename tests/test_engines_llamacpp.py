@@ -55,4 +55,6 @@ def test_build_argv_tq3_binary() -> None:
         mmproj_path=None,
     )
     assert argv[0] == "llama-server-tq3"
+    assert argv[1:3] == ["-m", "/cache/tq3.gguf"]
+    assert "--host" in argv
     assert argv[argv.index("--port") + 1] == "8091"
