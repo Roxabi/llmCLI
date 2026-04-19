@@ -16,6 +16,7 @@ class HostSettings:
     bind: str = "0.0.0.0"
     public_base_url: str = "http://localhost"
     api_key_env: str = "LLMCLI_API_KEY"
+    default_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,5 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Catalog:
     host_data = data.get("host", {})
     host = HostSettings(**{k: v for k, v in host_data.items() if k in HostSettings.__annotations__})
 
-    models = {
-        name: ModelSpec(name=name, **spec) for name, spec in data.get("models", {}).items()
-    }
+    models = {name: ModelSpec(name=name, **spec) for name, spec in data.get("models", {}).items()}
     return Catalog(host=host, models=models)

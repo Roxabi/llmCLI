@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from ..config import ModelSpec
+from typing import NoReturn
+
+from ..config import HostSettings, ModelSpec
 from ..engine import EngineInstance
+from .base import _spawn_llama_server
 
 
 class LlamaCppTQ3Engine:
@@ -9,8 +12,11 @@ class LlamaCppTQ3Engine:
 
     binary: str = "llama-server-tq3"
 
-    def start(self, spec: ModelSpec) -> EngineInstance:
-        raise NotImplementedError
+    def __init__(self, host: HostSettings) -> None:
+        self.host = host
+
+    def start(self, spec: ModelSpec) -> NoReturn:
+        _spawn_llama_server(self.binary, spec, self.host)
 
     def stop(self, instance: EngineInstance) -> None:
         raise NotImplementedError
