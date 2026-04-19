@@ -11,6 +11,12 @@ DEFAULT_CONFIG_PATH = Path(
 )
 
 
+class ConfigNotFoundError(FileNotFoundError):
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"Config not found: {path}")
+        self.path = path
+
+
 @dataclass(frozen=True)
 class HostSettings:
     bind: str = "0.0.0.0"
@@ -38,8 +44,11 @@ class Catalog:
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Catalog:
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError as e:
+        raise ConfigNotFoundError(path) from e
 
     host_data = data.get("host", {})
     host = HostSettings(**{k: v for k, v in host_data.items() if k in HostSettings.__annotations__})

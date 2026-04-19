@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 from .config import ModelSpec
 
@@ -15,7 +15,7 @@ class EngineInstance:
 
 
 class Engine(Protocol):
-    def start(self, spec: ModelSpec) -> EngineInstance: ...
+    def start(self, spec: ModelSpec) -> NoReturn: ...
 
     def stop(self, instance: EngineInstance) -> None: ...
 

@@ -7,8 +7,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .config import Catalog, load
+from .config import Catalog, ConfigNotFoundError, load
 from .engines import LlamaCppEngine, LlamaCppTQ3Engine
+from .engines.base import BinaryNotFoundError
 
 app = typer.Typer(add_completion=False, help="llmCLI — local LLM serving")
 console = Console()
@@ -23,12 +24,21 @@ def _probe(port: int, timeout: float = 0.25) -> bool:
     try:
         r = httpx.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
         return r.status_code == 200
-    except httpx.HTTPError:
+    except (httpx.HTTPError, OSError):
         return False
 
 
+def _load_catalog() -> Catalog:
+    try:
+        return load()
+    except ConfigNotFoundError as e:
+        console.print(f"[red]Config not found:[/red] {e.path}")
+        console.print("Copy [cyan]llmcli.example.toml[/cyan] to that path and customize.")
+        raise typer.Exit(code=1) from e
+
+
 def _resolve_name(name: str | None, catalog: Catalog) -> str:
-    if name:
+    if name is not None:
         return name
     if catalog.host.default_model:
         return catalog.host.default_model
@@ -39,7 +49,7 @@ def _resolve_name(name: str | None, catalog: Catalog) -> str:
 @app.command(name="list")
 def list_cmd() -> None:
     """Show catalog + running state + VRAM."""
-    catalog = load()
+    catalog = _load_catalog()
     table = Table(title="llmCLI catalog")
     table.add_column("name")
     table.add_column("engine")
@@ -65,7 +75,7 @@ def serve(
     host: str | None = typer.Option(None, "--host", help="Override bind address."),
 ) -> None:
     """Serve a model. Foreground, blocking — supervisor adopts llama-server as direct child."""
-    catalog = load()
+    catalog = _load_catalog()
     target = _resolve_name(name, catalog)
     spec = catalog.models.get(target)
     if spec is None:
@@ -76,7 +86,11 @@ def serve(
         console.print(f"[red]Unknown engine: {spec.engine}[/red]")
         raise typer.Exit(code=2)
     host_settings = replace(catalog.host, bind=host) if host else catalog.host
-    engine_cls(host_settings).start(spec)
+    try:
+        engine_cls(host_settings).start(spec)
+    except BinaryNotFoundError as e:
+        console.print(f"[red]Binary not found on PATH:[/red] {e.binary}")
+        raise typer.Exit(code=1) from e
 
 
 @app.command()
@@ -88,7 +102,7 @@ def stop() -> None:
 @app.command()
 def status() -> None:
     """Show engine health per catalog port."""
-    catalog = load()
+    catalog = _load_catalog()
     table = Table(title="llmCLI status")
     table.add_column("name")
     table.add_column("engine")

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import NoReturn
 
 from huggingface_hub import hf_hub_download
 
 from ..config import HostSettings, ModelSpec
+
+
+class BinaryNotFoundError(FileNotFoundError):
+    def __init__(self, binary: str) -> None:
+        super().__init__(f"Binary not found on PATH: {binary}")
+        self.binary = binary
 
 
 def _resolve_gguf_path(repo: str, file: str) -> Path:
@@ -37,6 +44,8 @@ def build_argv(
 
 
 def _spawn_llama_server(binary: str, spec: ModelSpec, host: HostSettings) -> NoReturn:
+    if shutil.which(binary) is None:
+        raise BinaryNotFoundError(binary)
     model_path = _resolve_gguf_path(spec.repo, spec.file)
     mmproj_path = _resolve_gguf_path(spec.repo, spec.mmproj) if spec.mmproj else None
     argv = build_argv(binary, spec, host, model_path=model_path, mmproj_path=mmproj_path)
