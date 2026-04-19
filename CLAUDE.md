@@ -108,7 +108,6 @@ llmCLI does **not** own the proxy. `llmcli register-proxy` emits/maintains a nam
 - **Project:** llmCLI
 - **Before work:** Use `/dev #N` as the single entry point — it determines tier (S / F-lite / F-full) and drives the full lifecycle
 - **All code changes** → worktree: `git worktree add ../llmCLI-XXX -b feat/XXX-slug staging`
-- **Always** `AskUserQuestion` for choices — never plain-text questions
 - **Never** use `--force`/`--hard`/`--amend`
 - **Always** use appropriate skill even without slash command
 - **Before code:** Read relevant standards doc (see Coding Standards section below)
@@ -128,27 +127,22 @@ llmCLI does **not** own the proxy. `llmcli register-proxy` emits/maintains a nam
 
 Phases: **Frame** (problem) → **Shape** (spec) → **Build** (code) → **Verify** (review) → **Ship** (release).
 
-### 2. AskUserQuestion
-
-Always `AskUserQuestion` for: decisions, choices (≥2 options), approach proposals.
-**Never** plain-text "Do you want..." / "Should I..." → use the tool.
-
-### 3. Orchestrator Delegation
+### 2. Orchestrator Delegation
 
 Orchestrator does not modify code/docs directly. Delegate: FE→`frontend-dev` | BE→`backend-dev` | Infra→`devops` | Docs→`doc-writer` | Tests→`tester` | Fixes→`fixer`. Exception: typo/single-line. Deploy→`devops` only.
 
-### 4. Parallel Execution
+### 3. Parallel Execution
 
-≥3 complex tasks → AskUserQuestion: Sequential | Parallel (Recommended).
+≥3 complex tasks → propose Sequential | Parallel (Recommended).
 F-full + ≥4 independent tasks in 1 domain → multiple same-type agents on separate file groups.
 
-### 5. Git
+### 4. Git
 
 Format: `<type>(<scope>): <desc>` + `Co-Authored-By: Claude <model> <noreply@anthropic.com>`
 Types: feat|fix|refactor|docs|style|test|chore|ci|perf
 Never push without request. Never force/hard/amend. Hook fail → fix + NEW commit.
 
-### 6. Artifact Model
+### 5. Artifact Model
 
 Artifacts are the state markers `/dev` uses for progress detection and resumption.
 
@@ -159,21 +153,21 @@ Artifacts are the state markers `/dev` uses for progress detection and resumptio
 | **Spec** | `artifacts/specs/` | What will we build? |
 | **Plan** | `artifacts/plans/` | How do we build it? |
 
-### 7. Mandatory Worktree
+### 6. Mandatory Worktree
 
 ```bash
 git worktree add ../llmCLI-XXX -b feat/XXX-slug staging
 cd ../llmCLI-XXX && cp .env.example .env && uv sync
 ```
 
-Exceptions: XS (confirm via AskUserQuestion) | `/dev` pre-implementation artifacts (frame, analysis, spec, plan) | `/promote` release artifacts.
+Exceptions: XS (confirm first) | `/dev` pre-implementation artifacts (frame, analysis, spec, plan) | `/promote` release artifacts.
 **Never code on main/staging without worktree.**
 
-### 8. Code Review
+### 7. Code Review
 
 MUST read [code-review](docs/standards/code-review.md). Conventional Comments. Block only: security, correctness, standard violations.
 
-### 9. Coding Standards
+### 8. Coding Standards
 
 | Context | Read |
 |---------|------|
