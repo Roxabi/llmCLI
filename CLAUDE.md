@@ -138,7 +138,7 @@ F-full + ≥4 independent tasks in 1 domain → multiple same-type agents on sep
 
 ### 4. Git
 
-Format: `<type>(<scope>): <desc>` + `Co-Authored-By: Claude <model> <noreply@anthropic.com>`
+Format: `<type>(<scope>): <desc>`
 Types: feat|fix|refactor|docs|style|test|chore|ci|perf
 Never push without request. Never force/hard/amend. Hook fail → fix + NEW commit.
 
