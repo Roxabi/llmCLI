@@ -693,7 +693,7 @@ class TestCliSwapCommand:
         unconditionally. GREEN should validate model name against catalog first.
         """
         # Arrange — daemon_request is NOT patched so we can confirm it was NOT called
-        with patch("llmcli.cli.daemon_request") as mock_req:
+        with patch("llmcli.cli.daemon_request"):
             # Act
             result = runner.invoke(app, ["swap", "completely-unknown-model"])
 

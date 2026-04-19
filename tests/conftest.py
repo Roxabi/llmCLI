@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import os
 import shutil
+from unittest.mock import patch
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_free_vram_probe():
+    # Keep unit tests deterministic: the B2 dynamic VRAM check would otherwise
+    # read live NVML and fail on VRAM-constrained hosts. Tests that exercise
+    # the constrained path install their own patch, which wins over this stub.
+    with patch("llmcli.config.probe_free_vram_gib", return_value=1024.0):
+        yield
 
 
 def pytest_configure(config: pytest.Config) -> None:

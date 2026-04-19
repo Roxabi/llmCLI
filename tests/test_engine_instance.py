@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import inspect
 
-import pytest
 
 from llmcli.engine import Engine, EngineInstance
 
@@ -105,8 +104,6 @@ class TestEngineProtocolNoBaseUrl:
     """C9: base_url must NOT be on the Engine Protocol."""
 
     def test_engine_protocol_has_no_base_url_attribute(self) -> None:
-        # Check annotations and protocol members — base_url must not be present
-        protocol_members = set(dir(Engine))
         # base_url is a Protocol @property on the scaffold — this must be removed
         assert "base_url" not in vars(Engine), (
             "Engine Protocol must not define 'base_url' — belongs on EngineInstance (C9). "
@@ -114,13 +111,6 @@ class TestEngineProtocolNoBaseUrl:
         )
 
     def test_engine_protocol_methods_are_start_stop_health_only(self) -> None:
-        # Engine Protocol should only expose start, stop, health
-        public_methods = {
-            name
-            for name, obj in vars(Engine).items()
-            if not name.startswith("_")
-            and (callable(obj) or isinstance(obj, (classmethod, staticmethod)))
-        }
         # base_url as property shows up via __annotations__ or vars — must be absent
         protocol_annotations = getattr(Engine, "__protocol_attrs__", set())
         # For a Protocol defined with @property, it appears in __abstractmethods__ or vars

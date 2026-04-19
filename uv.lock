@@ -981,6 +981,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
+    { name = "nvidia-ml-py" },
     { name = "openai" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1006,6 +1007,7 @@ vllm = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.26" },
+    { name = "nvidia-ml-py", specifier = ">=12.0" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },

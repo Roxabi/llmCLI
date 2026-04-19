@@ -467,7 +467,6 @@ class TestRegisterProxyCommand:
             patch("llmcli.cli.reload_proxy", create=True),
         ):
             runner.invoke(app, ["register-proxy", "--config", config_file])
-        _, call_kwargs = mock_write.call_args_list[0][0], mock_write.call_args_list[0][1]
         positional = mock_write.call_args.args
         assert len(positional) >= 2
         assert positional[1] == Path(config_file)

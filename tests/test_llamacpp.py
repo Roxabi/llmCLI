@@ -20,7 +20,6 @@ from __future__ import annotations
 import inspect
 import os
 import signal
-from dataclasses import fields
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -541,7 +540,6 @@ class TestStopBehaviour:
         fake_instance: EngineInstance,
     ) -> None:
         """stop() must escalate to SIGKILL when the process does not exit after SIGTERM."""
-        import subprocess
 
         def _kill(pid: int, sig: int) -> None:
             pass  # SIGTERM acknowledged but process stays alive

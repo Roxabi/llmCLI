@@ -89,7 +89,7 @@ class TestDaemonSocketBinding:
         daemon = Daemon(socket_path=sock_path)
 
         # Act
-        t = _start_daemon_thread(daemon)
+        _start_daemon_thread(daemon)
         _wait_for_socket(sock_path, timeout=5.0)
 
         # Assert — socket file exists and is a socket
