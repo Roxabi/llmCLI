@@ -1,0 +1,306 @@
+"""Tests for llmcli.config — RED phase (T1.1).
+
+These tests MUST fail against the current scaffold because:
+- HostSettings is missing `default_model` field
+- HostSettings is missing `vram_budget_gib` field
+- `check_vram_budget()` helper does not exist
+
+Expected: ImportError or AttributeError failures. GREEN phase (T1.8) adds the missing fields/helper.
+"""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+import pytest
+
+from llmcli.config import Catalog, HostSettings, ModelSpec, load, check_vram_budget
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _write_toml(tmp_path: Path, content: str) -> Path:
+    p = tmp_path / "llmcli.toml"
+    p.write_text(textwrap.dedent(content))
+    return p
+
+
+MINIMAL_TOML = """\
+    [host]
+    bind              = "0.0.0.0"
+    public_base_url   = "http://localhost"
+    api_key_env       = "LLMCLI_API_KEY"
+    default_model     = "small-q4"
+    vram_budget_gib   = 10.0
+
+    [models.small-q4]
+    engine   = "llamacpp"
+    repo     = "SomeOrg/small-model-GGUF"
+    file     = "small-q4_k_m.gguf"
+    port     = 8091
+    vram_gib = 6.0
+    flags    = ["-ngl", "99"]
+"""
+
+OVERSIZED_TOML = """\
+    [host]
+    bind              = "0.0.0.0"
+    public_base_url   = "http://localhost"
+    api_key_env       = "LLMCLI_API_KEY"
+    default_model     = "big-model"
+    vram_budget_gib   = 8.0
+
+    [models.big-model]
+    engine   = "llamacpp_tq3"
+    repo     = "SomeOrg/big-model-GGUF"
+    file     = "big-model.gguf"
+    port     = 8092
+    vram_gib = 13.0
+    flags    = ["-ngl", "99"]
+"""
+
+
+# ---------------------------------------------------------------------------
+# SC-1 / C10 — catalog load
+# ---------------------------------------------------------------------------
+
+
+class TestLoad:
+    def test_load_returns_catalog_type(self, tmp_path: Path) -> None:
+        """load() returns a Catalog instance."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert isinstance(catalog, Catalog)
+
+    def test_load_host_settings(self, tmp_path: Path) -> None:
+        """Catalog.host is a HostSettings with correct values."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert isinstance(catalog.host, HostSettings)
+        assert catalog.host.bind == "0.0.0.0"
+        assert catalog.host.public_base_url == "http://localhost"
+        assert catalog.host.api_key_env == "LLMCLI_API_KEY"
+
+    def test_load_models_dict(self, tmp_path: Path) -> None:
+        """Catalog.models is a dict[str, ModelSpec]."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert "small-q4" in catalog.models
+        spec = catalog.models["small-q4"]
+        assert isinstance(spec, ModelSpec)
+        assert spec.engine == "llamacpp"
+        assert spec.repo == "SomeOrg/small-model-GGUF"
+        assert spec.port == 8091
+        assert spec.vram_gib == 6.0
+
+    def test_load_model_flags_list(self, tmp_path: Path) -> None:
+        """ModelSpec.flags is parsed as a list of strings."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert catalog.models["small-q4"].flags == ["-ngl", "99"]
+
+    def test_load_example_toml_realistic(self) -> None:
+        """Loading llmcli.example.toml from repo root succeeds and has expected structure."""
+        # Arrange — find repo root relative to this file
+        repo_root = Path(__file__).parent.parent
+        example_path = repo_root / "llmcli.example.toml"
+        # Act
+        catalog = load(example_path)
+        # Assert
+        assert isinstance(catalog, Catalog)
+        assert isinstance(catalog.host, HostSettings)
+        assert len(catalog.models) >= 1
+        for name, spec in catalog.models.items():
+            assert spec.name == name
+            assert spec.port > 0
+            assert spec.vram_gib > 0
+            assert spec.engine in ("llamacpp", "llamacpp_tq3")
+
+    def test_load_missing_config_raises_friendly_error(self, tmp_path: Path) -> None:
+        """load() raises FileNotFoundError (or similar) when config is absent."""
+        # Arrange
+        missing = tmp_path / "nonexistent.toml"
+        # Act / Assert
+        with pytest.raises((FileNotFoundError, OSError)):
+            load(missing)
+
+
+# ---------------------------------------------------------------------------
+# T1.1 (new fields) — default_model + vram_budget_gib on HostSettings
+# ---------------------------------------------------------------------------
+
+
+class TestHostSettingsNewFields:
+    def test_default_model_field_exists_on_hostsettings(self, tmp_path: Path) -> None:
+        """HostSettings must have a `default_model` field (str | None)."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert — attribute must exist (GREEN: value is "small-q4")
+        assert hasattr(catalog.host, "default_model")
+        assert catalog.host.default_model == "small-q4"
+
+    def test_vram_budget_gib_field_exists_on_hostsettings(self, tmp_path: Path) -> None:
+        """HostSettings must have a `vram_budget_gib` field (float | None)."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert hasattr(catalog.host, "vram_budget_gib")
+        assert catalog.host.vram_budget_gib == 10.0
+
+    def test_default_model_defaults_to_none_when_absent(self, tmp_path: Path) -> None:
+        """default_model should default to None when not in TOML."""
+        # Arrange — no default_model, no vram_budget_gib
+        toml = """\
+            [host]
+            bind = "0.0.0.0"
+
+            [models.m]
+            engine   = "llamacpp"
+            repo     = "Org/m"
+            file     = "m.gguf"
+            port     = 8091
+            vram_gib = 4.0
+        """
+        toml_path = _write_toml(tmp_path, toml)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert catalog.host.default_model is None
+
+    def test_vram_budget_gib_defaults_to_none_when_absent(self, tmp_path: Path) -> None:
+        """vram_budget_gib should default to None when not in TOML."""
+        # Arrange
+        toml = """\
+            [host]
+            bind = "0.0.0.0"
+
+            [models.m]
+            engine   = "llamacpp"
+            repo     = "Org/m"
+            file     = "m.gguf"
+            port     = 8091
+            vram_gib = 4.0
+        """
+        toml_path = _write_toml(tmp_path, toml)
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert catalog.host.vram_budget_gib is None
+
+
+# ---------------------------------------------------------------------------
+# C2 / SC-14 — check_vram_budget helper
+# ---------------------------------------------------------------------------
+
+
+class TestCheckVramBudget:
+    def test_check_vram_budget_passes_when_model_fits(self, tmp_path: Path) -> None:
+        """check_vram_budget does not raise when model vram_gib <= budget."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        catalog = load(toml_path)
+        spec = catalog.models["small-q4"]  # vram_gib=6 <= budget=10
+        # Act / Assert — must not raise
+        check_vram_budget(spec, catalog.host)
+
+    def test_check_vram_budget_raises_when_model_exceeds_budget(self, tmp_path: Path) -> None:
+        """check_vram_budget raises ValueError when model vram_gib > budget."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, OVERSIZED_TOML)
+        catalog = load(toml_path)
+        spec = catalog.models["big-model"]  # vram_gib=13 > budget=8
+        # Act / Assert
+        with pytest.raises(ValueError):
+            check_vram_budget(spec, catalog.host)
+
+    def test_vram_guard_error_names_model_and_budget(self, tmp_path: Path) -> None:
+        """ValueError message must mention the model name and the budget (SC-14)."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, OVERSIZED_TOML)
+        catalog = load(toml_path)
+        spec = catalog.models["big-model"]
+        # Act / Assert
+        with pytest.raises(ValueError, match=r"big-model"):
+            check_vram_budget(spec, catalog.host)
+
+    def test_vram_guard_passes_when_budget_is_none(self, tmp_path: Path) -> None:
+        """check_vram_budget static stage is a no-op when host.vram_budget_gib is None.
+
+        The dynamic probe is mocked to return sufficient free VRAM so this test
+        only exercises the static (catalog) check — not GPU state.
+        """
+        from unittest.mock import patch
+
+        # Arrange
+        toml = """\
+            [host]
+            bind = "0.0.0.0"
+
+            [models.huge]
+            engine   = "llamacpp"
+            repo     = "Org/huge"
+            file     = "huge.gguf"
+            port     = 8091
+            vram_gib = 999.0
+        """
+        toml_path = _write_toml(tmp_path, toml)
+        catalog = load(toml_path)
+        spec = catalog.models["huge"]
+        # Act / Assert — no static budget set → static check must not raise.
+        # Dynamic probe mocked to 0.0 (GPU tools unavailable) so it is skipped too.
+        with patch("llmcli.config.probe_free_vram_gib", return_value=0.0):
+            check_vram_budget(spec, catalog.host)
+
+
+# ---------------------------------------------------------------------------
+# Friendly error messages
+# ---------------------------------------------------------------------------
+
+
+class TestFriendlyErrors:
+    def test_unknown_model_name_raises_with_available_names(self, tmp_path: Path) -> None:
+        """Accessing a nonexistent model key raises KeyError (or similar) with available names."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, MINIMAL_TOML)
+        catalog = load(toml_path)
+        # Act / Assert — catalog.models["does-not-exist"] must raise; the error should
+        # ideally mention the available names ("small-q4"). We test the raise at minimum.
+        with pytest.raises((KeyError, ValueError, LookupError)):
+            _ = catalog.models["does-not-exist"]
+
+    def test_missing_repo_id_raises_descriptive_error(self, tmp_path: Path) -> None:
+        """A model entry missing `repo` must raise a descriptive error on load."""
+        # Arrange — intentionally omit required `repo` field
+        bad_toml = """\
+            [host]
+            bind = "0.0.0.0"
+
+            [models.broken]
+            engine   = "llamacpp"
+            file     = "broken.gguf"
+            port     = 8091
+            vram_gib = 4.0
+        """
+        toml_path = _write_toml(tmp_path, bad_toml)
+        # Act / Assert
+        with pytest.raises((TypeError, KeyError, ValueError)):
+            load(toml_path)

@@ -1,0 +1,44 @@
+[importlinter]
+root_packages =
+    llmcli
+include_external_packages = True
+
+# Layer ordering (top → bottom): higher layers may import lower; lower may NOT import higher.
+#
+#  Layer 3 (high):  cli          — entry point, orchestrates everything
+#  Layer 2 (mid):   daemon, litellm_config — cross-cutting services
+#  Layer 1 (low):   engines (impl) — concrete engine backends
+#  Layer 0 (base):  config, engine — pure data/protocol types; no llmcli imports
+#
+# Contracts are expressed as independent pairs to avoid false "sibling" violations.
+
+[importlinter:contract:cli-above-mid]
+name = cli does not import upward (mid layer)
+type = forbidden
+source_modules =
+    llmcli.daemon
+    llmcli.litellm_config
+forbidden_modules =
+    llmcli.cli
+
+[importlinter:contract:mid-above-base]
+name = mid layer does not import cli
+type = forbidden
+source_modules =
+    llmcli.daemon
+    llmcli.litellm_config
+    llmcli.engines
+forbidden_modules =
+    llmcli.cli
+
+[importlinter:contract:base-isolation]
+name = base layer (config, engine) does not import higher layers
+type = forbidden
+source_modules =
+    llmcli.config
+    llmcli.engine
+forbidden_modules =
+    llmcli.cli
+    llmcli.daemon
+    llmcli.litellm_config
+    llmcli.engines
