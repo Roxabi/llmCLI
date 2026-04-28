@@ -30,9 +30,9 @@ class ModelSpec:
     name: str
     engine: str
     repo: str
-    file: str
     port: int
     vram_gib: float
+    file: str = ""
     flags: list[str] = field(default_factory=list)
     mmproj: str | None = None
 

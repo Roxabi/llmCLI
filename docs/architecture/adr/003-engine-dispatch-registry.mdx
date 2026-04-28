@@ -1,0 +1,93 @@
+---
+title: "ADR-003: Engine dispatch — dict registry over string-match chain"
+description: Replace if/elif engine selection in _engine_for_spec with a dict registry.
+---
+
+## Status
+
+Accepted (amended — see Decision)
+
+## Context
+
+`LLMDaemon._engine_for_spec` selects an engine class by comparing `spec.engine` against
+string literals in an if/elif chain. With 3 engines this works, but the pattern fails the
+"adapter registry" architectural standard: adding a 4th engine requires editing the
+dispatch function rather than registering a new adapter. The `engines/__init__.py` already
+imports all three classes, making it a natural registry location.
+
+## Options Considered
+
+### Option A: Dict registry in `daemon.py`
+```python
+_ENGINE_REGISTRY: dict[str, type[Engine]] = {
+    "vllm": VLLMEngine,
+    "llamacpp_tq3": LlamaCppTQ3Engine,
+    "llamacpp": LlamaCppEngine,
+}
+```
+`_engine_for_spec` becomes a lookup with a fallback to `LlamaCppEngine`.
+- **Pros:** Open/closed — new engines added without touching dispatch logic; dict key
+  is the canonical engine name; O(1) lookup; clear error on unknown engine name.
+- **Cons:** Registry lives in `daemon.py` but engines live in `engines/`; slight
+  coupling between layers.
+
+### Option B: Leave if/elif as-is until 4th engine
+- **Pros:** Zero change now.
+- **Cons:** 3 engines is already the threshold where the anti-pattern becomes
+  maintenance debt; deferred refactor always costs more.
+
+### Option C: Move registry to `engines/__init__.py`
+```python
+REGISTRY: dict[str, type[Engine]] = {
+    "llamacpp": LlamaCppEngine,
+    "llamacpp_tq3": LlamaCppTQ3Engine,
+    "vllm": VLLMEngine,
+}
+```
+`daemon.py` imports `REGISTRY` and calls `REGISTRY.get(spec.engine, LlamaCppEngine)()`.
+- **Pros:** Registry co-located with engine classes; `daemon.py` imports shrink to one
+  `from .engines import REGISTRY`; follows the adapter-registry pattern precisely.
+- **Cons:** `engines/__init__.py` takes on a new responsibility (was a re-export file).
+
+## Decision
+
+**Amended after consensus panel (2026-04-28):** Option A — dict registry in `daemon.py`.
+
+Original decision (Option C) was revised after consensus panel review. Majority (security-auditor
++ backend-dev) preferred Option A for pragmatic reasons: only one call site, no circular import
+risk, and `engines/__init__.py` already serves as a re-export file. Architect accepted with
+recorded dissent (prefers Option C at 5+ engines or when a plugin system is introduced).
+
+`_engine_for_spec` implementation:
+```python
+_ENGINE_REGISTRY: dict[str, type] = {
+    "llamacpp": LlamaCppEngine,
+    "llamacpp_tq3": LlamaCppTQ3Engine,
+    "vllm": VLLMEngine,
+}
+engine_cls = _ENGINE_REGISTRY.get(spec.engine)
+if engine_cls is None:
+    raise ValueError(
+        f"Unknown engine '{spec.engine}' for model '{spec.name}'. "
+        f"Valid engines: {sorted(_ENGINE_REGISTRY)}"
+    )
+return engine_cls()
+```
+
+Unknown engine names raise `ValueError` (strict, not a silent fallback).
+
+## Consequences
+
+### Positive
+- Eliminates string-match dispatch anti-pattern flagged in architecture standards.
+- Unknown engine name raises `ValueError` immediately — no silent wrong-engine usage.
+- O(1) lookup; adding a 4th engine is a one-line dict entry in `daemon.py`.
+
+### Negative
+- Registry lives in `daemon.py` rather than the engines package; slight layer coupling.
+  Migrate to `engines/__init__.py` when a 4th engine is added or a plugin system is
+  introduced (architect dissent recorded).
+
+### Neutral
+- The deferred import pattern (3 lines inside `_engine_for_spec`) is preserved to avoid
+  circular import risk at module load time.

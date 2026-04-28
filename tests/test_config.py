@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from llmcli.config import Catalog, HostSettings, ModelSpec, load, check_vram_budget
+from llmcli.config import Catalog, HostSettings, ModelSpec, _parse_model_spec, load, check_vram_budget
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +269,29 @@ class TestCheckVramBudget:
         # Dynamic probe mocked to 0.0 (GPU tools unavailable) so it is skipped too.
         with patch("llmcli.config.probe_free_vram_gib", return_value=0.0):
             check_vram_budget(spec, catalog.host)
+
+
+# ---------------------------------------------------------------------------
+# ModelSpec field defaults — vLLM models have no GGUF file
+# ---------------------------------------------------------------------------
+
+
+class TestModelSpecDefaults:
+    def test_model_spec_file_defaults_to_empty_string(self) -> None:
+        """vLLM models have no GGUF file — file must default to '' when absent."""
+        # Arrange
+        raw: dict = {
+            "engine": "vllm",
+            "repo": "kaitchup/Qwen3.6-27B-autoround-nvfp4-linearattn-BF16",
+            "port": 8093,
+            "vram_gib": 15.0,
+        }
+        # Act
+        spec = _parse_model_spec("qwen3-27b-nvfp4", raw)
+        # Assert
+        assert spec.file == ""
+        assert spec.name == "qwen3-27b-nvfp4"
+        assert spec.engine == "vllm"
 
 
 # ---------------------------------------------------------------------------
