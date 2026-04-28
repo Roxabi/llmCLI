@@ -21,7 +21,7 @@ Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp`
 |---|---|---|
 | `llamacpp` | `llama-server` (vanilla) | Standard GGUF — Q4/Q5/Q6 quants |
 | `llamacpp_tq3` | `llama-server` (TurboQuant fork) | TQ3_4S mixed-quant — required for Qwen3.6-35B-A3B-TQ3_4S |
-| `vllm` | (future, optional extra) | Deferred to P7 — `uv sync --group vllm` |
+| `vllm` | `vllm serve` | Safetensors (NVFP4/GPTQ) — dev only (RTX 5070 Ti); `uv sync --group vllm` |
 
 ## Host Topology
 
