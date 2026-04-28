@@ -308,13 +308,11 @@ class TestVLLMStop:
         with (
             patch("llmcli.engines.vllm.os.getpgid", return_value=55555) as mock_getpgid,
             patch("llmcli.engines.vllm.os.killpg") as mock_killpg,
+            patch("llmcli.engines.vllm.os.waitpid", return_value=(12345, 0)),
         ):
             # Simulate process dying after SIGTERM (getpgid raises on second poll)
             mock_getpgid.side_effect = [55555, ProcessLookupError("gone")]
-            try:
-                engine.stop(fake_instance)
-            except NotImplementedError:
-                pass  # RED phase
+            engine.stop(fake_instance)
 
         sigterm_calls = [
             c for c in mock_killpg.call_args_list
@@ -331,18 +329,22 @@ class TestVLLMStop:
     def test_stop_escalates_to_sigkill(
         self, engine, fake_instance: EngineInstance
     ) -> None:
-        """stop() must escalate to SIGKILL after grace period if process remains alive."""
+        """stop() must escalate to SIGKILL when waitpid raises ChildProcessError after SIGTERM."""
+        waitpid_calls = 0
+
+        def fake_waitpid(pid, flags):
+            nonlocal waitpid_calls
+            waitpid_calls += 1
+            if waitpid_calls == 1:
+                raise ChildProcessError("process did not exit")
+            return (pid, 0)
+
         with (
             patch("llmcli.engines.vllm.os.getpgid", return_value=55555),
             patch("llmcli.engines.vllm.os.killpg") as mock_killpg,
-            # Speed up the grace-period wait
-            patch("llmcli.engines.vllm.time.sleep", return_value=None),
-            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 999.0, 999.0, 999.0]),
+            patch("llmcli.engines.vllm.os.waitpid", side_effect=fake_waitpid),
         ):
-            try:
-                engine.stop(fake_instance)
-            except NotImplementedError:
-                pass  # RED phase
+            engine.stop(fake_instance)
 
         sigkill_calls = [
             c for c in mock_killpg.call_args_list
@@ -361,11 +363,8 @@ class TestVLLMStop:
             "llmcli.engines.vllm.os.getpgid",
             side_effect=ProcessLookupError("no such process"),
         ):
-            # Should not raise
             try:
                 engine.stop(fake_instance)
-            except NotImplementedError:
-                pass  # RED phase — acceptable
             except ProcessLookupError:
                 pytest.fail(
                     "stop() must not propagate ProcessLookupError for already-dead processes"
@@ -379,14 +378,10 @@ class TestVLLMStop:
         with (
             patch("llmcli.engines.vllm.os.getpgid", return_value=55555),
             patch("llmcli.engines.vllm.os.killpg"),
+            patch("llmcli.engines.vllm.os.waitpid", return_value=(12345, 0)),
             patch("llmcli.engines.vllm.os.kill") as mock_os_kill,
-            patch("llmcli.engines.vllm.time.sleep", return_value=None),
-            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 999.0, 999.0]),
         ):
-            try:
-                engine.stop(fake_instance)
-            except NotImplementedError:
-                pass  # RED phase
+            engine.stop(fake_instance)
 
         assert mock_os_kill.call_count == 0, (
             "stop() must NOT use os.kill — use os.killpg for process-group signals"
@@ -556,3 +551,102 @@ class TestDaemonDispatchVLLM:
         assert isinstance(result, LlamaCppTQ3Engine), (
             f"engine='llamacpp_tq3' must dispatch to LlamaCppTQ3Engine, got {type(result)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. _wait_ready
+# ---------------------------------------------------------------------------
+
+
+class TestWaitReady:
+    """Direct unit tests for the _wait_ready polling helper."""
+
+    @pytest.mark.no_gpu
+    def test_returns_immediately_on_2xx(self) -> None:
+        """_wait_ready should return as soon as /health responds 2xx."""
+        from llmcli.engines.vllm import _wait_ready
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None  # process still running
+        mock_proc.stderr = None
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        with (
+            patch("llmcli.engines.vllm.httpx.get", return_value=mock_response),
+            patch("llmcli.engines.vllm.time.sleep"),
+            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 0.1]),
+        ):
+            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=10.0)
+        # Should complete without raising
+
+    @pytest.mark.no_gpu
+    def test_continues_on_503_then_succeeds_on_200(self) -> None:
+        """_wait_ready must continue polling on 503 (warmup) until 2xx."""
+        from llmcli.engines.vllm import _wait_ready
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stderr = None
+
+        resp_503 = MagicMock()
+        resp_503.status_code = 503
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+
+        call_count = 0
+
+        def fake_get(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return resp_200 if call_count >= 3 else resp_503
+
+        with (
+            patch("llmcli.engines.vllm.httpx.get", side_effect=fake_get),
+            patch("llmcli.engines.vllm.time.sleep"),
+            patch(
+                "llmcli.engines.vllm.time.monotonic",
+                side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+            ),
+        ):
+            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0)
+
+        assert call_count >= 3, "Must poll at least 3 times (2× 503 + 1× 200)"
+
+    @pytest.mark.no_gpu
+    def test_raises_on_early_process_exit(self) -> None:
+        """_wait_ready must raise RuntimeError with exit code when process exits early."""
+        from llmcli.engines.vllm import _wait_ready
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1  # process exited immediately
+        mock_proc.stderr = None
+        mock_proc.wait.return_value = None
+
+        with (
+            patch("llmcli.engines.vllm.httpx.get"),
+            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 0.5]),
+        ):
+            with pytest.raises(RuntimeError, match="exited with code 1"):
+                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0)
+
+    @pytest.mark.no_gpu
+    def test_raises_on_timeout(self) -> None:
+        """_wait_ready must raise RuntimeError when the deadline passes."""
+        from llmcli.engines.vllm import _wait_ready
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        mock_proc.stderr = None
+
+        resp_503 = MagicMock()
+        resp_503.status_code = 503
+
+        with (
+            patch("llmcli.engines.vllm.httpx.get", return_value=resp_503),
+            patch("llmcli.engines.vllm.time.sleep"),
+            # Deadline expires immediately on the second call
+            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 100.0]),
+        ):
+            with pytest.raises(RuntimeError, match="did not become ready"):
+                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=1.0)
