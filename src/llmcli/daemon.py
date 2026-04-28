@@ -141,22 +141,26 @@ class Daemon:
         return f"OK model={instance.model_name} port={instance.port} uptime={uptime}"
 
     def _engine_for_spec(self, spec: ModelSpec) -> Engine:
-        """Select the appropriate engine class for a ModelSpec and return an instance.
+        """Dispatch on spec.engine, returning the appropriate engine instance.
 
-        Dispatches on the explicit spec.engine field:
-          - "vllm"          → VLLMEngine
-          - "llamacpp_tq3"  → LlamaCppTQ3Engine
-          - anything else   → LlamaCppEngine (default)
+        Unknown engine values raise ValueError — no silent fallback to a wrong engine.
         """
         from .engines.llamacpp import LlamaCppEngine
         from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
         from .engines.vllm import VLLMEngine
 
-        if spec.engine == "vllm":
-            return VLLMEngine()
-        if spec.engine == "llamacpp_tq3":
-            return LlamaCppTQ3Engine()
-        return LlamaCppEngine()
+        _ENGINE_REGISTRY: dict[str, type] = {
+            "llamacpp": LlamaCppEngine,
+            "llamacpp_tq3": LlamaCppTQ3Engine,
+            "vllm": VLLMEngine,
+        }
+        engine_cls = _ENGINE_REGISTRY.get(spec.engine)
+        if engine_cls is None:
+            raise ValueError(
+                f"Unknown engine '{spec.engine}' for model '{spec.name}'. "
+                f"Valid engines: {sorted(_ENGINE_REGISTRY)}"
+            )
+        return engine_cls()
 
     def _cmd_swap(self, arg: str) -> str:
         name = arg.strip()

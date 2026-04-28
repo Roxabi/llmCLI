@@ -198,6 +198,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
@@ -216,6 +217,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
@@ -230,6 +232,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
@@ -246,6 +249,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
@@ -263,6 +267,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
@@ -281,6 +286,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
             patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch(
@@ -483,7 +489,10 @@ class TestVLLMImportGuard:
                 raise ImportError("No module named 'vllm'")
             return original_import(name, *args, **kwargs)
 
-        with patch("builtins.__import__", side_effect=_fake_import):
+        with (
+            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
+            patch("builtins.__import__", side_effect=_fake_import),
+        ):
             with pytest.raises(ImportError, match="uv sync --group vllm"):
                 engine.start(vllm_spec)
 
@@ -564,7 +573,7 @@ class TestWaitReady:
     @pytest.mark.no_gpu
     def test_returns_immediately_on_2xx(self) -> None:
         """_wait_ready should return as soon as /health responds 2xx."""
-        from llmcli.engines.vllm import _wait_ready
+        from llmcli.engines._common import _wait_ready
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # process still running
@@ -573,17 +582,17 @@ class TestWaitReady:
         mock_response.status_code = 200
 
         with (
-            patch("llmcli.engines.vllm.httpx.get", return_value=mock_response),
-            patch("llmcli.engines.vllm.time.sleep"),
-            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 0.1]),
+            patch("llmcli.engines._common.httpx.get", return_value=mock_response),
+            patch("llmcli.engines._common.time.sleep"),
+            patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 0.1]),
         ):
-            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=10.0)
+            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=10.0, engine_name="vllm serve")
         # Should complete without raising
 
     @pytest.mark.no_gpu
     def test_continues_on_503_then_succeeds_on_200(self) -> None:
         """_wait_ready must continue polling on 503 (warmup) until 2xx."""
-        from llmcli.engines.vllm import _wait_ready
+        from llmcli.engines._common import _wait_ready
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -602,21 +611,21 @@ class TestWaitReady:
             return resp_200 if call_count >= 3 else resp_503
 
         with (
-            patch("llmcli.engines.vllm.httpx.get", side_effect=fake_get),
-            patch("llmcli.engines.vllm.time.sleep"),
+            patch("llmcli.engines._common.httpx.get", side_effect=fake_get),
+            patch("llmcli.engines._common.time.sleep"),
             patch(
-                "llmcli.engines.vllm.time.monotonic",
+                "llmcli.engines._common.time.monotonic",
                 side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             ),
         ):
-            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0)
+            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve")
 
         assert call_count >= 3, "Must poll at least 3 times (2× 503 + 1× 200)"
 
     @pytest.mark.no_gpu
     def test_raises_on_early_process_exit(self) -> None:
         """_wait_ready must raise RuntimeError with exit code when process exits early."""
-        from llmcli.engines.vllm import _wait_ready
+        from llmcli.engines._common import _wait_ready
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = 1  # process exited immediately
@@ -624,16 +633,16 @@ class TestWaitReady:
         mock_proc.wait.return_value = None
 
         with (
-            patch("llmcli.engines.vllm.httpx.get"),
-            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 0.5]),
+            patch("llmcli.engines._common.httpx.get"),
+            patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 0.5]),
         ):
             with pytest.raises(RuntimeError, match="exited with code 1"):
-                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0)
+                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve")
 
     @pytest.mark.no_gpu
     def test_raises_on_timeout(self) -> None:
         """_wait_ready must raise RuntimeError when the deadline passes."""
-        from llmcli.engines.vllm import _wait_ready
+        from llmcli.engines._common import _wait_ready
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
@@ -643,10 +652,10 @@ class TestWaitReady:
         resp_503.status_code = 503
 
         with (
-            patch("llmcli.engines.vllm.httpx.get", return_value=resp_503),
-            patch("llmcli.engines.vllm.time.sleep"),
+            patch("llmcli.engines._common.httpx.get", return_value=resp_503),
+            patch("llmcli.engines._common.time.sleep"),
             # Deadline expires immediately on the second call
-            patch("llmcli.engines.vllm.time.monotonic", side_effect=[0.0, 100.0]),
+            patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 100.0]),
         ):
             with pytest.raises(RuntimeError, match="did not become ready"):
-                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=1.0)
+                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=1.0, engine_name="vllm serve")
