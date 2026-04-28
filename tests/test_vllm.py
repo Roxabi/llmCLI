@@ -68,6 +68,21 @@ def engine():
     return VLLMEngine()
 
 
+@pytest.fixture()
+def started_instance(engine, vllm_spec):
+    """Run engine.start() with mocked Popen and _wait_ready; yield (instance, mock_popen)."""
+    mock_proc = MagicMock()
+    mock_proc.pid = 99999
+    with (
+        patch.dict("sys.modules", {"vllm": MagicMock()}),
+        patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc) as mock_popen,
+        patch("llmcli.engines.vllm._wait_ready", return_value=None),
+        patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
+    ):
+        instance = engine.start(vllm_spec)
+        yield instance, mock_popen
+
+
 # ---------------------------------------------------------------------------
 # 1. Protocol conformance
 # ---------------------------------------------------------------------------
@@ -192,70 +207,31 @@ class TestVLLMStart:
     """start(spec) must spawn via Popen (start_new_session=True) and return EngineInstance."""
 
     @pytest.mark.no_gpu
-    def test_start_returns_engine_instance(self, engine, vllm_spec: ModelSpec) -> None:
-        # Arrange
-        mock_proc = MagicMock()
-        mock_proc.pid = 99999
-
-        with (
-            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
-            patch.dict("sys.modules", {"vllm": MagicMock()}),
-            patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
-            patch("llmcli.engines.vllm._wait_ready", return_value=None),
-        ):
-            # Act
-            result = engine.start(vllm_spec)
-
+    def test_start_returns_engine_instance(self, started_instance) -> None:
+        # Arrange / Act
+        result, _ = started_instance
         # Assert
         assert isinstance(result, EngineInstance), (
             f"start() must return EngineInstance, got {type(result)}"
         )
 
     @pytest.mark.no_gpu
-    def test_start_instance_pid_matches_process(self, engine, vllm_spec: ModelSpec) -> None:
-        mock_proc = MagicMock()
-        mock_proc.pid = 99999
-
-        with (
-            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
-            patch.dict("sys.modules", {"vllm": MagicMock()}),
-            patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
-            patch("llmcli.engines.vllm._wait_ready", return_value=None),
-        ):
-            result = engine.start(vllm_spec)
-
+    def test_start_instance_pid_matches_process(self, started_instance) -> None:
+        result, _ = started_instance
         assert result.pid == 99999, f"instance.pid must equal process pid 99999, got {result.pid}"
 
     @pytest.mark.no_gpu
-    def test_start_instance_port_matches_spec(self, engine, vllm_spec: ModelSpec) -> None:
-        mock_proc = MagicMock()
-        mock_proc.pid = 99999
-
-        with (
-            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
-            patch.dict("sys.modules", {"vllm": MagicMock()}),
-            patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
-            patch("llmcli.engines.vllm._wait_ready", return_value=None),
-        ):
-            result = engine.start(vllm_spec)
-
+    def test_start_instance_port_matches_spec(self, started_instance, vllm_spec: ModelSpec) -> None:
+        result, _ = started_instance
         assert result.port == vllm_spec.port, (
             f"instance.port must equal spec.port={vllm_spec.port}, got {result.port}"
         )
 
     @pytest.mark.no_gpu
-    def test_start_instance_model_name_matches_spec(self, engine, vllm_spec: ModelSpec) -> None:
-        mock_proc = MagicMock()
-        mock_proc.pid = 99999
-
-        with (
-            patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
-            patch.dict("sys.modules", {"vllm": MagicMock()}),
-            patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
-            patch("llmcli.engines.vllm._wait_ready", return_value=None),
-        ):
-            result = engine.start(vllm_spec)
-
+    def test_start_instance_model_name_matches_spec(
+        self, started_instance, vllm_spec: ModelSpec
+    ) -> None:
+        result, _ = started_instance
         assert result.model_name == vllm_spec.name, (
             f"instance.model_name must equal spec.name={vllm_spec.name!r}, got {result.model_name!r}"
         )
@@ -482,16 +458,9 @@ class TestVLLMImportGuard:
         self, engine, vllm_spec: ModelSpec
     ) -> None:
         """When vllm package is unavailable, start() must raise ImportError with install hint."""
-        original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
-
-        def _fake_import(name, *args, **kwargs):
-            if name == "vllm":
-                raise ImportError("No module named 'vllm'")
-            return original_import(name, *args, **kwargs)
-
         with (
             patch("llmcli.engines.vllm.shutil.which", return_value="/usr/bin/vllm"),
-            patch("builtins.__import__", side_effect=_fake_import),
+            patch.dict("sys.modules", {"vllm": None}),
         ):
             with pytest.raises(ImportError, match="uv sync --group vllm"):
                 engine.start(vllm_spec)
