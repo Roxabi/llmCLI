@@ -1,0 +1,58 @@
+---
+title: "ADR-001: Extract _wait_ready to engines/_common.py"
+description: Eliminate duplicated health-polling loop shared by all subprocess engines.
+---
+
+## Status
+
+Accepted
+
+## Context
+
+Three subprocess engines (llamacpp, llamacpp_tq3, vllm) each need to poll a `/health`
+endpoint after spawning their binary and handle early process exit with a stderr tail.
+`llamacpp.py` and `llamacpp_tq3.py` already share an identical `_wait_ready`; the new
+`vllm.py` duplicated it a third time with only the error string changed. Without a shared
+location the loop must be kept in sync across all three files for every future fix
+(e.g. Windows-compatibility, timeout configuration, backoff strategy).
+
+## Options Considered
+
+### Option A: Extract to `engines/_common.py`
+- **Pros:** Single source of truth; natural home (private to the `engines` package);
+  engine-specific error strings passed as parameter; no coupling to `engine.py`
+  domain abstraction; adding a 4th engine is one import.
+- **Cons:** Adds a new file; cross-file navigation needed to read the full engine.
+
+### Option B: Move to `engine.py`
+- **Pros:** Centralised in the core module.
+- **Cons:** `engine.py` is the domain layer (Protocol + EngineInstance); importing
+  subprocess/httpx infrastructure there inverts the dependency direction
+  (infra concern in domain module) — Clean Architecture violation.
+
+### Option C: Leave duplication as-is
+- **Pros:** Zero refactor cost now.
+- **Cons:** 3× copies already; any bug fix (e.g. `select` platform guard) must be
+  applied in 3 places; third duplication crossed the "rule of three" threshold.
+
+## Decision
+
+Extract `_wait_ready` to `engines/_common.py`. Accept an `engine_name: str` parameter
+for the error message (`f"{engine_name} did not become ready within {timeout}s"`).
+Constants `_WAIT_INTERVAL` and `_STDERR_TAIL` move with it; each engine keeps its own
+`_WAIT_TIMEOUT` because the values differ by design (60s vs 180s).
+
+## Consequences
+
+### Positive
+- Bug fixes and improvements to the polling loop propagate to all engines automatically.
+- Each engine file shrinks by ~50 lines, staying well under the 300-line quality gate.
+- The `import select` placement issue (F2) is fixed once, in one place.
+
+### Negative
+- One additional file in `engines/`; approaches the 12-file folder-size gate if more
+  engines are added (currently 4 files after extraction + 3 engine files + __init__).
+
+### Neutral
+- `_wait_timeout` remains a per-engine constant; callers pass it explicitly, keeping
+  per-engine tuning possible without polluting the shared helper.
