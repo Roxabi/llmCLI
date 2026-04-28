@@ -1,0 +1,49 @@
+---
+title: "vLLM Engine Backend — Remaining Findings Consensus"
+issue: 13
+status: consensus-reached
+date: 2026-04-28
+panel: architect, security-auditor, backend-dev
+confidence: high
+---
+
+## Problem
+
+8 remaining suggestions/nitpicks from the code review of PR #14 (vLLM engine backend). Panel determines best long-term solution for each.
+
+## Panel
+
+| Agent | Focus |
+|-------|-------|
+| architect | arch soundness, maintainability, scalability |
+| security-auditor | attack surface, reliability, user-facing errors |
+| backend-dev | impl complexity, Python best practices |
+
+## Consensus Decisions
+
+| Finding | Decision | Confidence | Blocking |
+|---------|----------|------------|---------|
+| F1 `_wait_ready` duplicated | Extract to `engines/_common.py` with `engine_name` param | Unanimous | Yes — correctness debt |
+| F2 `import select` in loop | Hoist to module-level (resolved via F1 extraction) | Unanimous | No |
+| F3 Duplicate Arrange in tests | `started_instance` pytest fixture | Unanimous | No |
+| F4 Fragile `__builtins__` test | `patch.dict("sys.modules", {"vllm": None})` | Unanimous | Yes — test unreliable |
+| F5 Import guard vs binary | Both: `shutil.which("vllm")` + `import vllm`, distinct messages | Hybrid (arch accepted) | No |
+| F6 `_WAIT_TIMEOUT` undocumented | Inline comment explaining vLLM warmup duration | Unanimous | No |
+| F7 VLLMEngine no docstring | Already present at line 88 — no action | Unanimous | n/a |
+| F8 Engine dispatch registry | Dict-registry `_ENGINE_REGISTRY` in `daemon.py` | Majority (arch dissent recorded) | No |
+
+## Dissent
+
+**F8 — architect:** `engines/__init__.py` is architecturally purer (adapter package owns registry). Accepts majority position for ≤3 engines; recommends migration to `engines/__init__.py` when a 4th engine is added.
+
+**F5 — architect (original):** Initially preferred comment-only. Accepted hybrid after majority demonstrated that binary-absent and package-absent are distinct failures with different remediations that deserve different error messages at runtime.
+
+## Implementation Notes
+
+- F1 extraction: `_wait_ready(base_url, proc, timeout, engine_name)` in `engines/_common.py`. Both `llamacpp.py` and `vllm.py` import from there. TestWaitReady mock paths update from `llmcli.engines.vllm.*` → `llmcli.engines._common.*`.
+- F5 order: binary check first (PATH remediation), package check second (install remediation). Use `RuntimeError` for binary, `ImportError` for package.
+- F8: `_ENGINE_REGISTRY: dict[str, type[Engine]] = {"vllm": VLLMEngine, "llamacpp_tq3": LlamaCppTQ3Engine}` with `LlamaCppEngine` as default. Unknown engine string → raises `ValueError` (no silent fallback).
+
+## Next
+
+Apply all decisions → push → re-run `/code-review` for final approval.
