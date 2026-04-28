@@ -489,7 +489,7 @@ class TestVLLMImportGuard:
             return original_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=_fake_import):
-            with pytest.raises(ImportError, match="uv pip install vllm"):
+            with pytest.raises(ImportError, match="uv sync --group vllm"):
                 engine.start(vllm_spec)
 
 

@@ -17,7 +17,6 @@ from ..engine import EngineInstance
 
 _WAIT_TIMEOUT = 180  # seconds
 _WAIT_INTERVAL = 1.0  # seconds between health polls
-_STOP_GRACE = 5  # seconds to wait after SIGTERM before SIGKILL
 _STDERR_TAIL = 20  # lines of stderr to include in early-exit error
 
 
@@ -114,7 +113,7 @@ class VLLMEngine:
         try:
             import vllm  # noqa: F401
         except ImportError as exc:
-            raise ImportError("vLLM not installed. Run: uv pip install vllm") from exc
+            raise ImportError("vLLM not installed. Run: uv sync --group vllm") from exc
 
         cmd = self._build_cmd(spec)
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, start_new_session=True)  # noqa: S603
@@ -136,19 +135,29 @@ class VLLMEngine:
             return False
 
     def stop(self, instance: EngineInstance) -> None:
-        """Send SIGTERM to the process group; escalate to SIGKILL after grace period.
+        """Send SIGTERM to the process group; escalate to SIGKILL if it does not exit.
 
-        Uses os.killpg to terminate the entire process group started with
-        start_new_session=True. Idempotent — silently ignores ProcessLookupError.
+        Uses os.killpg to terminate the entire process group (vLLM spawns GPU worker
+        subprocesses in the same session). Always calls os.waitpid() to reap the session
+        leader and prevent zombie accumulation across repeated swap cycles.
+        Idempotent — silently ignores ProcessLookupError (already dead).
         """
         try:
             os.killpg(os.getpgid(instance.pid), signal.SIGTERM)
         except ProcessLookupError:
             return
 
-        time.sleep(_STOP_GRACE)
-
         try:
-            os.killpg(os.getpgid(instance.pid), signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+            os.waitpid(instance.pid, 0)
+        except ChildProcessError:
+            # Process did not exit after SIGTERM — escalate to SIGKILL.
+            try:
+                os.killpg(os.getpgid(instance.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            else:
+                # Reap after SIGKILL so no zombie lingers between swap cycles.
+                try:
+                    os.waitpid(instance.pid, 0)
+                except ChildProcessError:
+                    pass
