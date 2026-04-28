@@ -143,14 +143,18 @@ class Daemon:
     def _engine_for_spec(self, spec: ModelSpec) -> Engine:
         """Select the appropriate engine class for a ModelSpec and return an instance.
 
-        Uses LlamaCppTQ3Engine when the model name or quant field signals TQ3_4S;
-        falls back to LlamaCppEngine otherwise.
+        Dispatches on the explicit spec.engine field:
+          - "vllm"          → VLLMEngine
+          - "llamacpp_tq3"  → LlamaCppTQ3Engine
+          - anything else   → LlamaCppEngine (default)
         """
         from .engines.llamacpp import LlamaCppEngine
         from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
+        from .engines.vllm import VLLMEngine
 
-        quant = getattr(spec, "quant", "") or ""
-        if "tq3" in spec.name.lower() or "TQ3_4S" in quant:
+        if spec.engine == "vllm":
+            return VLLMEngine()
+        if spec.engine == "llamacpp_tq3":
             return LlamaCppTQ3Engine()
         return LlamaCppEngine()
 
