@@ -198,6 +198,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
         ):
@@ -215,6 +216,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
         ):
@@ -228,6 +230,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
         ):
@@ -243,6 +246,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
         ):
@@ -259,6 +263,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc) as mock_popen,
             patch("llmcli.engines.vllm._wait_ready", return_value=None),
         ):
@@ -276,6 +281,7 @@ class TestVLLMStart:
         mock_proc.pid = 99999
 
         with (
+            patch.dict("sys.modules", {"vllm": MagicMock()}),
             patch("llmcli.engines.vllm.subprocess.Popen", return_value=mock_proc),
             patch(
                 "llmcli.engines.vllm._wait_ready",
