@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,89 @@ def probe_free_vram_gib() -> float:
         "Skipping dynamic VRAM check."
     )
     return 0.0
+
+
+class VRAMSampler:
+    """Background thread that polls GPU VRAM usage and tracks peak.
+
+    Holds a single nvmlInit() open for its lifetime — NOT the same as
+    probe_free_vram_gib() which calls init/shutdown on every call.
+
+    Usage::
+
+        sampler = VRAMSampler()
+        sampler.start()
+        # ... do work ...
+        peak = sampler.stop()  # returns float GiB or None if no GPU
+    """
+
+    def __init__(self, poll_interval: float = 0.2) -> None:
+        self._poll_interval = poll_interval
+        self._peak: float | None = None
+        self._thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
+        self._nvml_available = False
+        self._handle = None
+
+    def start(self) -> None:
+        """Start the background polling thread."""
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            self._handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            self._nvml_available = True
+        except Exception:  # noqa: BLE001
+            self._nvml_available = False
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> float | None:
+        """Stop polling and return peak VRAM used in GiB, or None if no GPU."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+        if self._nvml_available:
+            try:
+                import pynvml  # type: ignore[import-untyped]
+
+                pynvml.nvmlShutdown()
+            except Exception:  # noqa: BLE001
+                pass
+        return self._peak
+
+    def _poll_loop(self) -> None:
+        while not self._stop_event.is_set():
+            sample = self._sample_vram()
+            if sample is not None:
+                self._peak = max(self._peak or 0.0, sample)
+            self._stop_event.wait(self._poll_interval)
+
+    def _sample_vram(self) -> float | None:
+        """Return current VRAM used in GiB, or None on failure."""
+        if self._nvml_available:
+            try:
+                import pynvml  # type: ignore[import-untyped]
+
+                mem = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
+                return mem.used / (1024**3)
+            except Exception:  # noqa: BLE001
+                pass
+        # Fallback: nvidia-smi (used memory, not free)
+        try:
+            result = subprocess.run(  # noqa: S603, S607
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,nounits,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                return float(result.stdout.strip().splitlines()[0]) / 1024.0
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
 
 _QUANT_BITS: dict[str, float] = {
