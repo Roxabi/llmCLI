@@ -174,6 +174,27 @@ def _make_sse_chunks(tokens: list[str]) -> list[bytes]:
 # ---------------------------------------------------------------------------
 
 
+def _make_httpx_client_mock(lines: list[bytes]) -> MagicMock:
+    """Build a mock httpx.Client whose stream() context manager yields decoded lines."""
+    decoded = [ln.decode() for ln in lines]
+
+    mock_resp = MagicMock()
+    mock_resp.iter_lines = MagicMock(return_value=iter(decoded))
+
+    mock_stream_cm = MagicMock()
+    mock_stream_cm.__enter__ = MagicMock(return_value=mock_resp)
+    mock_stream_cm.__exit__ = MagicMock(return_value=False)
+
+    mock_client = MagicMock()
+    mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+    mock_client_cm = MagicMock()
+    mock_client_cm.__enter__ = MagicMock(return_value=mock_client)
+    mock_client_cm.__exit__ = MagicMock(return_value=False)
+
+    return mock_client_cm
+
+
 class TestRunSingle:
     """run_single() must return a RunResult with timing metrics populated."""
 
@@ -183,14 +204,10 @@ class TestRunSingle:
         # Arrange
         config = _make_bench_config()
         chunks = _make_sse_chunks(["hello", " world"])
-        mock_response = MagicMock()
-        mock_response.__iter__ = lambda self: iter(chunks)
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_response)
-        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_client_cm = _make_httpx_client_mock(chunks)
 
         # Act
-        with patch("httpx.stream", return_value=mock_cm):
+        with patch("httpx.Client", return_value=mock_client_cm):
             result = run_single(
                 base_url="http://localhost:8091",
                 config=config,
@@ -212,19 +229,28 @@ class TestRunSingle:
         config = _make_bench_config()
         chunks = _make_sse_chunks(["hello", " world"])
         delay_s = 0.1
+        decoded = [ln.decode() for ln in chunks]
 
-        def _slow_iter(self: object) -> object:
+        def _slow_iter_lines() -> object:
             time.sleep(delay_s)
-            return iter(chunks)
+            return iter(decoded)
 
-        mock_response = MagicMock()
-        mock_response.__iter__ = _slow_iter
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_response)
-        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_resp = MagicMock()
+        mock_resp.iter_lines = _slow_iter_lines
+
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_resp)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+        mock_client_cm = MagicMock()
+        mock_client_cm.__enter__ = MagicMock(return_value=mock_client)
+        mock_client_cm.__exit__ = MagicMock(return_value=False)
 
         # Act
-        with patch("httpx.stream", return_value=mock_cm):
+        with patch("httpx.Client", return_value=mock_client_cm):
             result = run_single(
                 base_url="http://localhost:8091",
                 config=config,
@@ -243,22 +269,29 @@ class TestRunSingle:
         tokens = [f"tok{i}" for i in range(n_tokens)]
         config = _make_bench_config(tg_tokens=n_tokens)
         chunk_delay_s = 0.01  # 10 ms per token → ~100 tok/s
+        raw_chunks = _make_sse_chunks(tokens)
 
-        original_iter = iter(_make_sse_chunks(tokens))
-
-        def _paced_iter(self: object) -> object:
-            for chunk in _make_sse_chunks(tokens):
+        def _paced_iter_lines() -> object:
+            for chunk in raw_chunks:
                 time.sleep(chunk_delay_s)
-                yield chunk
+                yield chunk.decode()
 
-        mock_response = MagicMock()
-        mock_response.__iter__ = _paced_iter
-        mock_cm = MagicMock()
-        mock_cm.__enter__ = MagicMock(return_value=mock_response)
-        mock_cm.__exit__ = MagicMock(return_value=False)
+        mock_resp = MagicMock()
+        mock_resp.iter_lines = _paced_iter_lines
+
+        mock_stream_cm = MagicMock()
+        mock_stream_cm.__enter__ = MagicMock(return_value=mock_resp)
+        mock_stream_cm.__exit__ = MagicMock(return_value=False)
+
+        mock_client = MagicMock()
+        mock_client.stream = MagicMock(return_value=mock_stream_cm)
+
+        mock_client_cm = MagicMock()
+        mock_client_cm.__enter__ = MagicMock(return_value=mock_client)
+        mock_client_cm.__exit__ = MagicMock(return_value=False)
 
         # Act
-        with patch("httpx.stream", return_value=mock_cm):
+        with patch("httpx.Client", return_value=mock_client_cm):
             result = run_single(
                 base_url="http://localhost:8091",
                 config=config,
@@ -283,22 +316,29 @@ class TestRenderTableVramNone:
     @pytest.mark.no_gpu
     def test_vram_none_renders_dash(self) -> None:
         """render_table outputs '—' or 'N/A' in the VRAM column when vram_peak is None."""
-        # Arrange
-        stats = [
-            DepthStats(
+        import io
+
+        from rich.console import Console
+
+        # Arrange — RunResult with vram_peak_gib=None (no sampler data)
+        results = [
+            RunResult(
                 depth=0,
-                pp_mean=500.0,
-                pp_std=5.0,
-                tg_mean=80.0,
-                tg_std=2.0,
-                ttft_mean=120.0,
-                vram_peak=None,
+                engine="llamacpp",
+                ttft_ms=120.0,
+                tg_tok_per_s=80.0,
+                pp_tok_per_s=500.0,
+                vram_peak_gib=None,
             )
         ]
 
         # Act
-        rendered = render_table(stats, engine="llamacpp")
+        table = render_table(results, engine="llamacpp")
+        buf = io.StringIO()
+        Console(file=buf, width=200).print(table)
+        output = buf.getvalue()
 
         # Assert — a placeholder must be present (implementation chooses '—' or 'N/A')
-        assert rendered is not None
-        assert "—" in rendered or "N/A" in rendered
+        assert table is not None
+        assert "—" in output or "N/A" in output
+
