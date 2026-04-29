@@ -134,6 +134,7 @@ def bench(
     """Benchmark a model: pp t/s, tg t/s, TTFT, VRAM peak."""
     import llmcli.cli as _cli
     from llmcli.engines import get_engine
+    from llmcli.gpu import VRAMSampler
 
     # Resolve catalog
     catalog = _cli.config.load()
@@ -144,7 +145,7 @@ def bench(
 
     spec = catalog.models[name]
     depths = [int(d.strip()) for d in depth.split(",")]
-    _config = BenchConfig(
+    config = BenchConfig(
         model_name=name,
         pp_tokens=pp,
         tg_tokens=tg,
@@ -162,11 +163,38 @@ def bench(
 
     engine = get_engine(spec)
     instance = None
+    results: list[RunResult] = []
+    sampler = VRAMSampler()
+    sampler.start()
+
     try:
         console.print(f"Starting [cyan]{name}[/cyan] on port {spec.port} …")
         instance = engine.start(spec)
-        # TODO: depth loop, aggregation (T9/T10)
-        console.print("[yellow]Benchmark loop not yet implemented (T9)[/yellow]")
+
+        # T9 — depth × runs loop
+        for d in config.depths:
+            for r in range(config.runs):
+                with console.status(f"depth={d} run={r + 1}/{config.runs}"):
+                    result = run_single(instance.base_url, config, d)
+                    result = RunResult(
+                        depth=result.depth,
+                        engine=spec.engine,
+                        ttft_ms=result.ttft_ms,
+                        tg_tok_per_s=result.tg_tok_per_s,
+                        pp_tok_per_s=result.pp_tok_per_s,
+                        vram_peak_gib=result.vram_peak_gib,
+                    )
+                    results.append(result)
     finally:
+        peak = sampler.stop()
         if instance is not None:
             engine.stop(instance)
+
+    # Attach VRAM peak to all results for this session
+    results = [
+        RunResult(r.depth, r.engine, r.ttft_ms, r.tg_tok_per_s, r.pp_tok_per_s, peak)
+        for r in results
+    ]
+
+    # TODO: aggregation and table render (T10)
+    console.print("[yellow]Table rendering not yet implemented (T10)[/yellow]")
