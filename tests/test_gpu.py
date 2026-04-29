@@ -8,6 +8,7 @@ Test categories:
 Markers:
   no_gpu — CI-safe; no binary, no GPU required
 """
+
 from __future__ import annotations
 
 import time

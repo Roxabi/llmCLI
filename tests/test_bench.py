@@ -14,6 +14,7 @@ Test categories:
 Markers:
   no_gpu — CI-safe; no binary, no GPU required
 """
+
 from __future__ import annotations
 
 import time
@@ -358,7 +359,14 @@ class TestAggregation:
 
         # Arrange — 3 results at depth=0 with tg values 40, 42, 44
         results = [
-            RunResult(depth=0, engine="llamacpp", ttft_ms=100.0, tg_tok_per_s=v, pp_tok_per_s=500.0, vram_peak_gib=None)
+            RunResult(
+                depth=0,
+                engine="llamacpp",
+                ttft_ms=100.0,
+                tg_tok_per_s=v,
+                pp_tok_per_s=500.0,
+                vram_peak_gib=None,
+            )
             for v in (40.0, 42.0, 44.0)
         ]
 
@@ -470,7 +478,9 @@ class TestBenchCliErrors:
         from llmcli.config import Catalog, HostSettings, ModelSpec
 
         # Arrange — catalog with one model; port is occupied (connect_ex returns 0)
-        spec = ModelSpec(name="test-model", engine="llamacpp", repo="org/repo", port=8091, vram_gib=5.0)
+        spec = ModelSpec(
+            name="test-model", engine="llamacpp", repo="org/repo", port=8091, vram_gib=5.0
+        )
         catalog = Catalog(host=HostSettings(), models={"test-model": spec})
         runner = CliRunner()
 
