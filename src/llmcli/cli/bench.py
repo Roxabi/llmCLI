@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import socket
+import statistics
 import time
 from dataclasses import dataclass
 
 import httpx
 import typer
+from rich.table import Table
 
 from llmcli.cli._app import app, console, err_console
 
@@ -119,6 +121,74 @@ def run_single(
 
 
 # ---------------------------------------------------------------------------
+# T10 — aggregation and table rendering
+# ---------------------------------------------------------------------------
+
+
+def _aggregate(results: list[RunResult], depth: int) -> DepthStats:
+    """Aggregate RunResults for a single depth into DepthStats."""
+    subset = [r for r in results if r.depth == depth]
+    pp = [r.pp_tok_per_s for r in subset]
+    tg = [r.tg_tok_per_s for r in subset]
+    ttft = [r.ttft_ms for r in subset]
+    vram_vals = [r.vram_peak_gib for r in subset if r.vram_peak_gib is not None]
+    return DepthStats(
+        depth=depth,
+        pp_mean=statistics.mean(pp),
+        pp_std=statistics.stdev(pp) if len(pp) > 1 else 0.0,
+        tg_mean=statistics.mean(tg),
+        tg_std=statistics.stdev(tg) if len(tg) > 1 else 0.0,
+        ttft_mean=statistics.mean(ttft),
+        vram_peak=max(vram_vals) if vram_vals else None,
+    )
+
+
+def render_table(results: list[RunResult], engine: str) -> Table:
+    """Build and return a Rich Table from benchmark results."""
+    depths = sorted({r.depth for r in results})
+    rows = [_aggregate(results, d) for d in depths]
+
+    is_vllm = "vllm" in engine
+    any_vram = any(r.vram_peak_gib is not None for r in results)
+
+    table = Table(title=f"Benchmark results — {engine}", show_lines=False)
+    table.add_column("depth", justify="right")
+    table.add_column("pp t/s (est.)", justify="right")
+    table.add_column("tg t/s", justify="right")
+    table.add_column("TTFT (ms)", justify="right")
+    table.add_column("VRAM (GiB)", justify="right")
+
+    for row in rows:
+        if not any_vram:
+            vram_str = "—"  # em dash: sampler ran but no GPU data
+        elif row.vram_peak is None:
+            vram_str = "N/A"
+        else:
+            vram_str = f"{row.vram_peak:.1f}"
+
+        pp_str = f"{row.pp_mean:.0f}"
+        if row.pp_std > 0:
+            pp_str += f" ±{row.pp_std:.0f}"
+
+        tg_str = f"{row.tg_mean:.1f}"
+        if row.tg_std > 0:
+            tg_str += f" ±{row.tg_std:.1f}"
+
+        table.add_row(
+            str(row.depth),
+            pp_str,
+            tg_str,
+            f"{row.ttft_mean:.0f}",
+            vram_str,
+        )
+
+    if is_vllm:
+        table.caption = "¹ pp t/s estimated from TTFT (includes vLLM scheduler overhead)"
+
+    return table
+
+
+# ---------------------------------------------------------------------------
 # bench command
 # ---------------------------------------------------------------------------
 
@@ -196,5 +266,6 @@ def bench(
         for r in results
     ]
 
-    # TODO: aggregation and table render (T10)
-    console.print("[yellow]Table rendering not yet implemented (T10)[/yellow]")
+    if results:
+        table = render_table(results, spec.engine)
+        console.print(table)
