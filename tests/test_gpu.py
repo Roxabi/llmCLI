@@ -62,17 +62,8 @@ class TestVRAMSampler:
         smi_result.returncode = 0
         smi_result.stdout = "4096\n"
 
-        import builtins
-
-        real_import = builtins.__import__
-
-        def _mock_import(name: str, *args: object, **kwargs: object) -> object:
-            if name == "pynvml":
-                raise ImportError("no pynvml")
-            return real_import(name, *args, **kwargs)
-
         with (
-            patch("builtins.__import__", side_effect=_mock_import),
+            patch.dict("sys.modules", {"pynvml": None}),
             patch("subprocess.run", return_value=smi_result) as mock_run,
         ):
             sampler = VRAMSampler(poll_interval=0.05)

@@ -35,7 +35,7 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-    "no_gpu: tests that do not require a GPU (safe for CI)",
+    "no_gpu: mark test as not requiring GPU hardware (safe to run without CUDA)",
     "gpu: tests that require a live GPU (skipped in CI)",
 ]
 

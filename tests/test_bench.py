@@ -213,7 +213,6 @@ class TestRunSingle:
                 base_url="http://localhost:8091",
                 config=config,
                 depth=0,
-                sampler=None,
             )
 
         # Assert
@@ -256,7 +255,6 @@ class TestRunSingle:
                 base_url="http://localhost:8091",
                 config=config,
                 depth=0,
-                sampler=None,
             )
 
         # Assert — TTFT must reflect the 100 ms pre-first-chunk delay
@@ -297,7 +295,6 @@ class TestRunSingle:
                 base_url="http://localhost:8091",
                 config=config,
                 depth=0,
-                sampler=None,
             )
 
         # Assert — within 20% of the theoretical rate
@@ -433,8 +430,8 @@ class TestRenderTableVllmFootnote:
         Console(file=buf, width=200).print(table)
         output = buf.getvalue()
 
-        # Assert — em dash placeholder present in rendered output
-        assert "—" in output
+        # Assert — N/A placeholder present in rendered output when no GPU data
+        assert "N/A" in output
 
 
 # ---------------------------------------------------------------------------
@@ -484,10 +481,15 @@ class TestBenchCliErrors:
         catalog = Catalog(host=HostSettings(), models={"test-model": spec})
         runner = CliRunner()
 
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex = MagicMock(return_value=0)
+
         # Act
         with (
             patch("llmcli.cli.config.load", return_value=catalog),
-            patch("socket.socket.connect_ex", return_value=0),
+            patch("llmcli.cli.bench.socket.socket", return_value=mock_sock),
         ):
             result = runner.invoke(app, ["bench", "test-model"])
 
