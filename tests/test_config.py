@@ -115,7 +115,10 @@ class TestLoad:
         assert catalog.models["small-q4"].flags == ["-ngl", "99"]
 
     def test_load_example_toml_realistic(self) -> None:
-        """Loading llmcli.example.toml from repo root succeeds and has expected structure."""
+        """Loading llmcli.example.toml from repo root succeeds and has expected structure.
+
+        Models live in the sibling models/ directory — the example toml is host-only.
+        """
         # Arrange — find repo root relative to this file
         repo_root = Path(__file__).parent.parent
         example_path = repo_root / "llmcli.example.toml"
@@ -124,12 +127,47 @@ class TestLoad:
         # Assert
         assert isinstance(catalog, Catalog)
         assert isinstance(catalog.host, HostSettings)
+        # models/ dir is sibling to llmcli.example.toml; must have at least one model
         assert len(catalog.models) >= 1
         for name, spec in catalog.models.items():
             assert spec.name == name
             assert spec.port > 0
             assert spec.vram_gib > 0
             assert spec.engine in ("llamacpp", "llamacpp_tq3")
+
+    def test_load_models_dir_loaded(self, tmp_path: Path) -> None:
+        """Models defined in models/*.toml are merged into the catalog."""
+        # Arrange
+        toml_path = _write_toml(tmp_path, "[host]\nbind = \"0.0.0.0\"\n")
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        (models_dir / "my-model.toml").write_text(
+            'engine = "llamacpp"\nrepo = "Org/M-GGUF"\nfile = "m.gguf"\nport = 8099\nvram_gib = 6.0\n'
+        )
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        assert "my-model" in catalog.models
+        assert catalog.models["my-model"].engine == "llamacpp"
+        assert catalog.models["my-model"].port == 8099
+
+    def test_load_models_dir_overrides_inline(self, tmp_path: Path) -> None:
+        """A model file in models/ overrides an inline [models.*] entry of the same name."""
+        # Arrange — inline model with port 8091
+        toml_path = _write_toml(
+            tmp_path,
+            '[host]\nbind = "0.0.0.0"\n\n[models.m]\nengine = "llamacpp"\nrepo = "Org/M"\nfile = "m.gguf"\nport = 8091\nvram_gib = 6.0\n',
+        )
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        # models/ version has port 9999
+        (models_dir / "m.toml").write_text(
+            'engine = "llamacpp"\nrepo = "Org/M"\nfile = "m.gguf"\nport = 9999\nvram_gib = 6.0\n'
+        )
+        # Act
+        catalog = load(toml_path)
+        # Assert — models/ version wins
+        assert catalog.models["m"].port == 9999
 
     def test_load_missing_config_raises_friendly_error(self, tmp_path: Path) -> None:
         """load() raises FileNotFoundError (or similar) when config is absent."""

@@ -1,0 +1,9 @@
+# Qwen3.6-35B-A3B MoE — TurboQuant TQ3_4S mixed-quant (requires llama-server-tq3)
+# RTX 5070 Ti 16 GB: ~12.4 GiB VRAM. Default model for this host.
+engine   = "llamacpp_tq3"
+repo     = "YTan2000/Qwen3.6-35B-A3B-TQ3_4S"
+file     = "Qwen3.6-35B-A3B-TQ3_4S.gguf"
+mmproj   = "mmproj-BF16.gguf"
+port     = 8091
+vram_gib = 13
+flags    = ["-ngl", "99", "-c", "8192", "-ctk", "q4_0", "-ctv", "tq3_0", "-fa", "on", "--jinja"]
