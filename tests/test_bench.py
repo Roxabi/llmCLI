@@ -342,3 +342,145 @@ class TestRenderTableVramNone:
         assert table is not None
         assert "—" in output or "N/A" in output
 
+
+# ---------------------------------------------------------------------------
+# _aggregate() — mean and stddev correctness
+# ---------------------------------------------------------------------------
+
+
+class TestAggregation:
+    """_aggregate() must compute correct mean and std for a set of RunResults."""
+
+    @pytest.mark.no_gpu
+    def test_aggregation_mean_stddev(self) -> None:
+        """_aggregate returns correct tg_mean and positive tg_std for 3 varied results."""
+        from llmcli.cli.bench import _aggregate
+
+        # Arrange — 3 results at depth=0 with tg values 40, 42, 44
+        results = [
+            RunResult(depth=0, engine="llamacpp", ttft_ms=100.0, tg_tok_per_s=v, pp_tok_per_s=500.0, vram_peak_gib=None)
+            for v in (40.0, 42.0, 44.0)
+        ]
+
+        # Act
+        stats = _aggregate(results, depth=0)
+
+        # Assert
+        assert stats.tg_mean == pytest.approx(42.0)
+        assert stats.tg_std > 0
+
+
+# ---------------------------------------------------------------------------
+# render_table() — vLLM footnote caption
+# ---------------------------------------------------------------------------
+
+
+class TestRenderTableVllmFootnote:
+    """render_table() must include a vLLM scheduler footnote caption when engine='vllm'."""
+
+    @pytest.mark.no_gpu
+    def test_table_vllm_footnote(self) -> None:
+        """render_table adds a vLLM-specific caption when engine contains 'vllm'."""
+        # Arrange
+        results = [
+            RunResult(
+                depth=0,
+                engine="vllm",
+                ttft_ms=150.0,
+                tg_tok_per_s=60.0,
+                pp_tok_per_s=400.0,
+                vram_peak_gib=None,
+            )
+        ]
+
+        # Act
+        table = render_table(results, "vllm")
+
+        # Assert — caption must reference vLLM scheduler overhead
+        assert table.caption is not None
+        assert "vllm" in table.caption.lower() or "scheduler" in table.caption.lower()
+
+    @pytest.mark.no_gpu
+    def test_table_no_gpu_na_when_sampler_ran(self) -> None:
+        """render_table shows '—' in VRAM column when no GPU data is available."""
+        import io
+
+        from rich.console import Console
+
+        # Arrange — vram_peak_gib=None simulates no GPU / sampler returned nothing
+        results = [
+            RunResult(
+                depth=0,
+                engine="llamacpp",
+                ttft_ms=100.0,
+                tg_tok_per_s=80.0,
+                pp_tok_per_s=500.0,
+                vram_peak_gib=None,
+            )
+        ]
+
+        # Act
+        table = render_table(results, engine="llamacpp")
+        buf = io.StringIO()
+        Console(file=buf, width=200).print(table)
+        output = buf.getvalue()
+
+        # Assert — em dash placeholder present in rendered output
+        assert "—" in output
+
+
+# ---------------------------------------------------------------------------
+# bench CLI command — error paths
+# ---------------------------------------------------------------------------
+
+
+class TestBenchCliErrors:
+    """bench CLI command must exit code 1 for unknown model and port-in-use errors."""
+
+    @pytest.mark.no_gpu
+    def test_unknown_model_error(self) -> None:
+        """bench exits with code 1 and prints 'Unknown model' for a missing catalog entry."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from llmcli.cli import app
+        from llmcli.config import Catalog, HostSettings
+
+        # Arrange — empty model catalog
+        empty_catalog = Catalog(host=HostSettings(), models={})
+        runner = CliRunner()
+
+        # Act
+        with patch("llmcli.cli.config.load", return_value=empty_catalog):
+            result = runner.invoke(app, ["bench", "nonexistent"])
+
+        # Assert
+        assert result.exit_code == 1
+        assert "Unknown model" in (result.output + (result.stderr or ""))
+
+    @pytest.mark.no_gpu
+    def test_port_in_use_error(self) -> None:
+        """bench exits with code 1 and prints 'in use' when the model port is occupied."""
+        from unittest.mock import patch
+
+        from typer.testing import CliRunner
+
+        from llmcli.cli import app
+        from llmcli.config import Catalog, HostSettings, ModelSpec
+
+        # Arrange — catalog with one model; port is occupied (connect_ex returns 0)
+        spec = ModelSpec(name="test-model", engine="llamacpp", repo="org/repo", port=8091, vram_gib=5.0)
+        catalog = Catalog(host=HostSettings(), models={"test-model": spec})
+        runner = CliRunner()
+
+        # Act
+        with (
+            patch("llmcli.cli.config.load", return_value=catalog),
+            patch("socket.socket.connect_ex", return_value=0),
+        ):
+            result = runner.invoke(app, ["bench", "test-model"])
+
+        # Assert
+        assert result.exit_code == 1
+        assert "in use" in (result.output + (result.stderr or "")).lower()
