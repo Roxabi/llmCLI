@@ -76,6 +76,8 @@ class VRAMSampler:
 
     def start(self) -> None:
         """Start the background polling thread."""
+        if self._thread is not None and self._thread.is_alive():
+            raise RuntimeError("VRAMSampler already started")
         try:
             import pynvml  # type: ignore[import-untyped]
 

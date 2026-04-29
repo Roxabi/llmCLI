@@ -57,7 +57,6 @@ def run_single(
     base_url: str,
     config: BenchConfig,
     depth: int,
-    sampler: "object | None" = None,
 ) -> RunResult:
     """Run one benchmark iteration at the given KV cache depth.
 
@@ -85,6 +84,7 @@ def run_single(
     tg_tokens: int = 0
     t_start = time.perf_counter()
     t_first: float | None = None
+    t_last: float | None = None
 
     with httpx.Client(timeout=120.0) as client:
         with client.stream("POST", f"{base_url}/completions", json=payload) as resp:
@@ -101,12 +101,13 @@ def run_single(
                         if t_first is None:
                             t_first = time.perf_counter()
                             ttft_ms = (t_first - t_start) * 1000
-                        tg_tokens += 1
+                        else:
+                            tg_tokens += 1
+                            t_last = time.perf_counter()
                 except (json.JSONDecodeError, IndexError, KeyError):
                     continue
 
-    t_end = time.perf_counter()
-    tg_elapsed = t_end - (t_first or t_start)
+    tg_elapsed = (t_last or t_first or t_start) - (t_first or t_start)
     tg_tok_per_s = tg_tokens / tg_elapsed if tg_elapsed > 0 else 0.0
     pp_tok_per_s = config.pp_tokens / (ttft_ms / 1000) if ttft_ms > 0 else 0.0
 
@@ -149,7 +150,6 @@ def render_table(results: list[RunResult], engine: str) -> Table:
     rows = [_aggregate(results, d) for d in depths]
 
     is_vllm = "vllm" in engine
-    any_vram = any(r.vram_peak_gib is not None for r in results)
 
     table = Table(title=f"Benchmark results — {engine}", show_lines=False)
     table.add_column("depth", justify="right")
@@ -159,9 +159,7 @@ def render_table(results: list[RunResult], engine: str) -> Table:
     table.add_column("VRAM (GiB)", justify="right")
 
     for row in rows:
-        if not any_vram:
-            vram_str = "—"  # em dash: sampler ran but no GPU data
-        elif row.vram_peak is None:
+        if row.vram_peak is None:
             vram_str = "N/A"
         else:
             vram_str = f"{row.vram_peak:.1f}"
@@ -182,8 +180,13 @@ def render_table(results: list[RunResult], engine: str) -> Table:
             vram_str,
         )
 
+    vram_note = "VRAM = session peak (engine load + all runs)"
     if is_vllm:
-        table.caption = "¹ pp t/s estimated from TTFT (includes vLLM scheduler overhead)"
+        table.caption = (
+            f"¹ pp t/s estimated from TTFT (includes vLLM scheduler overhead) · {vram_note}"
+        )
+    else:
+        table.caption = vram_note
 
     return table
 
@@ -231,7 +234,12 @@ def bench(
             )
             raise typer.Exit(code=1)
 
-    engine = get_engine(spec)
+    try:
+        engine = get_engine(spec)
+    except ValueError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
     instance = None
     results: list[RunResult] = []
     sampler = VRAMSampler()
@@ -255,6 +263,9 @@ def bench(
                         vram_peak_gib=result.vram_peak_gib,
                     )
                     results.append(result)
+    except RuntimeError as e:
+        err_console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
     finally:
         peak = sampler.stop()
         if instance is not None:
