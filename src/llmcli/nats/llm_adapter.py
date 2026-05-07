@@ -110,6 +110,21 @@ class LlmNatsAdapter(NatsAdapterBase):
         payload = super().heartbeat_payload()
         payload["model_loaded"] = self._loaded_model
         payload["active_requests"] = self._active_requests()
+
+        from llmcli.gpu import probe_free_vram_gib
+
+        free_gib = probe_free_vram_gib()
+        payload["vram_free_mb"] = int(free_gib * 1024)
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            total_mb = pynvml.nvmlDeviceGetMemoryInfo(handle).total // (1024 * 1024)
+            pynvml.nvmlShutdown()
+            payload["vram_used_mb"] = max(0, int(total_mb) - payload["vram_free_mb"])
+        except Exception:  # noqa: BLE001
+            payload["vram_used_mb"] = 0
         return payload
 
     def _active_requests(self) -> int:
@@ -139,7 +154,7 @@ class LlmNatsAdapter(NatsAdapterBase):
             await self._err(
                 msg,
                 payload,
-                self._make_worker_error("worker.busy", "capacity_exceeded", retryable=True),
+                self._make_worker_error("worker.internal", "capacity_exceeded", retryable=True),
             )
             return
 
