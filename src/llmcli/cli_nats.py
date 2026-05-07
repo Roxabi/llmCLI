@@ -28,6 +28,13 @@ def nats_serve_llm(
         Optional[str],
         typer.Option("--socket-path", envvar="LLMCLI_SOCKET", help="Override daemon socket path."),
     ] = None,
+    litellm_url: Annotated[
+        str, typer.Option("--litellm-url", envvar="LLMCLI_LITELLM_URL", help="LiteLLM proxy base URL.")
+    ] = "http://localhost:4000/v1",
+    litellm_key: Annotated[
+        str,
+        typer.Option("--litellm-key", envvar="LLMCLI_LITELLM_API_KEY", help="LiteLLM API key (master or virtual)."),
+    ] = "",
 ) -> None:
     """Subscribe to lyra.llm.generate.request and serve LLM completions.
 
@@ -44,17 +51,29 @@ def nats_serve_llm(
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger("llmcli.nats-serve")
 
-    nats_url = os.environ.get("NATS_URL")
+    nats_url = os.environ.get("LLMCLI_NATS_URL") or os.environ.get("NATS_URL")
     if not nats_url:
-        log.error("NATS_URL env var is required")
+        log.error("LLMCLI_NATS_URL (or legacy NATS_URL) env var is required")
+        raise typer.Exit(2)
+
+    litellm_key = litellm_key.strip()
+    if not litellm_key:
+        log.error("LLMCLI_LITELLM_API_KEY env var (or --litellm-key) is required")
         raise typer.Exit(2)
 
     sock = Path(socket_path) if socket_path else None
 
-    log.info("Starting LLM NATS adapter: model=%s max_concurrent=%d", model, max_concurrent)
+    log.info(
+        "Starting LLM NATS adapter: model=%s max_concurrent=%d litellm_url=%s",
+        model,
+        max_concurrent,
+        litellm_url,
+    )
 
     adapter = LlmNatsAdapter(
         model_name=model,
+        litellm_url=litellm_url,
+        litellm_key=litellm_key,
         socket_path=sock,
         max_concurrent=max_concurrent,
         reject_when_full=reject_when_full,
