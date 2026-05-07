@@ -1,0 +1,15 @@
+name: publish
+on:
+  push:
+    branches: [staging]
+    tags: ['llmcli/v*']
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    uses: Roxabi/.github/.github/workflows/publish-container.yml@v1
+    with:
+      image_name: ghcr.io/roxabi/llmcli
+      release_please_component: llmcli
+      dockerfile_path: ./Dockerfile.llm
