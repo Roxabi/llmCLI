@@ -77,7 +77,6 @@ def adapter(monkeypatch) -> Iterator[LlmNatsAdapter]:
     )
     # State that _ensure_model would have set:
     a._loaded_model = "qwen3-8b"
-    a._port = 8091
 
     # Replace the real httpx client with an AsyncMock — tests configure responses.
     a._client = MagicMock()

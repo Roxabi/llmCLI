@@ -38,7 +38,7 @@ journalctl -u llmcli-nats-worker -n 50 --no-pager
 
 Look for log lines:
 - `Starting LLM NATS adapter: model=qwen3-8b max_concurrent=… litellm_url=http://litellm:4000/v1`
-- `llm_adapter: model=qwen3-8b port=8091 ready` (from `_ensure_model`)
+- `llm_adapter: model=qwen3-8b ready` (from `_ensure_model`)
 
 ## Smoke 1 — non-streaming
 
