@@ -1,0 +1,33 @@
+[Unit]
+Description=llmCLI NATS worker (canonical lyra.llm.generate.request)
+Wants=lyra-nats.service
+After=lyra-nats.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Container]
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli-nats-worker
+Network=roxabi.network
+Volume=llmcli-models:/home/llmcli/.cache/huggingface
+Secret=llmcli-nats-nkey,type=mount,target=/home/llmcli/.config/llmcli/nkeys/seed.seed,mode=0400,uid=1502,gid=1502
+Secret=llmcli-litellm-key,type=env,name=LLMCLI_LITELLM_API_KEY
+AddDevice=nvidia.com/gpu=all
+UserNS=keep-id:uid=1502,gid=1502
+Environment=LLMCLI_NATS_URL=nats://lyra-nats:4222
+Environment=LLMCLI_NATS_NKEY_PATH=/home/llmcli/.config/llmcli/nkeys/seed.seed
+Environment=LLMCLI_LITELLM_URL=http://litellm:4000/v1
+Exec=llmcli nats-serve llm --model qwen3-8b
+HealthCmd=pgrep -f "llmcli nats-serve"
+HealthInterval=30s
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=10
+RestartForceExitStatus=3 78
+
+[Install]
+WantedBy=default.target
