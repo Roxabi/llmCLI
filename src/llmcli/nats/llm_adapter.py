@@ -2,7 +2,8 @@
 
 Subscribes to the NATS queue group ``llm-workers``, receives LlmRequest
 messages, routes them through the local llmCLI daemon (SWAP + STATUS),
-then forwards to the running engine's OpenAI-compatible HTTP API.
+then forwards to the LiteLLM proxy (``LLMCLI_LITELLM_URL``) with Bearer
+auth, which owns catalog/aliasing/fallback.
 
 Streaming requests publish LlmChunkEvent messages to the reply inbox.
 Non-streaming requests publish a single LlmResponse.
@@ -32,7 +33,6 @@ from roxabi_contracts.llm.models import LlmChunkEvent, LlmResponse
 log = logging.getLogger(__name__)
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_STATUS_PORT_RE = re.compile(r"port=(\d+)")
 _STATUS_MODEL_RE = re.compile(r"model=(\S+)")
 
 
@@ -71,8 +71,9 @@ class LlmNatsAdapter(NatsAdapterBase):
         self._sem = asyncio.Semaphore(max_concurrent)
         self._reject_when_full = reject_when_full
         self._executor = ThreadPoolExecutor(max_workers=1)
-        self._port: int | None = None
         self._loaded_model: str | None = None
+        self._nvml_handle: object | None = None
+        self._nvml_init_failed = False
         self._client = httpx.AsyncClient(
             base_url=litellm_url,
             headers={"Authorization": f"Bearer {litellm_key}"},
@@ -84,7 +85,7 @@ class LlmNatsAdapter(NatsAdapterBase):
     # ------------------------------------------------------------------
 
     async def run(self, nats_url: str, stop: asyncio.Event | None = None) -> None:
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             self._executor, self._ensure_model
         )
         await super().run(nats_url, stop)
@@ -95,16 +96,31 @@ class LlmNatsAdapter(NatsAdapterBase):
         if not reply.startswith("OK"):
             raise RuntimeError(f"llmCLI daemon SWAP failed: {reply}")
         status = daemon_request("STATUS", socket_path=self._socket_path)
-        self._port = self._parse_port(status)
         self._loaded_model = self._parse_model(status)
-        log.info("llm_adapter: model=%s port=%d ready", self._loaded_model, self._port)
+        log.info("llm_adapter: model=%s ready", self._loaded_model)
 
     # ------------------------------------------------------------------
     # NatsAdapterBase overrides
     # ------------------------------------------------------------------
 
     def _extra_subjects(self) -> list[str]:
-        return [f"{self.subject}.{self._worker_id}"]
+        return []
+
+    def _get_nvml_handle(self) -> object | None:
+        """Lazy-init nvml device handle; cached for heartbeat reuse."""
+        if self._nvml_init_failed:
+            return None
+        if self._nvml_handle is not None:
+            return self._nvml_handle
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            return self._nvml_handle
+        except Exception:  # noqa: BLE001
+            self._nvml_init_failed = True
+            return None
 
     def heartbeat_payload(self) -> dict:
         payload = super().heartbeat_payload()
@@ -115,15 +131,16 @@ class LlmNatsAdapter(NatsAdapterBase):
 
         free_gib = probe_free_vram_gib()
         payload["vram_free_mb"] = int(free_gib * 1024)
-        try:
-            import pynvml  # type: ignore[import-untyped]
+        handle = self._get_nvml_handle()
+        if handle is not None:
+            try:
+                import pynvml  # type: ignore[import-untyped]
 
-            pynvml.nvmlInit()
-            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            total_mb = pynvml.nvmlDeviceGetMemoryInfo(handle).total // (1024 * 1024)
-            pynvml.nvmlShutdown()
-            payload["vram_used_mb"] = max(0, int(total_mb) - payload["vram_free_mb"])
-        except Exception:  # noqa: BLE001
+                total_mb = pynvml.nvmlDeviceGetMemoryInfo(handle).total // (1024 * 1024)
+                payload["vram_used_mb"] = max(0, int(total_mb) - payload["vram_free_mb"])
+            except Exception:  # noqa: BLE001
+                payload["vram_used_mb"] = 0
+        else:
             payload["vram_used_mb"] = 0
         return payload
 
@@ -132,6 +149,14 @@ class LlmNatsAdapter(NatsAdapterBase):
 
     async def _shutdown(self) -> None:
         try:
+            if self._nvml_handle is not None:
+                try:
+                    import pynvml  # type: ignore[import-untyped]
+
+                    pynvml.nvmlShutdown()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._nvml_handle = None
             await self._client.aclose()
         finally:
             await super()._shutdown()
@@ -211,10 +236,14 @@ class LlmNatsAdapter(NatsAdapterBase):
                 "worker.timeout", str(exc) or "upstream timeout", retryable=True
             )
         except httpx.HTTPStatusError as exc:
-            code = "upstream.5xx" if exc.response.status_code >= 500 else "upstream.unavailable"
-            we = self._make_worker_error(
-                code, f"upstream {exc.response.status_code}", retryable=True
-            )
+            status = exc.response.status_code
+            if status >= 500:
+                code, retry = "upstream.5xx", True
+            elif status == 429:
+                code, retry = "upstream.unavailable", True  # rate limited — retryable
+            else:
+                code, retry = "upstream.unavailable", False  # 4xx client error — non-retryable
+            we = self._make_worker_error(code, f"upstream {status}", retryable=retry)
         except httpx.ConnectError as exc:
             we = self._make_worker_error(
                 "upstream.unavailable", str(exc) or "upstream unavailable", retryable=True
@@ -262,6 +291,8 @@ class LlmNatsAdapter(NatsAdapterBase):
         body = {**body, "stream": True}
         nc = self._nc
 
+        chunk_count = 0
+        saw_done = False
         async with self._client.stream("POST", "/chat/completions", json=body) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -269,6 +300,7 @@ class LlmNatsAdapter(NatsAdapterBase):
                     continue
                 data = line[6:]
                 if data == "[DONE]":
+                    saw_done = True
                     break
                 try:
                     chunk_data = json.loads(data)
@@ -284,6 +316,10 @@ class LlmNatsAdapter(NatsAdapterBase):
                         msg.reply,
                         build_llm_chunk(payload, delta=delta).encode(),
                     )
+                    chunk_count += 1
+
+        if chunk_count == 0 and not saw_done:
+            raise json.JSONDecodeError("no parseable SSE chunks", "", 0)
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         if msg.reply:
@@ -312,13 +348,9 @@ class LlmNatsAdapter(NatsAdapterBase):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_port(status: str) -> int:
-        m = _STATUS_PORT_RE.search(status)
-        if not m or m.group(1) == "none":
-            raise RuntimeError(f"llmCLI STATUS did not return a port: {status!r}")
-        return int(m.group(1))
-
-    @staticmethod
-    def _parse_model(status: str) -> str:
+    def _parse_model(status: str) -> str | None:
         m = _STATUS_MODEL_RE.search(status)
-        return m.group(1) if m else "unknown"
+        if not m:
+            return None
+        val = m.group(1)
+        return None if val == "none" else val

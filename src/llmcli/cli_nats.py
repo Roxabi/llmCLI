@@ -56,6 +56,7 @@ def nats_serve_llm(
         log.error("LLMCLI_NATS_URL (or legacy NATS_URL) env var is required")
         raise typer.Exit(2)
 
+    litellm_key = litellm_key.strip()
     if not litellm_key:
         log.error("LLMCLI_LITELLM_API_KEY env var (or --litellm-key) is required")
         raise typer.Exit(2)
