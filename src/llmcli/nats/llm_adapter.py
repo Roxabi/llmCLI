@@ -142,10 +142,6 @@ class LlmNatsAdapter(NatsAdapterBase):
         await self.reply(msg, build_llm_response(safe_payload, ok=False, error=error).encode())
 
     async def _run_generation(self, msg, payload: dict, request_id: str) -> None:
-        if self._port is None:
-            await self._err(msg, payload, "model_unavailable")
-            return
-
         messages: list[dict] = payload.get("messages") or []
         system_prompt: str | None = payload.get("system_prompt")
         stream: bool = bool(payload.get("stream", True))
@@ -162,13 +158,12 @@ class LlmNatsAdapter(NatsAdapterBase):
             body["temperature"] = temperature
 
         t0 = time.monotonic()
-        base_url = f"http://localhost:{self._port}/v1"
 
         try:
             if stream:
-                await self._stream_response(msg, payload, body, base_url, t0)
+                await self._stream_response(msg, payload, body, t0)
             else:
-                await self._blocking_response(msg, payload, body, base_url, t0)
+                await self._blocking_response(msg, payload, body, t0)
         except Exception as exc:  # noqa: BLE001
             log.error("llm_adapter: generation error request_id=%s: %s", request_id, exc)
             if stream and msg.reply:
@@ -186,36 +181,33 @@ class LlmNatsAdapter(NatsAdapterBase):
                     pass
 
     async def _stream_response(
-        self, msg, payload: dict, body: dict, base_url: str, t0: float
+        self, msg, payload: dict, body: dict, t0: float
     ) -> None:
         body = {**body, "stream": True}
         nc = self._nc
 
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
-        ) as client:
-            async with client.stream("POST", f"{base_url}/chat/completions", json=body) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk_data = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    delta = (
-                        chunk_data.get("choices", [{}])[0]
-                        .get("delta", {})
-                        .get("content")
+        async with self._client.stream("POST", "/chat/completions", json=body) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk_data = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                delta = (
+                    chunk_data.get("choices", [{}])[0]
+                    .get("delta", {})
+                    .get("content")
+                )
+                if delta and msg.reply:
+                    await nc.publish(
+                        msg.reply,
+                        build_llm_chunk(payload, delta=delta).encode(),
                     )
-                    if delta and msg.reply:
-                        await nc.publish(
-                            msg.reply,
-                            build_llm_chunk(payload, delta=delta).encode(),
-                        )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         if msg.reply:
@@ -225,14 +217,13 @@ class LlmNatsAdapter(NatsAdapterBase):
             )
 
     async def _blocking_response(
-        self, msg, payload: dict, body: dict, base_url: str, t0: float
+        self, msg, payload: dict, body: dict, t0: float
     ) -> None:
         body = {**body, "stream": False}
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(f"{base_url}/chat/completions", json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            text: str = data["choices"][0]["message"]["content"]
+        resp = await self._client.post("/chat/completions", json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        text: str = data["choices"][0]["message"]["content"]
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         await self.reply(
