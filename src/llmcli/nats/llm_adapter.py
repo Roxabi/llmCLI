@@ -16,14 +16,18 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from roxabi_nats.adapter_base import NatsAdapterBase
 
 from llmcli.daemon import SOCKET_PATH, daemon_request
+from roxabi_contracts.envelope import CONTRACT_VERSION
+from roxabi_contracts.errors import WorkerError
 from roxabi_contracts.llm import SUBJECTS
 from roxabi_contracts.llm.builders import build_llm_chunk, build_llm_response
+from roxabi_contracts.llm.models import LlmChunkEvent, LlmResponse
 
 log = logging.getLogger(__name__)
 
@@ -124,22 +128,44 @@ class LlmNatsAdapter(NatsAdapterBase):
     async def handle(self, msg, payload: dict) -> None:
         request_id = str(payload.get("request_id", ""))
         if not _REQUEST_ID_RE.match(request_id):
-            await self._err(msg, payload, "malformed_request: invalid request_id")
+            await self._err(
+                msg,
+                payload,
+                self._make_worker_error("transport.parse", "invalid request_id", retryable=False),
+            )
             return
 
         if self._reject_when_full and self._sem.locked():
-            await self._err(msg, payload, "capacity_exceeded")
+            await self._err(
+                msg,
+                payload,
+                self._make_worker_error("worker.busy", "capacity_exceeded", retryable=True),
+            )
             return
 
         async with self._sem:
             await self._run_generation(msg, payload, request_id)
 
-    async def _err(self, msg, payload: dict, error: str) -> None:
+    @staticmethod
+    def _make_worker_error(code: str, msg: str, retryable: bool) -> WorkerError:
+        return WorkerError(code=code, message=msg, retryable=retryable)
+
+    async def _err(self, msg, payload: dict, worker_error: WorkerError) -> None:
         safe_payload = {
             "request_id": str(payload.get("request_id", "unknown"))[:128],
             "trace_id": payload.get("trace_id"),
         }
-        await self.reply(msg, build_llm_response(safe_payload, ok=False, error=error).encode())
+        # builders.py does not accept worker_error= — build envelope manually.
+        data = LlmResponse(
+            contract_version=CONTRACT_VERSION,
+            trace_id=safe_payload.get("trace_id") or safe_payload["request_id"],
+            issued_at=datetime.now(timezone.utc),
+            request_id=safe_payload["request_id"],
+            ok=False,
+            error=worker_error.message,
+            worker_error=worker_error,
+        ).model_dump_json(exclude_none=True).encode()
+        await self.reply(msg, data)
 
     async def _run_generation(self, msg, payload: dict, request_id: str) -> None:
         messages: list[dict] = payload.get("messages") or []
@@ -164,21 +190,56 @@ class LlmNatsAdapter(NatsAdapterBase):
                 await self._stream_response(msg, payload, body, t0)
             else:
                 await self._blocking_response(msg, payload, body, t0)
+            return
+        except httpx.TimeoutException as exc:
+            we = self._make_worker_error(
+                "worker.timeout", str(exc) or "upstream timeout", retryable=True
+            )
+        except httpx.HTTPStatusError as exc:
+            code = "upstream.5xx" if exc.response.status_code >= 500 else "upstream.unavailable"
+            we = self._make_worker_error(
+                code, f"upstream {exc.response.status_code}", retryable=True
+            )
+        except httpx.ConnectError as exc:
+            we = self._make_worker_error(
+                "upstream.unavailable", str(exc) or "upstream unavailable", retryable=True
+            )
+        except json.JSONDecodeError as exc:
+            we = self._make_worker_error(
+                "transport.parse", str(exc) or "invalid SSE chunk", retryable=False
+            )
         except Exception as exc:  # noqa: BLE001
-            log.error("llm_adapter: generation error request_id=%s: %s", request_id, exc)
-            if stream and msg.reply:
-                try:
-                    await self._nc.publish(
-                        msg.reply,
-                        build_llm_chunk(payload, done=True, is_error=True, error="generation_failed").encode(),
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-            else:
-                try:
-                    await self._err(msg, payload, "generation_failed")
-                except Exception:  # noqa: BLE001
-                    pass
+            we = self._make_worker_error(
+                "worker.internal", str(exc) or "internal error", retryable=False
+            )
+
+        log.error(
+            "llm_adapter: generation error request_id=%s code=%s: %s",
+            request_id,
+            we.code,
+            we.message,
+        )
+        if stream and msg.reply and self._nc:
+            try:
+                # builders.py does not accept worker_error= — build envelope manually.
+                data = LlmChunkEvent(
+                    contract_version=CONTRACT_VERSION,
+                    trace_id=payload.get("trace_id") or request_id,
+                    issued_at=datetime.now(timezone.utc),
+                    request_id=request_id,
+                    done=True,
+                    is_error=True,
+                    error=we.message,
+                    worker_error=we,
+                ).model_dump_json(exclude_none=True).encode()
+                await self._nc.publish(msg.reply, data)
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                await self._err(msg, payload, we)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _stream_response(
         self, msg, payload: dict, body: dict, t0: float
