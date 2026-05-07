@@ -43,6 +43,8 @@ class LlmNatsAdapter(NatsAdapterBase):
         self,
         *,
         model_name: str,
+        litellm_url: str,
+        litellm_key: str,
         socket_path: Path | None = None,
         max_concurrent: int = 4,
         reject_when_full: bool = False,
@@ -67,6 +69,11 @@ class LlmNatsAdapter(NatsAdapterBase):
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._port: int | None = None
         self._loaded_model: str | None = None
+        self._client = httpx.AsyncClient(
+            base_url=litellm_url,
+            headers={"Authorization": f"Bearer {litellm_key}"},
+            timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle — SWAP before subscribing
@@ -103,6 +110,12 @@ class LlmNatsAdapter(NatsAdapterBase):
 
     def _active_requests(self) -> int:
         return self._max_concurrent - self._sem._value  # type: ignore[attr-defined]
+
+    async def _shutdown(self) -> None:
+        try:
+            await self._client.aclose()
+        finally:
+            await super()._shutdown()
 
     # ------------------------------------------------------------------
     # Request handling
