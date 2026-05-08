@@ -112,7 +112,7 @@ class LlmNatsAdapter(NatsAdapterBase):
             status = daemon_request("STATUS", socket_path=self._socket_path)
             self._loaded_model = self._parse_model(status)
             log.info("llm_adapter: model=%s ready", self._loaded_model)
-        except (ConnectionError, FileNotFoundError) as exc:
+        except OSError as exc:
             # Socket disappeared mid-flight (daemon restarted, socket removed).
             # Log and continue — model is presumed loaded; don't crash the worker.
             log.info(
