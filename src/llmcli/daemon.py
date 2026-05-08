@@ -22,9 +22,7 @@ from .config import ModelSpec, check_vram_budget
 from .engine import Engine, EngineInstance
 
 SOCKET_PATH = Path(
-    os.environ.get(
-        "LLMCLI_SOCKET", Path.home() / ".local" / "state" / "llmcli" / "llmcli.sock"
-    )
+    os.environ.get("LLMCLI_SOCKET", Path.home() / ".local" / "state" / "llmcli" / "llmcli.sock")
 )
 
 
@@ -47,18 +45,28 @@ class Daemon:
     # Server
     # ------------------------------------------------------------------
 
-    # TODO(#24): daemon.serve currently relies on a manual SWAP via run_serve.sh; auto-start support tracked in #24.
-    def serve(self, model_name: str | None = None) -> None:  # noqa: ARG002
+    def serve(self, model_name: str | None = None) -> None:
         """Bind the AF_UNIX socket and accept commands in a loop.
 
+        If *model_name* is provided and non-empty, the model is loaded via the
+        existing SWAP logic before entering the accept loop.  Same-model fast-path
+        in _cmd_swap makes this idempotent (no error if already loaded).
+
         Args:
-            model_name: (reserved for T1.12 CLI) initial model to load — ignored in
-                        this phase; real engine start wired in T1.12.
+            model_name: Initial model to load on startup.  ``None`` or empty string
+                        starts the daemon with no model loaded (existing behaviour).
         """
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Remove stale socket from a previous run.
         self.socket_path.unlink(missing_ok=True)
+
+        # Load the requested model before entering the accept loop so callers
+        # don't need to issue a separate SWAP command after startup.
+        if model_name:
+            result = self._cmd_swap(model_name)
+            if result.startswith("ERR"):
+                raise RuntimeError(f"Failed to load model on startup: {result}")
 
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:

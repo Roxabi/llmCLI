@@ -32,9 +32,12 @@ SERVE_PID=$!
 SOCK="$HOME/.local/state/llmcli/llmcli.sock"
 for _ in $(seq 1 30); do [ -S "$SOCK" ] && break; sleep 1; done
 
-# --- kick off the default-model load ----------------------------------------
-# daemon.serve currently relies on a manual SWAP via run_serve.sh; auto-start
-# support tracked in #24.
+# --- defensive model-load confirmation ---------------------------------------
+# daemon.serve(model_name) now loads the model on startup (fix #24), so this
+# swap is normally a no-op ("OK already running <name>").  Kept as defensive
+# idempotence: if the daemon was started without --name (e.g. legacy invocation
+# or misconfiguration), this still ensures the model is loaded before the
+# readiness probe runs.  _cmd_swap returns OK on same-model — never raises.
 llmcli swap "${LLMCLI_DEFAULT_MODEL:-$(uv run python -c 'import llmcli.config as c; print(c.load().host.default_model)')}" || {
     echo "llmcli swap failed" >&2
     kill "$SERVE_PID" 2>/dev/null || true
