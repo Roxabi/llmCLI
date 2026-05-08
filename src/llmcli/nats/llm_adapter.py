@@ -104,6 +104,7 @@ class LlmNatsAdapter(NatsAdapterBase):
                 "skipping SWAP/STATUS (remote-worker mode, model assumed loaded externally)",
                 self._socket_path,
             )
+            self._loaded_model = self._model_name
             return
         try:
             reply = daemon_request(f"SWAP {self._model_name}", socket_path=self._socket_path)
@@ -120,6 +121,7 @@ class LlmNatsAdapter(NatsAdapterBase):
                 "skipping SWAP/STATUS, assuming model already loaded",
                 exc,
             )
+            self._loaded_model = self._model_name
 
     # ------------------------------------------------------------------
     # NatsAdapterBase overrides
