@@ -2,6 +2,7 @@
 set -e
 
 MODE="${1:-llm}"
+shift || true
 
 case "$MODE" in
     llm)
