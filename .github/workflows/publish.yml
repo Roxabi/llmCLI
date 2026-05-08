@@ -3,6 +3,7 @@ on:
   push:
     branches: [staging]
     tags: ['llmcli/v*']
+  workflow_dispatch:
 permissions:
   contents: read
   packages: write
