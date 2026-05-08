@@ -79,3 +79,65 @@ The `EnvironmentFile` value from the base unit is superseded by the inline
 `Environment=` in the drop-in for `LLMCLI_NATS_URL`. The base unit's
 `worker.env` file must still exist (even if empty) to avoid a systemd
 fail-fast, or remove the `EnvironmentFile=` line in a second drop-in stanza.
+
+## Gotchas / Production Notes
+
+These were discovered during the first live deploy on M₂ (roxabitower).
+
+### Tailnet IP vs FQDN inside container
+
+Container DNS cannot resolve `*.goose-logarithm.ts.net` from rootless podman
+(bridge or host). Use the M₁ tailnet IP directly in `LLMCLI_NATS_URL`:
+
+```bash
+# Find M₁ tailnet IP
+tailscale status | awk '/roxabituwer/{print $1}'
+```
+
+Then set `worker.env`:
+
+```
+LLMCLI_NATS_URL=nats://100.76.97.111:4222
+```
+
+### Smoke testing as hub user
+
+nats-cli's default ephemeral inbox prefix is `_INBOX.<id>` (uppercase). Hub
+ACL denies uppercase `_INBOX.*` subscribe. Use a lowercase prefix explicitly:
+
+```bash
+nats request --inbox-prefix=_inbox.hub lyra.llm.generate.request \
+  '{"request_id":"smoke01","messages":[{"role":"user","content":"ping"}],"max_tokens":256}'
+```
+
+Set `max_tokens >= 256` for Qwen3 reasoning models — lower values get consumed
+entirely by the thinking step, producing an empty `text` field in the response.
+
+### Lyra-side ACL prereq
+
+Hub `auth.conf` llm-worker block must include `_inbox.llmcli-llm.>` in the
+subscribe ACL (parallel to image-worker's `_inbox.image-worker.>`). Without it
+the worker connects but every reply attempt triggers a subscription violation on
+the hub.
+
+Tracked: Roxabi/lyra#1142. The worker will appear connected in `nats server
+report` but responses will never reach the caller.
+
+### Podman secret update flow
+
+When `auth.conf` changes on the hub, SIGHUP is not enough because lyra-nats
+reads credentials from a podman secret (baked at container start). Full cycle:
+
+```bash
+podman secret rm lyra-nats-auth
+podman secret create lyra-nats-auth ~/.lyra/nkeys/auth.conf
+systemctl --user restart lyra-nats.service
+```
+
+### Daemon socket optional
+
+`_ensure_model` now auto-skips the SWAP/STATUS pre-check when the daemon socket
+is absent at `~/.local/state/llmcli/llmcli.sock`. The worker logs one INFO line
+and proceeds, assuming the model is already loaded externally (recommended for
+pure remote-worker setups). Uncomment the `Volume=` line in the Quadlet only if
+you want daemon-driven hot-swap from the host.
