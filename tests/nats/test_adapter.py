@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from llmcli.nats.llm_adapter import LlmNatsAdapter
+
 
 def _decode_publish(call) -> dict:
     """Extract JSON body from a nc.publish(subject, data) call."""
@@ -187,6 +189,40 @@ async def test_error_generic_emits_worker_internal(
     body = _decode_publish(adapter._nc.publish.await_args_list[-1])
     assert body["worker_error"]["code"] == "worker.internal"
     assert body["worker_error"]["retryable"] is False
+
+
+# ---------- Slice 2 — _ensure_model daemon-optional skip paths (#28) ----------
+
+
+def test_ensure_model_socket_missing_sets_loaded_model(tmp_path):
+    """Socket absent → _loaded_model populated from _model_name (not None)."""
+    a = LlmNatsAdapter(
+        model_name="qwen3-8b",
+        litellm_url="http://litellm.test/v1",
+        litellm_key="test-key",
+        socket_path=tmp_path / "nonexistent.sock",
+    )
+    a._ensure_model()
+    assert a._loaded_model == "qwen3-8b"
+
+
+def test_ensure_model_oserror_sets_loaded_model(tmp_path, monkeypatch):
+    """OSError mid-connect → _loaded_model populated from _model_name (not None)."""
+    import llmcli.daemon as daemon_mod
+
+    sock = tmp_path / "fake.sock"
+    sock.touch()  # exists() returns True → enters try block
+
+    monkeypatch.setattr(daemon_mod, "daemon_request", MagicMock(side_effect=OSError("refused")))
+
+    a = LlmNatsAdapter(
+        model_name="qwen3-8b",
+        litellm_url="http://litellm.test/v1",
+        litellm_key="test-key",
+        socket_path=sock,
+    )
+    a._ensure_model()
+    assert a._loaded_model == "qwen3-8b"
 
 
 # ---------- Slice 2 — heartbeat enrichment ----------
