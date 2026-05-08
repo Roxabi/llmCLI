@@ -47,6 +47,7 @@ class Daemon:
     # Server
     # ------------------------------------------------------------------
 
+    # TODO(#24): daemon.serve currently relies on a manual SWAP via run_serve.sh; auto-start support tracked in #24.
     def serve(self, model_name: str | None = None) -> None:  # noqa: ARG002
         """Bind the AF_UNIX socket and accept commands in a loop.
 

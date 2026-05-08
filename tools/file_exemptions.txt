@@ -1,3 +1,4 @@
 # File size exemptions (≤300 lines per file)
 # Each entry must have a tracking issue.
 # Format: <path>  # <lines> lines — <issue> <description>
+src/llmcli/nats/llm_adapter.py  # 378 lines — #26 refactor(nats): split llm_adapter.py into generation mixin

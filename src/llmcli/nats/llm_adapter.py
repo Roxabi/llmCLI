@@ -91,13 +91,35 @@ class LlmNatsAdapter(NatsAdapterBase):
         await super().run(nats_url, stop)
 
     def _ensure_model(self) -> None:
-        """SWAP to configured model via daemon socket. Runs in executor."""
-        reply = daemon_request(f"SWAP {self._model_name}", socket_path=self._socket_path)
-        if not reply.startswith("OK"):
-            raise RuntimeError(f"llmCLI daemon SWAP failed: {reply}")
-        status = daemon_request("STATUS", socket_path=self._socket_path)
-        self._loaded_model = self._parse_model(status)
-        log.info("llm_adapter: model=%s ready", self._loaded_model)
+        """SWAP to configured model via daemon socket. Runs in executor.
+
+        When the socket is absent the worker is assumed to be running in
+        remote-worker mode where the model is loaded externally (e.g. by
+        llama-server started by the operator or supervisor). The SWAP/STATUS
+        pre-check is skipped so the container starts without a host daemon.
+        """
+        if not Path(self._socket_path).exists():
+            log.info(
+                "llm_adapter: daemon socket not found at %s — "
+                "skipping SWAP/STATUS (remote-worker mode, model assumed loaded externally)",
+                self._socket_path,
+            )
+            return
+        try:
+            reply = daemon_request(f"SWAP {self._model_name}", socket_path=self._socket_path)
+            if not reply.startswith("OK"):
+                raise RuntimeError(f"llmCLI daemon SWAP failed: {reply}")
+            status = daemon_request("STATUS", socket_path=self._socket_path)
+            self._loaded_model = self._parse_model(status)
+            log.info("llm_adapter: model=%s ready", self._loaded_model)
+        except OSError as exc:
+            # Socket disappeared mid-flight (daemon restarted, socket removed).
+            # Log and continue — model is presumed loaded; don't crash the worker.
+            log.info(
+                "llm_adapter: daemon unreachable (%s) — "
+                "skipping SWAP/STATUS, assuming model already loaded",
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # NatsAdapterBase overrides
