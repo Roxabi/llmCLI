@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+# ── build stage ──────────────────────────────────────────────────────────────
+ARG ML_BASE_TAG=cu128-py312-torch2.7.1
+FROM ghcr.io/roxabi/ml-base:${ML_BASE_TAG} AS builder
+
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1
+
+# Build deps: nkeys builds from source → need gcc + python headers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ python3-dev \
+        git ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Inherit torch from ml-base system site-packages (avoids duplicating ~5 GB CUDA libs).
+RUN uv venv --system-site-packages /app/.venv
+
+RUN UV_SKIP="--no-install-package torch \
+    --no-install-package torchaudio \
+    --no-install-package triton \
+    --no-install-package nvidia-cublas-cu12 \
+    --no-install-package nvidia-cuda-cupti-cu12 \
+    --no-install-package nvidia-cuda-nvrtc-cu12 \
+    --no-install-package nvidia-cuda-runtime-cu12 \
+    --no-install-package nvidia-cudnn-cu12 \
+    --no-install-package nvidia-cufft-cu12 \
+    --no-install-package nvidia-cufile-cu12 \
+    --no-install-package nvidia-curand-cu12 \
+    --no-install-package nvidia-cusolver-cu12 \
+    --no-install-package nvidia-cusparse-cu12 \
+    --no-install-package nvidia-cusparselt-cu12 \
+    --no-install-package nvidia-nccl-cu12 \
+    --no-install-package nvidia-nvjitlink-cu12 \
+    --no-install-package nvidia-nvtx-cu12 \
+    --no-install-package nvidia-nvshmem-cu12" && \
+    echo "$UV_SKIP" > /uv-skip-flags
+
+# Layer-cache: install deps before copying source.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --no-install-project \
+        $(cat /uv-skip-flags) \
+        --extra nats
+
+COPY src/ ./src/
+RUN uv sync --frozen --no-dev \
+        $(cat /uv-skip-flags) \
+        --extra nats
+
+COPY deploy/entrypoint-nats.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ── runtime stage ─────────────────────────────────────────────────────────────
+FROM ghcr.io/roxabi/ml-base:${ML_BASE_TAG} AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Fixed UID/GID 1502 — distinct from lyra (1500) and voicecli (1501).
+RUN groupadd -r -g 1502 llmcli && \
+    useradd -r -u 1502 -g llmcli -m -d /home/llmcli -s /bin/bash llmcli
+
+COPY --from=builder --chown=llmcli:llmcli /app /app
+COPY --from=builder /entrypoint.sh /entrypoint.sh
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    VIRTUAL_ENV="/app/.venv" \
+    PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+USER llmcli
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["llm"]

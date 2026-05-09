@@ -1,0 +1,51 @@
+---
+title: "feat: llmcli bench — local benchmark command"
+issue: 16
+status: approved
+tier: F-full
+date: 2026-04-29
+---
+
+## Problem
+
+There is no built-in way to measure and compare the performance of models and engine configurations in llmCLI. Evaluating a new model (quant variant, context size, flag tuning) requires running external tools manually (`llama-bench`, `vllm bench latency`, `nvidia-smi`) and correlating results by hand. This makes it slow and error-prone to answer questions like "is TQ3_4S faster than Q4_K_M at 32k context?" or "what's the VRAM cost of doubling the batch size?".
+
+The problem is timely because the model catalog is growing (TQ3_4S, Q5, future NVFP4 via vllm), and benchmarking discipline is needed before adding new entries or tuning flags.
+
+## Who
+
+- **Primary:** Mickael — benchmarking local models before promoting them to the catalog or sharing results
+- **Secondary:** Future: leaderboard submission (LocalMaxxing) — not in scope now
+
+## Constraints
+
+- `llamacpp` / `llamacpp_tq3` engines → must delegate to `llama-bench` binary (already available alongside `llama-server`)
+- `vllm` engine → must use `vllm bench latency` CLI (dev-only, RTX 5070 Ti)
+- VRAM measurement via `pynvml` (already a dep) or `nvidia-smi` subprocess
+- Must not start a full `llmcli serve` daemon — bench runs the binary directly with a temp invocation
+- Output must be a Rich table; no external reporting yet
+- `llama-bench` output format: TSV/markdown — needs parsing; supports `-d` flag for KV cache depth sweep
+- `vllm bench latency` output: stdout lines — needs parsing
+- Engine binaries may not be on PATH; must resolve via same logic as existing engines
+- Context sweep: test pp/tg at multiple KV depths (e.g. 0, 4096, 8192, 32768) — supported natively by `llama-bench -d` and `llama-benchy --depth`
+- llama-benchy (OpenAI-compatible API client) is a viable alternative impl path for API-based measurement across both engines
+
+## Out of Scope
+
+- LocalMaxxing leaderboard submission (future `--submit` flag)
+- Multi-turn / conversational quality benchmarks
+- Automated flag tuning (llama-optimus style)
+- Benchmarking prod host (roxabituwer) remotely
+- Vision/multimodal benchmarks
+
+## Complexity
+
+**Tier: F-full** — crosses two engine backends with different subprocess interfaces, requires output parsing, VRAM integration, and a new CLI surface with multiple config dimensions (model × prompt-len × gen-len × runs).
+
+Signals:
+- Two engine adapters with different binary CLIs and output formats
+- New `bench.py` module + engine-specific bench wrappers
+- VRAM sampling loop (async or subprocess polling)
+- Rich table aggregation across multiple runs
+- Unknown: how to cleanly resolve `llama-bench` binary path from engine config
+- Unknown: whether `vllm bench latency` is available as a subprocess or only as a Python import

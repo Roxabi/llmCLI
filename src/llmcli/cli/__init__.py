@@ -32,6 +32,14 @@ except ImportError:  # pragma: no cover
 
 # Import submodules AFTER the re-exports above are in place.
 # Each submodule calls `@app.command()` at import time, registering commands.
-from llmcli.cli import catalog, chat, lifecycle, proxy, swap  # noqa: F401
+from llmcli.cli import bench, catalog, chat, lifecycle, proxy, swap  # noqa: F401
+
+# NATS sub-app — registered lazily so nats-py is only required when used.
+try:
+    from llmcli.cli_nats import nats_app  # noqa: F401
+
+    app.add_typer(nats_app, name="nats-serve")
+except ImportError:  # pragma: no cover
+    pass
 
 __all__ = ["app"]

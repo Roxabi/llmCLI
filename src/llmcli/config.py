@@ -30,9 +30,9 @@ class ModelSpec:
     name: str
     engine: str
     repo: str
-    file: str
     port: int
     vram_gib: float
+    file: str = ""
     flags: list[str] = field(default_factory=list)
     mmproj: str | None = None
 
@@ -59,9 +59,22 @@ def load(path: Path = DEFAULT_CONFIG_PATH) -> Catalog:
     host_data = data.get("host", {})
     host = HostSettings(**{k: v for k, v in host_data.items() if k in HostSettings.__dataclass_fields__})
 
-    models = {
+    # Inline models — kept for backward compat (single-file configs still work)
+    models: dict[str, ModelSpec] = {
         name: _parse_model_spec(name, spec) for name, spec in data.get("models", {}).items()
     }
+
+    # Per-file models: <config_dir>/models/<name>.toml — take precedence over inline
+    models_dir = path.parent / "models"
+    if models_dir.is_dir():
+        for model_file in sorted(models_dir.glob("*.toml")):
+            name = model_file.stem
+            with model_file.open("rb") as f:
+                spec_data = tomllib.load(f)
+            if name in models:
+                logger.warning("Model '%s' defined both inline and in models/; using models/ version", name)
+            models[name] = _parse_model_spec(name, spec_data)
+
     return Catalog(host=host, models=models)
 
 
