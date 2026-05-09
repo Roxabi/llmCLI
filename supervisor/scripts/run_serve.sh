@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Wrapper for llmcli_serve daemon — sources .env, starts llmcli serve in the
-# background, blocks until the OpenAI endpoint is healthy, then re-foregrounds.
+# background, kicks the default model via SWAP, blocks until the OpenAI endpoint
+# is healthy, then re-foregrounds.
 # Supervisor sees exit 0 only after the engine is actually ready.
 #
 # Env vars:
-#   LLMCLI_PORT        — HTTP port to probe (default: 8091)
+#   LLMCLI_PORT          — HTTP port to probe (default: 8091)
 #   LLMCLI_PROBE_TIMEOUT — max seconds to wait for readiness (default: 180)
+#   LLMCLI_DEFAULT_MODEL — model name to load on startup; falls back to
+#                          catalog host.default_model if unset
 
 set -euo pipefail
 
@@ -24,6 +27,22 @@ PROBE_URL="http://localhost:${PORT}/health"
 # --- launch daemon in background ---------------------------------------------
 llmcli serve &
 SERVE_PID=$!
+
+# --- wait for AF_UNIX socket to appear --------------------------------------
+SOCK="$HOME/.local/state/llmcli/llmcli.sock"
+for _ in $(seq 1 30); do [ -S "$SOCK" ] && break; sleep 1; done
+
+# --- defensive model-load confirmation ---------------------------------------
+# daemon.serve(model_name) now loads the model on startup (fix #24), so this
+# swap is normally a no-op ("OK already running <name>").  Kept as defensive
+# idempotence: if the daemon was started without --name (e.g. legacy invocation
+# or misconfiguration), this still ensures the model is loaded before the
+# readiness probe runs.  _cmd_swap returns OK on same-model — never raises.
+llmcli swap "${LLMCLI_DEFAULT_MODEL:-$(uv run python -c 'import llmcli.config as c; print(c.load().host.default_model)')}" || {
+    echo "llmcli swap failed" >&2
+    kill "$SERVE_PID" 2>/dev/null || true
+    exit 1
+}
 
 # --- readiness probe loop ----------------------------------------------------
 elapsed=0

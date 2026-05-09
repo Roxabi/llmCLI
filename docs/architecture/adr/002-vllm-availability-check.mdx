@@ -1,0 +1,63 @@
+---
+title: "ADR-002: vLLM availability check — import guard vs binary check"
+description: Define the correct signal for checking whether vLLM is available before starting.
+---
+
+## Status
+
+Accepted
+
+## Context
+
+`VLLMEngine.start()` gates on `import vllm` to produce an actionable error when the
+optional dependency group is not installed. However, the actual runtime need is the
+`vllm serve` CLI binary on `$PATH`. The PyPI package and the CLI binary are co-installed
+via `uv sync --group vllm`, so the import is a reliable proxy in the intended install
+path. The question is whether to also add `shutil.which("vllm")` as an explicit binary
+check, or rely solely on the import.
+
+## Options Considered
+
+### Option A: `shutil.which("vllm")` binary check only
+- **Pros:** Tests the exact runtime dependency (the binary, not the library).
+- **Cons:** Does not catch partial installs where the binary exists but the Python
+  package is broken; `shutil.which` raises no ImportError so the error message path
+  changes; the binary name could differ across install methods (e.g. pip scripts vs
+  uv bin).
+
+### Option B: Keep import guard + inline comment explaining co-install assumption
+- **Pros:** Catches broken Python environments (missing wheels, wrong CUDA); produces
+  a clear, actionable error message with the exact fix (`uv sync --group vllm`);
+  minimal code; consistent with how optional heavy deps are guarded project-wide.
+- **Cons:** Does not detect the edge case where binary is missing but package is
+  installed (non-standard environment); comment is load-bearing knowledge.
+
+### Option C: Check both (import guard + `shutil.which`)
+- **Pros:** Catches all cases.
+- **Cons:** Over-engineered for a CLI tool with a single prescribed install path;
+  two different error messages for the same root cause confuses operators; adds
+  test surface for a case that does not arise in practice.
+
+## Decision
+
+Keep the import guard (Option B) and add an inline comment documenting the co-install
+assumption. The vllm optional group is the only supported install path; both the PyPI
+package and the `vllm serve` binary are always present together. A `shutil.which` check
+provides no additional safety within this constraint and complicates the error story.
+
+If a future install path decouples the binary from the package, revisit and implement
+Option C at that time.
+
+## Consequences
+
+### Positive
+- Error message remains clear and actionable for the supported install path.
+- Consistent guard pattern with other optional-dep engines in the project.
+
+### Negative
+- Non-standard environments (binary present, package absent or vice-versa) produce
+  a confusing error; acceptable given the single prescribed install method.
+
+### Neutral
+- The comment doubles as documentation of the co-install contract for future
+  maintainers considering Option C.

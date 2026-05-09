@@ -35,7 +35,7 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
-    "no_gpu: tests that do not require a GPU (safe for CI)",
+    "no_gpu: mark test as not requiring GPU hardware (safe to run without CUDA)",
     "gpu: tests that require a live GPU (skipped in CI)",
 ]
 
@@ -52,3 +52,15 @@ dev = [
 vllm = [
     "vllm>=0.6.0",
 ]
+
+[project.optional-dependencies]
+nats = [
+    "nats-py>=2.6,<3",
+    "nkeys>=0.1",
+    "roxabi-nats",
+    "roxabi-contracts",
+]
+
+[tool.uv.sources]
+roxabi-nats      = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }
+roxabi-contracts = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }

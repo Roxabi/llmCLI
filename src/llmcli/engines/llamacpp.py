@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import collections
 import os
 import signal
 import subprocess
@@ -11,15 +10,14 @@ import httpx
 
 from ..config import ModelSpec
 from ..engine import EngineInstance
+from ._common import _wait_ready
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
 _WAIT_TIMEOUT = 60  # seconds
-_WAIT_INTERVAL = 0.5  # seconds between health polls
 _STOP_GRACE = 5  # seconds to wait after SIGTERM before SIGKILL
-_STDERR_TAIL = 20  # lines of stderr to include in early-exit error
 
 
 def _hf_hub_root() -> Path:
@@ -31,65 +29,6 @@ def _hf_hub_root() -> Path:
 def _repo_to_dir_name(repo: str) -> str:
     """Convert 'Org/Repo' to 'models--Org--Repo' (HF hub convention)."""
     return "models--" + repo.replace("/", "--")
-
-
-def _wait_ready(
-    base_url: str,
-    proc: subprocess.Popen,  # type: ignore[type-arg]
-    timeout: float = _WAIT_TIMEOUT,
-) -> None:
-    """Poll <base_url>/health until a 2xx response, process exit, or timeout.
-
-    If the subprocess exits before becoming healthy, its stderr tail is
-    captured and a RuntimeError is raised immediately (avoiding a zombie).
-
-    Raises:
-        RuntimeError: on process early exit or health-poll timeout.
-    """
-    deadline = time.monotonic() + timeout
-    stderr_lines: collections.deque[str] = collections.deque(maxlen=_STDERR_TAIL)
-
-    while time.monotonic() < deadline:
-        # Check if the process exited before becoming ready
-        rc = proc.poll()
-        if rc is not None:
-            # Drain remaining stderr lines if piped
-            if proc.stderr is not None:
-                for raw in proc.stderr:
-                    line = raw.decode(errors="replace").rstrip()
-                    stderr_lines.append(line)
-            # Reap the zombie — process is already dead, wait() is instant
-            proc.wait()
-            tail = "\n".join(stderr_lines) if stderr_lines else "(no stderr captured)"
-            raise RuntimeError(
-                f"llama-server exited with code {rc} before becoming ready. "
-                f"Last {_STDERR_TAIL} lines of stderr:\n{tail}"
-            )
-
-        try:
-            resp = httpx.get(f"{base_url}/health", timeout=2.0)
-            if resp.status_code < 300:
-                return
-        except Exception:  # noqa: BLE001
-            pass
-
-        # Drain any stderr lines emitted so far (non-blocking read from line iterator)
-        if proc.stderr is not None:
-            # Read without blocking — stderr is a byte-stream, peek available data
-            try:
-                import select
-
-                ready, _, _ = select.select([proc.stderr], [], [], 0)
-                if ready:
-                    line = proc.stderr.readline()
-                    if line:
-                        stderr_lines.append(line.decode(errors="replace").rstrip())
-            except Exception:  # noqa: BLE001
-                pass
-
-        time.sleep(_WAIT_INTERVAL)
-
-    raise RuntimeError(f"llama-server did not become ready within {timeout}s ({base_url})")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +103,7 @@ class LlamaCppEngine:
         cmd = self._build_cmd(spec)
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)  # noqa: S603
         base_url = f"http://localhost:{spec.port}/v1"
-        _wait_ready(base_url, proc)
+        _wait_ready(base_url, proc, _WAIT_TIMEOUT, "llama-server")
         return EngineInstance(
             pid=proc.pid,
             port=spec.port,
