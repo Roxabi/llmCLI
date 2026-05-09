@@ -10,3 +10,8 @@ build/
 uv.lock.local
 
 .claude/dev-core.yml
+# CocoIndex Code (ccc)
+/.cocoindex_code/
+
+# dev-core worktree orchestration state
+.claude/worktrees/
