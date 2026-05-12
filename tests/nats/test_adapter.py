@@ -252,3 +252,68 @@ def test_heartbeat_payload_has_vram_keys(adapter, monkeypatch):
     assert p["vram_free_mb"] == int(10.0 * 1024)  # 10240
     assert p["vram_used_mb"] == 16 * 1024 - int(10.0 * 1024)  # 6144
     assert "worker_id" in p
+
+
+# ---------- Issue #20 — capacity, shutdown, nvml fallback ----------
+
+
+@pytest.mark.asyncio
+async def test_reject_when_full_emits_worker_internal_retryable(
+    adapter, fake_msg_factory, make_request_payload
+):
+    """Saturated semaphore + reject_when_full=True → worker.internal retryable."""
+    adapter._reject_when_full = True
+    # Saturate the semaphore so locked() returns True.
+    adapter._sem._value = 0  # type: ignore[attr-defined]
+
+    payload = make_request_payload(stream=False)
+    msg = fake_msg_factory(payload)
+
+    await adapter.handle(msg, payload)
+
+    # No HTTP call should have been made — request rejected before generation.
+    adapter._client.post.assert_not_awaited()
+    adapter._client.stream.assert_not_called()
+
+    assert adapter._nc.publish.await_count == 1
+    body = _decode_publish(adapter._nc.publish.await_args_list[0])
+    assert body["ok"] is False
+    assert body["worker_error"]["code"] == "worker.internal"
+    assert body["worker_error"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_http_client_and_resets_nvml(adapter, monkeypatch):
+    """_shutdown closes httpx client, calls nvmlShutdown, and resets cached handle."""
+    from roxabi_nats.adapter_base import NatsAdapterBase
+
+    base_shutdown = AsyncMock(return_value=None)
+    monkeypatch.setattr(NatsAdapterBase, "_shutdown", base_shutdown)
+
+    fake_pynvml = MagicMock()
+    fake_pynvml.nvmlShutdown.return_value = None
+    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+
+    adapter._nvml_handle = "fake-handle"
+
+    await adapter._shutdown()
+
+    assert adapter._client.aclose.await_count == 1
+    assert fake_pynvml.nvmlShutdown.call_count == 1
+    assert adapter._nvml_handle is None
+    assert base_shutdown.await_count == 1
+
+
+def test_heartbeat_vram_used_zero_when_nvml_unavailable(adapter, monkeypatch):
+    """nvml handle unavailable → vram_used_mb falls back to 0."""
+    import llmcli.gpu as gpu_mod
+
+    monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 8.0)
+    monkeypatch.setattr(
+        LlmNatsAdapter, "_get_nvml_handle", lambda self: None
+    )
+
+    p = adapter.heartbeat_payload()
+
+    assert p["vram_free_mb"] == int(8.0 * 1024)
+    assert p["vram_used_mb"] == 0
