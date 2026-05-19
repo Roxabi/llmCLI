@@ -1,0 +1,62 @@
+---
+title: feat(proxy) — add `llmcli proxy` catalog-driven LiteLLM portal on :18091
+issue: 40
+status: approved
+tier: F-lite
+date: 2026-05-19
+---
+
+## Problem
+
+The LiteLLM proxy lifecycle is currently split across two owners: **config** is written by `llmcli register-proxy` (sentinel block in `~/.litellm/config.yaml`) while **process** is owned by the lyra supervisor (`~/projects/lyra/deploy/supervisor/conf.d/litellm.conf`, bound to `:4000`). This split blocks the next infrastructure step — packaging llmcli as a Podman Quadlet (lyra/voiceCLI pattern) — because Quadlet needs a single command that owns both config generation and the process.
+
+Trigger: Step 3 of the central-portal plan. Phases 1 (#36/#37 — catalog cloud-passthrough with `engine="remote"`) and 2 (#38/#39 — `~/.roxabi/llmcli/` data-dir migration) are merged. With the catalog now the source of truth for both local and remote models, the proxy that exposes it should be owned by the same tool.
+
+Observable impact today: M₁ (cloud-only, no lyra supervisor required) cannot host a proxy without dragging in lyra's supervisor stack. M₂ requires manual coordination between two repos to add/remove models.
+
+## Who
+
+- **Primary:** Mickael (ops + dev) — needs Quadlet-deployable proxy on M₁ and M₂
+- **Secondary:**
+  - lyra (NATS satellite client of llmcli) — already migrated to `LLMCLI_API_KEY`
+  - Claude Code (HTTP client via `cccc/cccfk/ccd` aliases) — currently targets `:4000`; will move to `:18091` after Quadlet ships
+  - hermes (future Telegram bots) — will adopt `:18091` natively
+
+## Constraints
+
+- Reuse `litellm_config.build_block()` logic — do not duplicate catalog → YAML mapping
+- Preserve `machines = [...]` filtering semantics (same as `register-proxy`)
+- Process model: foreground subprocess (`Popen` + signal forwarding) — no daemonization, systemd/Quadlet handles supervision
+- Migration strategy: **Replace** the existing `:4000` instance (lyra supervisor retired in a follow-up ops task after Quadlet ships) — code itself is migration-strategy-agnostic
+- Python 3.12, Typer + Rich, no new heavy deps (litellm is already an install target)
+- Quality gates: file-length 300 LOC, folder-size 12 files, importlinter on pre-push
+
+## Out of Scope
+
+- Replacing the running `:4000` lyra-supervisor instance — separate ops task after Quadlet
+- `llmcli.container` Quadlet definition — Step 4 of the central-portal plan
+- Catalog support for `pass_through_endpoints` (e.g. Fireworks `/fw-anthropic`) — separate follow-up issue; for now passthroughs stay in a user-managed extras file or get manually patched in
+- Hot reload of catalog (SIGHUP) — explicit non-goal; restart on change
+- Authentication beyond a single `LLMCLI_API_KEY` (no virtual keys, no RBAC)
+- Moving `deepseek-v4-pro` (currently hand-written in `~/.litellm/config.yaml`) into the catalog — Step 5 of the plan
+- Deprecating `llmcli register-proxy` — stays functional this cycle, removed in a later one
+
+## Premise Validity
+
+**Success in 6 months:** `llmcli proxy` runs as a Quadlet on M₁ (cloud-only) and M₂ (mixed), bound to `:18091`, with `~/.roxabi/llmcli/` catalog as the single source of truth for all routed models. The `:4000` lyra-supervisor proxy is retired. NATS (lyra), HTTP/OpenAI (hermes), and HTTP/Anthropic (Claude Code) clients all transit through llmcli. Adding a new cloud model is a single TOML file under `models/` plus a `systemctl --user restart llmcli.service`.
+
+**Failure in 6 months:** Despite a "migration completed" announcement, either (a) at least one of M₁/M₂ still has a hand-managed `:4000` instance running because `llmcli proxy` couldn't be made reliable enough, OR (b) `≥ 1 prod incident per month` on M₁ where the proxy fails to start (signal-handling races, child reaping, port binding) and requires manual `podman` intervention. Either condition is a falsifiable rollback signal.
+
+**Simplest alternative:** Keep the `:4000` lyra-supervisor model. Change `llmcli register-proxy` to write the **entire** `~/.litellm/config.yaml` (not just a sentinel block) and let supervisor own the lifecycle as today.
+**Why not simplest:** (1) lyra-supervisor is a hard dependency for any proxy host, which is wasted complexity on M₁ (no lyra service runs there anyway). (2) Quadlet-ification requires a single binary that owns both config and process; supervisor-coupled flows don't translate cleanly into systemd units. (3) Two-repo coordination for every catalog change creates real friction (Step 1+2 of this plan already paid that cost twice).
+
+## Complexity
+
+**Tier: F-lite** — single new Typer command, reuses an existing generator (`build_block`), bounded process-lifecycle work (subprocess + signal forwarding), no new architecture or cross-domain coupling.
+
+Signals observed:
+- 1 new file in `src/llmcli/cli/proxy.py` (or extension of existing) + 1 helper refactor in `litellm_config.py` to return dict instead of YAML string
+- No frontend, no DB, no new external dependency
+- Test surface bounded: config dict assertions + subprocess signal mocks
+- Risk concentration: signal handling correctness (one well-trodden pattern) + startup validation (deterministic env-check)
+- Issue label: `enhancement` (no size label assigned; F-lite confirmed by scope review)
