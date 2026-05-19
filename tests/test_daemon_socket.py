@@ -14,6 +14,7 @@ Expected RED failures against current scaffold:
 
 All tests use tmp_path for socket path — no hardcoded /tmp.
 """
+
 from __future__ import annotations
 
 import socket
@@ -218,9 +219,7 @@ class TestStatusCommand:
         assert "qwen3-test" in response, (
             f"STATUS must include model name 'qwen3-test', got: {response!r}"
         )
-        assert "8091" in response, (
-            f"STATUS must include port '8091', got: {response!r}"
-        )
+        assert "8091" in response, f"STATUS must include port '8091', got: {response!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +262,7 @@ class TestShutdownCommand:
             bad_conn.settimeout(1.0)
             bad_conn.connect(str(sock_path))
             bad_conn.close()
-            pytest.fail(
-                "Expected connection refused after SHUTDOWN, but connect succeeded"
-            )
+            pytest.fail("Expected connection refused after SHUTDOWN, but connect succeeded")
         except (ConnectionRefusedError, FileNotFoundError, OSError):
             pass  # expected
 
@@ -316,9 +313,7 @@ class TestShutdownCommand:
             time.sleep(0.05)
 
         # Assert
-        assert not sock_path.exists(), (
-            "Daemon must remove the socket file after SHUTDOWN"
-        )
+        assert not sock_path.exists(), "Daemon must remove the socket file after SHUTDOWN"
 
 
 # ---------------------------------------------------------------------------
@@ -465,9 +460,7 @@ class TestUnknownCommand:
             conn.close()
 
         # Assert
-        assert response.startswith("ERR"), (
-            f"Empty command must return ERR line, got: {response!r}"
-        )
+        assert response.startswith("ERR"), f"Empty command must return ERR line, got: {response!r}"
 
 
 # ---------------------------------------------------------------------------

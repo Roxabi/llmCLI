@@ -32,11 +32,12 @@ forbidden_modules =
     llmcli.cli
 
 [importlinter:contract:base-isolation]
-name = base layer (config, engine) does not import higher layers
+name = base layer (config, engine, providers) does not import higher layers
 type = forbidden
 source_modules =
     llmcli.config
     llmcli.engine
+    llmcli.providers
 forbidden_modules =
     llmcli.cli
     llmcli.daemon

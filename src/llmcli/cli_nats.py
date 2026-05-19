@@ -10,7 +10,10 @@ nats_app = typer.Typer(help="NATS subscriber satellite for hub-driven LLM genera
 @nats_app.command("llm")
 def nats_serve_llm(
     model: Annotated[
-        str, typer.Option("--model", "-m", envvar="LLMCLI_MODEL", help="Catalog model name to load on startup.")
+        str,
+        typer.Option(
+            "--model", "-m", envvar="LLMCLI_MODEL", help="Catalog model name to load on startup."
+        ),
     ],
     max_concurrent: Annotated[
         int, typer.Option("--max-concurrent", envvar="LLMCLI_MAX_CONCURRENT")
@@ -29,11 +32,16 @@ def nats_serve_llm(
         typer.Option("--socket-path", envvar="LLMCLI_SOCKET", help="Override daemon socket path."),
     ] = None,
     litellm_url: Annotated[
-        str, typer.Option("--litellm-url", envvar="LLMCLI_LITELLM_URL", help="LiteLLM proxy base URL.")
+        str,
+        typer.Option("--litellm-url", envvar="LLMCLI_LITELLM_URL", help="LiteLLM proxy base URL."),
     ] = "http://localhost:4000/v1",
     litellm_key: Annotated[
         str,
-        typer.Option("--litellm-key", envvar="LLMCLI_LITELLM_API_KEY", help="LiteLLM API key (master or virtual)."),
+        typer.Option(
+            "--litellm-key",
+            envvar="LLMCLI_LITELLM_API_KEY",
+            help="LiteLLM API key (master or virtual).",
+        ),
     ] = "",
 ) -> None:
     """Subscribe to lyra.llm.generate.request and serve LLM completions.

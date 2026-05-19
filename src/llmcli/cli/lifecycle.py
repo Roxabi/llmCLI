@@ -31,16 +31,15 @@ def serve(
 
     if model_name not in catalog.models:
         available = ", ".join(catalog.models.keys())
-        err_console.print(
-            f"[red]Unknown model '{model_name}'. Available: {available}[/red]"
-        )
+        err_console.print(f"[red]Unknown model '{model_name}'. Available: {available}[/red]")
         raise typer.Exit(code=1)
 
     spec = catalog.models[model_name]
 
-    # VRAM guard (C2 / SC-13)
+    # VRAM guard (C2 / SC-13) — Remote specs need no local GPU; skip VRAM check.
     try:
-        _cli.config.check_vram_budget(spec, catalog.host)
+        if spec.engine != "remote":
+            _cli.config.check_vram_budget(spec, catalog.host)
     except ValueError as exc:
         err_console.print(
             Panel(

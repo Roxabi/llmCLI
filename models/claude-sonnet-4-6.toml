@@ -1,0 +1,7 @@
+# Claude Sonnet 4.6 via Anthropic API — cloud passthrough, Anthropic-native protocol.
+# Requires ANTHROPIC_API_KEY env var on the host.
+engine   = "remote"
+provider = "anthropic"
+model_id = "claude-sonnet-4-6"
+protocol = "anthropic"
+machines = []

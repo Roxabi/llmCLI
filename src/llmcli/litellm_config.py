@@ -1,32 +1,68 @@
 from __future__ import annotations
 
+import socket
 import subprocess
 from pathlib import Path
 
 import yaml
 
 from .config import Catalog
+from .providers import PROVIDERS
 
 LITELLM_CONFIG = Path.home() / ".litellm" / "config.yaml"
 BLOCK_START = "# --- llmCLI managed block start ---"
 BLOCK_END = "# --- llmCLI managed block end ---"
 
 
-def build_block(catalog: Catalog, public_base_url: str) -> str:
+def build_block(catalog: Catalog, public_base_url: str, *, hostname: str | None = None) -> str:
     """Build a namespaced model_list block for the proxy config.
 
     Args:
         catalog: Loaded catalog with host settings and model specs.
         public_base_url: Base URL for the host (e.g. 'http://roxabitower.lan').
+        hostname: Override hostname for machine filter (default: socket.gethostname()).
 
     Returns:
         YAML string wrapped in llmCLI sentinel comments.
     """
+    effective_hostname = hostname if hostname is not None else socket.gethostname()
     api_key_ref = f"os.environ/{catalog.host.api_key_env}"
 
-    if catalog.models:
-        model_list = [
-            {
+    model_list = []
+    for name, spec in catalog.models.items():
+        # Per-machine filter: skip if machines is set and hostname not in list
+        if spec.machines and effective_hostname not in spec.machines:
+            continue
+
+        if spec.engine == "remote":
+            provider_cfg = PROVIDERS.get(spec.provider)
+            if provider_cfg is None:
+                raise ValueError(
+                    f"Unknown provider '{spec.provider}' in spec '{name}'. "
+                    f"Valid providers: {sorted(PROVIDERS.keys())}."
+                )
+            provider = provider_cfg
+            if spec.protocol == "anthropic":
+                entry = {
+                    "model_name": name,
+                    "litellm_params": {
+                        "model": f"anthropic/{spec.model_id}",
+                        "api_key": f"os.environ/{provider.key_env}",
+                    },
+                }
+            else:
+                # protocol == "openai"
+                entry = {
+                    "model_name": name,
+                    "litellm_params": {
+                        "model": f"openai/{spec.model_id}",
+                        "api_base": provider.api_base,
+                        "api_key": f"os.environ/{provider.key_env}",
+                    },
+                }
+        else:
+            # Local engines: llamacpp, llamacpp_tq3, vllm
+            entry = {
                 "model_name": name,
                 "litellm_params": {
                     "model": f"openai/{name}",
@@ -34,9 +70,12 @@ def build_block(catalog: Catalog, public_base_url: str) -> str:
                     "api_key": api_key_ref,
                 },
             }
-            for name, spec in catalog.models.items()
-        ]
-        inner = yaml.safe_dump({"model_list": model_list}, default_flow_style=False, sort_keys=False)
+        model_list.append(entry)
+
+    if model_list:
+        inner = yaml.safe_dump(
+            {"model_list": model_list}, default_flow_style=False, sort_keys=False
+        )
     else:
         inner = yaml.safe_dump({"model_list": None}, default_flow_style=False)
 

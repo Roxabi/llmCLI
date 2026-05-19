@@ -7,3 +7,4 @@ mmproj   = "mmproj-BF16.gguf"
 port     = 8091
 vram_gib = 13
 flags    = ["-ngl", "99", "-c", "8192", "-ctk", "q4_0", "-ctv", "tq3_0", "-fa", "on", "--jinja"]
+machines = ["roxabitower"]

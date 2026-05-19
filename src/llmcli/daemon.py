@@ -163,6 +163,12 @@ class Daemon:
             "llamacpp_tq3": LlamaCppTQ3Engine,
             "vllm": VLLMEngine,
         }
+        if spec.engine == "remote":
+            raise ValueError(
+                f"Model '{spec.name}' uses engine='remote' — cloud-passthrough models are "
+                f"managed by LiteLLM, not the local daemon. Use 'llmcli register-proxy' to "
+                f"expose this model via the proxy."
+            )
         engine_cls = _ENGINE_REGISTRY.get(spec.engine)
         if engine_cls is None:
             raise ValueError(
@@ -183,7 +189,8 @@ class Daemon:
         spec = self.catalog.models[name]
 
         # VRAM budget guard (C2) — reject before touching current engine
-        if self.catalog is not None:
+        # Remote specs need no local GPU; skip VRAM check.
+        if self.catalog is not None and spec.engine != "remote":
             try:
                 check_vram_budget(spec, self.catalog.host)
             except ValueError as exc:
