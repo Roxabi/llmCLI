@@ -29,7 +29,7 @@ rm /tmp/llm-worker.seed
 printf 'sk-...' | podman secret create llmcli-litellm-key -
 
 # 4. Write the worker env file (provides LLMCLI_NATS_URL to the container)
-mkdir -p ~/.roxabi/llmcli
+install -d -m 700 ~/.roxabi/llmcli
 printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-fqdn>:4222\n' \
     > ~/.roxabi/llmcli/worker.env
 chmod 600 ~/.roxabi/llmcli/worker.env
@@ -79,6 +79,22 @@ The `EnvironmentFile` value from the base unit is superseded by the inline
 `Environment=` in the drop-in for `LLMCLI_NATS_URL`. The base unit's
 `worker.env` file must still exist (even if empty) to avoid a systemd
 fail-fast, or remove the `EnvironmentFile=` line in a second drop-in stanza.
+
+## Migration from ~/.config/llmcli/
+
+If you deployed an older version of the worker that read from `~/.config/llmcli/`, run this
+sequence on the worker host to move to the new path:
+
+```bash
+systemctl --user stop llmcli-nats-worker
+mv ~/.config/llmcli ~/.roxabi/llmcli
+systemctl --user daemon-reload
+systemctl --user start llmcli-nats-worker
+systemctl --user status llmcli-nats-worker  # verify
+```
+
+If you cannot migrate immediately, set `LLMCLI_CONFIG=~/.config/llmcli/llmcli.toml` in
+`~/.roxabi/llmcli/worker.env` to pin the old path explicitly.
 
 ## Gotchas / Production Notes
 

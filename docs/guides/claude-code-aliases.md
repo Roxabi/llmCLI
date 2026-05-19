@@ -174,7 +174,7 @@ cat ~/.roxabi/llmcli/api_key
 If the file is missing, create it:
 
 ```bash
-mkdir -p ~/.roxabi/llmcli
+install -d -m 700 ~/.roxabi/llmcli
 echo "your-key-here" > ~/.roxabi/llmcli/api_key
 chmod 600 ~/.roxabi/llmcli/api_key
 ```

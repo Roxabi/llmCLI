@@ -74,7 +74,7 @@ if installed). No extra setup needed — `llmcli pull` downloads into this locat
 ### 2.5 API key
 
 ```bash
-mkdir -p ~/.roxabi/llmcli
+install -d -m 700 ~/.roxabi/llmcli
 echo "your-api-key-here" > ~/.roxabi/llmcli/api_key
 chmod 600 ~/.roxabi/llmcli/api_key
 ```
@@ -304,7 +304,30 @@ prod catalog without updating `vram_budget_gib`.
 
 ---
 
-## 9. Troubleshooting
+## 9. Migration from ~/.config/llmcli/
+
+If you deployed an older version of llmCLI that stored its catalog at `~/.config/llmcli/`,
+run this sequence on the prod host to move to the new Roxabi data-dir path:
+
+```bash
+make llm stop
+mv ~/.config/llmcli ~/.roxabi/llmcli
+make llm start
+llmcli list  # verify catalog loads
+```
+
+If you cannot migrate immediately, set `LLMCLI_CONFIG=~/.config/llmcli/llmcli.toml` in
+your supervisor env (e.g. in `~/projects/llmCLI/.env`) to pin the old path explicitly.
+
+### Environment variable reference
+
+| Variable | Description |
+|---|---|
+| `LLMCLI_CONFIG` | Path to llmcli.toml. Defaults to `~/.roxabi/llmcli/llmcli.toml`. Useful as a migration escape hatch or for multi-tenant catalogs. |
+
+---
+
+## 10. Troubleshooting
 
 ### Stale socket after crash
 

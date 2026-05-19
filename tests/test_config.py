@@ -73,6 +73,38 @@ OVERSIZED_TOML = """\
 
 
 # ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+
+class TestModuleConstants:
+    def test_default_config_path_matches_roxabi_convention(self) -> None:
+        """DEFAULT_CONFIG_PATH resolves to ~/.roxabi/llmcli/llmcli.toml absent override.
+
+        Verified in a subprocess to avoid module-reload side-effects on other tests.
+        """
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; os.environ.pop('LLMCLI_CONFIG', None); "
+                    "import llmcli.config as cfg; from pathlib import Path; "
+                    "expected = Path.home() / '.roxabi' / 'llmcli' / 'llmcli.toml'; "
+                    "assert cfg.DEFAULT_CONFIG_PATH == expected, "
+                    "f'Got {cfg.DEFAULT_CONFIG_PATH!r}, expected {expected!r}'"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
 # SC-1 / C10 — catalog load
 # ---------------------------------------------------------------------------
 
