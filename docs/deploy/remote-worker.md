@@ -29,10 +29,10 @@ rm /tmp/llm-worker.seed
 printf 'sk-...' | podman secret create llmcli-litellm-key -
 
 # 4. Write the worker env file (provides LLMCLI_NATS_URL to the container)
-mkdir -p ~/.config/llmcli
+mkdir -p ~/.roxabi/llmcli
 printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-fqdn>:4222\n' \
-    > ~/.config/llmcli/worker.env
-chmod 600 ~/.config/llmcli/worker.env
+    > ~/.roxabi/llmcli/worker.env
+chmod 600 ~/.roxabi/llmcli/worker.env
 
 # 5. Install the Quadlet unit
 mkdir -p ~/.config/containers/systemd

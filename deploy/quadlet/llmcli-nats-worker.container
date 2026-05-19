@@ -18,7 +18,7 @@ Secret=llmcli-nats-nkey,type=mount,target=/home/llmcli/.config/llmcli/nkeys/seed
 Secret=llmcli-litellm-key,type=env,target=LLMCLI_LITELLM_API_KEY
 AddDevice=nvidia.com/gpu=all
 UserNS=keep-id:uid=1502,gid=1502
-EnvironmentFile=%h/.config/llmcli/worker.env
+EnvironmentFile=%h/.roxabi/llmcli/worker.env
 Environment=LLMCLI_NATS_NKEY_PATH=/home/llmcli/.config/llmcli/nkeys/seed.seed
 Environment=NATS_NKEY_SEED_PATH=/home/llmcli/.config/llmcli/nkeys/seed.seed
 Environment=LLMCLI_LITELLM_URL=http://localhost:4000/v1

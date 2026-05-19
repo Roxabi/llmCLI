@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG_PATH = Path(
-    os.environ.get("LLMCLI_CONFIG", Path.home() / ".config" / "llmcli" / "llmcli.toml")
+    os.environ.get("LLMCLI_CONFIG", Path.home() / ".roxabi" / "llmcli" / "llmcli.toml")
 )
 
 _VALID_PROTOCOLS = frozenset({"openai", "anthropic"})
