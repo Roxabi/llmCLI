@@ -31,9 +31,7 @@ def serve(
 
     if model_name not in catalog.models:
         available = ", ".join(catalog.models.keys())
-        err_console.print(
-            f"[red]Unknown model '{model_name}'. Available: {available}[/red]"
-        )
+        err_console.print(f"[red]Unknown model '{model_name}'. Available: {available}[/red]")
         raise typer.Exit(code=1)
 
     spec = catalog.models[model_name]

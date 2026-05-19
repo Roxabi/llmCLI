@@ -34,9 +34,7 @@ def register_proxy(
     hostname = socket.gethostname()
 
     # 3. Resolve config path: --config flag > env var > default
-    resolved_path = (
-        Path(config_path) if config_path else Path.home() / ".litellm" / "config.yaml"
-    )
+    resolved_path = Path(config_path) if config_path else Path.home() / ".litellm" / "config.yaml"
 
     # 4. Friendly error when parent directory doesn't exist or is not writable
     if not resolved_path.parent.exists():

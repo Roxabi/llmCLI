@@ -1,4 +1,5 @@
 """Unit tests for LlmNatsAdapter — issue #12."""
+
 from __future__ import annotations
 
 import json
@@ -45,9 +46,7 @@ async def test_blocking_reply_shape(adapter, fake_msg_factory, make_request_payl
 
     fake_resp = MagicMock()
     fake_resp.raise_for_status = MagicMock()
-    fake_resp.json = MagicMock(return_value={
-        "choices": [{"message": {"content": "hello world"}}]
-    })
+    fake_resp.json = MagicMock(return_value={"choices": [{"message": {"content": "hello world"}}]})
     adapter._client.post.return_value = fake_resp
 
     await adapter.handle(msg, payload)
@@ -94,9 +93,7 @@ async def test_stream_chunks_and_terminator(
 
 
 @pytest.mark.asyncio
-async def test_error_timeout_emits_worker_timeout(
-    adapter, fake_msg_factory, make_request_payload
-):
+async def test_error_timeout_emits_worker_timeout(adapter, fake_msg_factory, make_request_payload):
     payload = make_request_payload(stream=False)
     msg = fake_msg_factory(payload)
     adapter._client.post.side_effect = httpx.TimeoutException("upstream timeout")
@@ -110,9 +107,7 @@ async def test_error_timeout_emits_worker_timeout(
 
 
 @pytest.mark.asyncio
-async def test_error_5xx_emits_upstream_5xx(
-    adapter, fake_msg_factory, make_request_payload
-):
+async def test_error_5xx_emits_upstream_5xx(adapter, fake_msg_factory, make_request_payload):
     payload = make_request_payload(stream=False)
     msg = fake_msg_factory(payload)
 
@@ -145,9 +140,7 @@ async def test_error_connect_emits_upstream_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_error_parse_emits_transport_parse(
-    adapter, fake_msg_factory, make_request_payload
-):
+async def test_error_parse_emits_transport_parse(adapter, fake_msg_factory, make_request_payload):
     payload = make_request_payload(stream=True)
     msg = fake_msg_factory(payload)
 
@@ -177,9 +170,7 @@ async def test_error_parse_emits_transport_parse(
 
 
 @pytest.mark.asyncio
-async def test_error_generic_emits_worker_internal(
-    adapter, fake_msg_factory, make_request_payload
-):
+async def test_error_generic_emits_worker_internal(adapter, fake_msg_factory, make_request_payload):
     payload = make_request_payload(stream=False)
     msg = fake_msg_factory(payload)
     adapter._client.post.side_effect = RuntimeError("kaboom")
@@ -317,9 +308,7 @@ def test_heartbeat_vram_used_zero_when_nvml_unavailable(adapter, monkeypatch):
     import llmcli.gpu as gpu_mod
 
     monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 8.0)
-    monkeypatch.setattr(
-        LlmNatsAdapter, "_get_nvml_handle", lambda self: None
-    )
+    monkeypatch.setattr(LlmNatsAdapter, "_get_nvml_handle", lambda self: None)
 
     p = adapter.heartbeat_payload()
 
@@ -332,9 +321,7 @@ def test_heartbeat_vram_used_zero_when_nvml_query_fails(adapter, monkeypatch):
     import llmcli.gpu as gpu_mod
 
     monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 8.0)
-    monkeypatch.setattr(
-        LlmNatsAdapter, "_get_nvml_handle", lambda self: "fake-handle"
-    )
+    monkeypatch.setattr(LlmNatsAdapter, "_get_nvml_handle", lambda self: "fake-handle")
 
     fake_pynvml = MagicMock()
     fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = RuntimeError("nvml query failed")

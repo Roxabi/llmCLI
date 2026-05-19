@@ -16,7 +16,9 @@ from ._common import _wait_ready
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_WAIT_TIMEOUT = 180  # vLLM needs longer: safetensors load + NVFP4 JIT compile can take 60–120 s on first start
+_WAIT_TIMEOUT = (
+    180  # vLLM needs longer: safetensors load + NVFP4 JIT compile can take 60–120 s on first start
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +35,9 @@ class VLLMEngine:
 
     def _build_cmd(self, spec: ModelSpec) -> list[str]:
         """Build the subprocess argument list for `vllm serve`."""
-        return ["vllm", "serve", spec.repo, "--port", str(spec.port), "--host", "0.0.0.0"] + list(spec.flags)
+        return ["vllm", "serve", spec.repo, "--port", str(spec.port), "--host", "0.0.0.0"] + list(
+            spec.flags
+        )
 
     # ------------------------------------------------------------------
     # Engine Protocol

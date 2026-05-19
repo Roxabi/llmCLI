@@ -2,6 +2,7 @@
 
 All tests are @pytest.mark.no_gpu because none invoke a real binary.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -21,9 +22,9 @@ from llmcli.engines.llamacpp_tq3 import LlamaCppTQ3Engine
 def test_is_subclass_of_llamacpp_engine() -> None:
     """LlamaCppTQ3Engine must inherit from LlamaCppEngine to reuse cmd-building logic."""
     # Arrange / Act / Assert — pure reflection, no instantiation needed
-    assert issubclass(
-        LlamaCppTQ3Engine, LlamaCppEngine
-    ), "LlamaCppTQ3Engine must be a subclass of LlamaCppEngine"
+    assert issubclass(LlamaCppTQ3Engine, LlamaCppEngine), (
+        "LlamaCppTQ3Engine must be a subclass of LlamaCppEngine"
+    )
 
 
 # ---------------------------------------------------------------------------

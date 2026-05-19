@@ -9,6 +9,7 @@ Expected RED failures against current scaffold:
 - EngineInstance lacks 'base_url' field / property
 - Engine Protocol still exposes 'base_url' (must be removed)
 """
+
 from __future__ import annotations
 
 import inspect

@@ -17,8 +17,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+from unittest.mock import patch
+
 from llmcli.config import Catalog, HostSettings, ModelSpec
 from llmcli.litellm_config import BLOCK_END, BLOCK_START, build_block, write_block
+from llmcli.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +87,7 @@ def _make_catalog(models: dict[str, dict] | None = None) -> Catalog:
                 vram_gib=12.4,
             ),
         }
-    model_specs = {
-        name: ModelSpec(name=name, **spec) for name, spec in models.items()
-    }
+    model_specs = {name: ModelSpec(name=name, **spec) for name, spec in models.items()}
     return Catalog(host=host, models=model_specs)
 
 
@@ -146,9 +147,7 @@ class TestBuildBlock:
         """Every model in catalog.models appears as a model_name entry."""
         # Arrange / Act
         result = build_block(catalog, PUBLIC_BASE_URL)
-        parsed = yaml.safe_load(
-            result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
-        )
+        parsed = yaml.safe_load(result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip())
         # Assert
         names_in_block = {entry["model_name"] for entry in parsed["model_list"]}
         assert names_in_block == set(catalog.models.keys())
@@ -157,9 +156,7 @@ class TestBuildBlock:
         """Each entry's litellm_params.model is prefixed with 'openai/'."""
         # Arrange / Act
         result = build_block(catalog, PUBLIC_BASE_URL)
-        parsed = yaml.safe_load(
-            result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
-        )
+        parsed = yaml.safe_load(result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip())
         # Assert
         for entry in parsed["model_list"]:
             assert entry["litellm_params"]["model"].startswith("openai/")
@@ -169,9 +166,7 @@ class TestBuildBlock:
         """api_base is '{public_base_url}:{model.port}/v1' for each model."""
         # Arrange / Act
         result = build_block(catalog, PUBLIC_BASE_URL)
-        parsed = yaml.safe_load(
-            result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
-        )
+        parsed = yaml.safe_load(result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip())
         # Assert
         by_name = {e["model_name"]: e for e in parsed["model_list"]}
         for name, spec in catalog.models.items():
@@ -182,9 +177,7 @@ class TestBuildBlock:
         """api_key is 'os.environ/<api_key_env>' from HostSettings."""
         # Arrange / Act
         result = build_block(catalog, PUBLIC_BASE_URL)
-        parsed = yaml.safe_load(
-            result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
-        )
+        parsed = yaml.safe_load(result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip())
         # Assert
         expected_key = f"os.environ/{catalog.host.api_key_env}"
         for entry in parsed["model_list"]:
@@ -430,3 +423,234 @@ class TestWriteBlockMalformed:
         # Act / Assert
         with pytest.raises((ValueError, RuntimeError, OSError)):
             write_block(block, config_path)
+
+
+# ---------------------------------------------------------------------------
+# Remote engine + hostname filter (issue #36)
+# ---------------------------------------------------------------------------
+
+
+def _make_remote_catalog(
+    engine_type: str = "openai",
+    machines: list[str] | None = None,
+) -> Catalog:
+    """Build a catalog with a single remote model spec."""
+    host = HostSettings(
+        bind="0.0.0.0",
+        public_base_url=PUBLIC_BASE_URL,
+        api_key_env="LLMCLI_API_KEY",
+    )
+    if engine_type == "anthropic":
+        spec = ModelSpec(
+            name="claude-sonnet",
+            engine="remote",
+            provider="anthropic",
+            model_id="claude-sonnet-4-6",
+            protocol="anthropic",
+            machines=machines or [],
+        )
+    else:
+        spec = ModelSpec(
+            name="kimi-k2",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/kimi",
+            protocol="openai",
+            machines=machines or [],
+        )
+    return Catalog(host=host, models={spec.name: spec})
+
+
+class TestBuildBlockRemoteEngines:
+    def test_remote_openai_entry_model_prefix(self) -> None:
+        """Remote+openai entry has model='openai/<model_id>' (NOT the catalog key)."""
+        # Arrange
+        catalog = _make_remote_catalog("openai")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["model"] == "openai/accounts/fireworks/models/kimi"
+
+    def test_remote_openai_entry_has_provider_api_base(self) -> None:
+        """Remote+openai entry uses provider's api_base (not a local port)."""
+        # Arrange
+        catalog = _make_remote_catalog("openai")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["api_base"] == PROVIDERS["fireworks"].api_base
+        # No port-based local URL
+        assert ":8091" not in entry["litellm_params"]["api_base"]
+
+    def test_remote_openai_entry_uses_provider_key_env(self) -> None:
+        """Remote+openai entry references provider's key_env, not LLMCLI_API_KEY."""
+        # Arrange
+        catalog = _make_remote_catalog("openai")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["api_key"] == f"os.environ/{PROVIDERS['fireworks'].key_env}"
+
+    def test_remote_anthropic_entry_model_prefix(self) -> None:
+        """Remote+anthropic entry has model='anthropic/<model_id>'."""
+        # Arrange
+        catalog = _make_remote_catalog("anthropic")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["model"] == "anthropic/claude-sonnet-4-6"
+
+    def test_remote_anthropic_entry_has_no_api_base(self) -> None:
+        """Remote+anthropic entry must NOT have api_base — LiteLLM resolves it natively."""
+        # Arrange
+        catalog = _make_remote_catalog("anthropic")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert "api_base" not in entry["litellm_params"]
+
+    def test_remote_anthropic_entry_uses_provider_key_env(self) -> None:
+        """Remote+anthropic entry references ANTHROPIC_API_KEY."""
+        # Arrange
+        catalog = _make_remote_catalog("anthropic")
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["api_key"] == f"os.environ/{PROVIDERS['anthropic'].key_env}"
+
+    def test_local_llamacpp_entry_unchanged(self) -> None:
+        """Local llamacpp entry still emits openai/<name> + local api_base."""
+        # Arrange
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        spec = ModelSpec(
+            name="qwen3-8b",
+            engine="llamacpp",
+            repo="Org/Qwen3-8B-GGUF",
+            file="qwen3-8b-q4_k_m.gguf",
+            port=8091,
+            vram_gib=5.5,
+        )
+        catalog = Catalog(host=host, models={"qwen3-8b": spec})
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        entry = parsed["model_list"][0]
+        assert entry["litellm_params"]["model"] == "openai/qwen3-8b"
+        assert entry["litellm_params"]["api_base"] == f"{PUBLIC_BASE_URL}:8091/v1"
+        assert entry["litellm_params"]["api_key"] == "os.environ/LLMCLI_API_KEY"
+
+
+class TestBuildBlockHostnameFilter:
+    def test_spec_without_machines_included_for_any_hostname(self) -> None:
+        """A spec with machines=[] is included regardless of hostname."""
+        # Arrange
+        catalog = _make_remote_catalog("openai", machines=[])
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="any-random-host")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert — spec included
+        assert parsed["model_list"] is not None
+        assert len(parsed["model_list"]) == 1
+
+    def test_spec_with_machines_included_when_hostname_matches(self) -> None:
+        """A spec with machines=["roxabitower"] is included when hostname matches."""
+        # Arrange
+        catalog = _make_remote_catalog("openai", machines=["roxabitower"])
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="roxabitower")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert
+        assert parsed["model_list"] is not None
+        assert len(parsed["model_list"]) == 1
+
+    def test_spec_with_machines_excluded_when_hostname_does_not_match(self) -> None:
+        """A spec with machines=["roxabitower"] is excluded when hostname differs."""
+        # Arrange
+        catalog = _make_remote_catalog("openai", machines=["roxabitower"])
+        # Act
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="roxabituwer")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert — spec filtered out, model_list is null/empty
+        model_list = parsed.get("model_list") if parsed else None
+        assert not model_list
+
+    def test_mixed_catalog_hostname_filter(self) -> None:
+        """Catalog with two specs: one pinned to 'other-host', one open — filtered correctly."""
+        # Arrange
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        pinned_spec = ModelSpec(
+            name="pinned-model",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/x",
+            protocol="openai",
+            machines=["other-host"],
+        )
+        open_spec = ModelSpec(
+            name="open-model",
+            engine="remote",
+            provider="openai",
+            model_id="gpt-4o",
+            protocol="openai",
+            machines=[],
+        )
+        catalog = Catalog(host=host, models={"pinned-model": pinned_spec, "open-model": open_spec})
+
+        # When hostname="other-host" → both included
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="other-host")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        names = {e["model_name"] for e in parsed["model_list"]}
+        assert names == {"pinned-model", "open-model"}
+
+        # When hostname="this-host" → only open-model included
+        result2 = build_block(catalog, PUBLIC_BASE_URL, hostname="this-host")
+        inner2 = result2.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed2 = yaml.safe_load(inner2)
+        names2 = {e["model_name"] for e in parsed2["model_list"]}
+        assert names2 == {"open-model"}
+
+    def test_build_block_uses_real_hostname_by_default(self) -> None:
+        """build_block uses socket.gethostname() when hostname kwarg is omitted."""
+        # Arrange — catalog with a spec pinned to a hostname that won't match real hostname
+        real_hostname = "definitely-not-this-host-12345"
+        catalog = _make_remote_catalog("openai", machines=[real_hostname])
+        # Act — no hostname kwarg → falls through to socket.gethostname()
+        with patch("llmcli.litellm_config.socket.gethostname", return_value="some-other-host"):
+            result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert — spec excluded because mocked hostname doesn't match
+        model_list = parsed.get("model_list") if parsed else None
+        assert not model_list

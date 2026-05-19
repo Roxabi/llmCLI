@@ -78,9 +78,12 @@ class LlamaCppEngine:
         gguf = self._gguf_path(spec)
         cmd: list[str] = [
             self.binary,
-            "--model", str(gguf),
-            "--host", "0.0.0.0",
-            "--port", str(spec.port),
+            "--model",
+            str(gguf),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(spec.port),
         ]
         if spec.flags:
             cmd.extend(spec.flags)

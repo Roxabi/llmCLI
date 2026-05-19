@@ -15,6 +15,7 @@ Markers:
   no_gpu  — CI-safe; no real binary, no GPU required
   gpu     — requires real llama-server binary + GPU; skipped in CI
 """
+
 from __future__ import annotations
 
 import inspect
@@ -33,6 +34,7 @@ from llmcli.engines.llamacpp import LlamaCppEngine
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def spec() -> ModelSpec:
@@ -95,6 +97,7 @@ def fake_instance() -> EngineInstance:
 # 1. Engine Protocol conformance
 # ---------------------------------------------------------------------------
 
+
 class TestEngineProtocolConformance:
     """LlamaCppEngine must implement the Engine Protocol."""
 
@@ -108,7 +111,9 @@ class TestEngineProtocolConformance:
 
     @pytest.mark.no_gpu
     def test_has_health_method(self, engine: LlamaCppEngine) -> None:
-        assert callable(getattr(engine, "health", None)), "LlamaCppEngine must have a health() method"
+        assert callable(getattr(engine, "health", None)), (
+            "LlamaCppEngine must have a health() method"
+        )
 
     @pytest.mark.no_gpu
     def test_binary_attribute_is_llama_server(self, engine: LlamaCppEngine) -> None:
@@ -143,6 +148,7 @@ class TestEngineProtocolConformance:
 # ---------------------------------------------------------------------------
 # 2. GGUF path resolution from HF hub cache
 # ---------------------------------------------------------------------------
+
 
 class TestGgufPathResolution:
     """Engine must locate the GGUF file in the HF hub snapshot cache."""
@@ -215,6 +221,7 @@ class TestGgufPathResolution:
 # 3. Command-line construction
 # ---------------------------------------------------------------------------
 
+
 class TestCommandLineConstruction:
     """Engine must build a correct llama-server invocation."""
 
@@ -257,9 +264,7 @@ class TestCommandLineConstruction:
         cmd = self._get_cmd(engine, spec)
         assert "--host" in cmd, "command must pass --host flag"
         host_idx = cmd.index("--host")
-        assert cmd[host_idx + 1] == "0.0.0.0", (
-            f"--host must be 0.0.0.0, got {cmd[host_idx + 1]}"
-        )
+        assert cmd[host_idx + 1] == "0.0.0.0", f"--host must be 0.0.0.0, got {cmd[host_idx + 1]}"
 
     @pytest.mark.no_gpu
     def test_build_cmd_includes_catalog_flags(
@@ -346,6 +351,7 @@ class TestCommandLineConstruction:
 # 4. EngineInstance returned by start()
 # ---------------------------------------------------------------------------
 
+
 class TestEngineInstanceShape:
     """start(spec) must return an EngineInstance with required fields populated."""
 
@@ -431,6 +437,7 @@ class TestEngineInstanceShape:
 # 5. health() — HTTP probe
 # ---------------------------------------------------------------------------
 
+
 class TestHealthProbe:
     """health(instance) must probe the /health endpoint and return a bool."""
 
@@ -480,9 +487,7 @@ class TestHealthProbe:
         ):
             result = engine.health(fake_instance)
 
-        assert result is False, (
-            "health() must catch connection errors and return False, not raise"
-        )
+        assert result is False, "health() must catch connection errors and return False, not raise"
 
     @pytest.mark.no_gpu
     def test_health_probes_instance_port(
@@ -507,6 +512,7 @@ class TestHealthProbe:
 # 6. stop() — process teardown
 # ---------------------------------------------------------------------------
 
+
 class TestStopBehaviour:
     """stop(instance) must terminate the process cleanly."""
 
@@ -522,10 +528,7 @@ class TestStopBehaviour:
             with patch("llmcli.engines.llamacpp.os.waitpid", return_value=(fake_instance.pid, 0)):
                 engine.stop(fake_instance)
 
-        sigterm_calls = [
-            call for call in mock_kill.call_args_list
-            if call[0][1] == signal.SIGTERM
-        ]
+        sigterm_calls = [call for call in mock_kill.call_args_list if call[0][1] == signal.SIGTERM]
         assert len(sigterm_calls) >= 1, (
             f"stop() must send at least one SIGTERM; got calls: {mock_kill.call_args_list}"
         )
@@ -558,10 +561,7 @@ class TestStopBehaviour:
             except NotImplementedError:
                 pass  # RED phase — implementation missing
 
-        sigkill_calls = [
-            call for call in mock_kill.call_args_list
-            if call[0][1] == signal.SIGKILL
-        ]
+        sigkill_calls = [call for call in mock_kill.call_args_list if call[0][1] == signal.SIGKILL]
         # In RED this assertion will not be reached due to NotImplementedError above,
         # which causes the test to fail — correct RED behaviour.
         assert len(sigkill_calls) >= 1, "stop() must send SIGKILL after SIGTERM timeout"

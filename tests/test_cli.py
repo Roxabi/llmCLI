@@ -149,18 +149,14 @@ class TestListCommand:
         # Act
         result = runner.invoke(app, ["list"])
         # Assert — RED: stub prints nothing
-        assert "6" in result.output, (
-            f"Expected VRAM (6.0) in output but got: {result.output!r}"
-        )
+        assert "6" in result.output, f"Expected VRAM (6.0) in output but got: {result.output!r}"
 
     def test_list_prints_port(self, fake_catalog, mock_daemon_socket) -> None:
         """list output contains the port number."""
         # Act
         result = runner.invoke(app, ["list"])
         # Assert — RED: stub prints nothing
-        assert "8091" in result.output, (
-            f"Expected port 8091 in output but got: {result.output!r}"
-        )
+        assert "8091" in result.output, f"Expected port 8091 in output but got: {result.output!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +177,9 @@ class TestPullCommand:
     def test_pull_invokes_hf_download_for_known_model(self, fake_catalog) -> None:
         """pull <known-model> calls the HF hub download function."""
         # Arrange
-        with patch("llmcli.cli.hf_hub_download", create=True, return_value="/tmp/fake.gguf") as mock_hf:
+        with patch(
+            "llmcli.cli.hf_hub_download", create=True, return_value="/tmp/fake.gguf"
+        ) as mock_hf:
             # Act
             runner.invoke(app, ["pull", "small-q4"])
         # Assert — RED: stub never calls hf_hub_download
@@ -192,9 +190,7 @@ class TestPullCommand:
         # Act
         result = runner.invoke(app, ["pull", "does-not-exist"])
         # Assert — RED: stub exits 0 for everything
-        assert result.exit_code != 0, (
-            "Expected non-zero exit for unknown model, got 0"
-        )
+        assert result.exit_code != 0, "Expected non-zero exit for unknown model, got 0"
 
     def test_pull_unknown_model_shows_available_names(self, fake_catalog) -> None:
         """pull <unknown-model> output mentions available model names as a helpful hint."""
@@ -260,9 +256,7 @@ class TestServeCommand:
         # Act
         result = runner.invoke(app, ["serve", "--name", "big-model"])
         # Assert — RED: stub exits 0 for everything
-        assert result.exit_code != 0, (
-            "Expected non-zero exit when model exceeds VRAM budget, got 0"
-        )
+        assert result.exit_code != 0, "Expected non-zero exit when model exceeds VRAM budget, got 0"
 
     def test_serve_vram_error_mentions_model_and_budget(self, fake_catalog) -> None:
         """serve --name <oversized-model> output contains helpful VRAM info."""
@@ -271,8 +265,7 @@ class TestServeCommand:
         combined = result.output + (result.stderr or "")
         # Assert — RED: stub outputs nothing
         assert any(
-            keyword in combined
-            for keyword in ("big-model", "13", "10", "vram", "VRAM", "budget")
+            keyword in combined for keyword in ("big-model", "13", "10", "vram", "VRAM", "budget")
         ), f"Expected VRAM error details in output, got: {combined!r}"
 
     def test_serve_unknown_model_exits_nonzero(self, fake_catalog) -> None:
@@ -349,9 +342,7 @@ class TestStatusCommand:
 
 
 class TestChatCommand:
-    def test_chat_exits_zero(
-        self, fake_catalog, mock_daemon_socket, mock_openai_client
-    ) -> None:
+    def test_chat_exits_zero(self, fake_catalog, mock_daemon_socket, mock_openai_client) -> None:
         """chat exits 0 on success."""
         # Act
         result = runner.invoke(app, ["chat", "small-q4", "ping"])
@@ -365,9 +356,7 @@ class TestChatCommand:
         # Act
         result = runner.invoke(app, ["chat", "small-q4", "ping"])
         # Assert — RED: stub prints nothing
-        assert "pong" in result.output, (
-            f"Expected 'pong' in chat output, got: {result.output!r}"
-        )
+        assert "pong" in result.output, f"Expected 'pong' in chat output, got: {result.output!r}"
 
     def test_chat_invokes_openai_completions(
         self, fake_catalog, mock_daemon_socket, mock_openai_client
@@ -552,9 +541,9 @@ class TestRegisterProxyCommand:
         ):
             result = runner.invoke(app, ["register-proxy", "--config", config_file])
         combined = result.output + (result.stderr or "")
-        assert any(
-            kw in combined.lower() for kw in ("reload", "warn", "failed", "succeeded")
-        ), f"Expected warning in output, got: {combined!r}"
+        assert any(kw in combined.lower() for kw in ("reload", "warn", "failed", "succeeded")), (
+            f"Expected warning in output, got: {combined!r}"
+        )
 
     def test_register_proxy_success_output_contains_path(self, fake_catalog, tmp_path) -> None:
         """Success output contains part of the config path that was updated (SC-9 confirmation).
@@ -588,13 +577,9 @@ class TestRegisterProxyCommand:
         ):
             result = runner.invoke(app, ["register-proxy", "--config", config_file])
         # fake_catalog has 2 models: small-q4 + big-model
-        assert "2" in result.output, (
-            f"Expected model count (2) in output, got: {result.output!r}"
-        )
+        assert "2" in result.output, f"Expected model count (2) in output, got: {result.output!r}"
 
-    def test_register_proxy_missing_parent_dir_exits_nonzero(
-        self, fake_catalog, tmp_path
-    ) -> None:
+    def test_register_proxy_missing_parent_dir_exits_nonzero(self, fake_catalog, tmp_path) -> None:
         """register-proxy exits non-zero with a helpful error when parent dir is missing."""
         nonexistent = str(tmp_path / "does_not_exist" / "config.yaml")
         with (
@@ -605,9 +590,7 @@ class TestRegisterProxyCommand:
             result = runner.invoke(app, ["register-proxy", "--config", nonexistent])
         assert result.exit_code != 0
 
-    def test_register_proxy_missing_parent_dir_mentions_mkdir(
-        self, fake_catalog, tmp_path
-    ) -> None:
+    def test_register_proxy_missing_parent_dir_mentions_mkdir(self, fake_catalog, tmp_path) -> None:
         """Friendly error for missing parent dir mentions how to create it."""
         nonexistent = str(tmp_path / "does_not_exist" / "config.yaml")
         with (

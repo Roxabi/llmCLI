@@ -86,9 +86,7 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
     # ------------------------------------------------------------------
 
     async def run(self, nats_url: str, stop: asyncio.Event | None = None) -> None:
-        await asyncio.get_running_loop().run_in_executor(
-            self._executor, self._ensure_model
-        )
+        await asyncio.get_running_loop().run_in_executor(self._executor, self._ensure_model)
         await super().run(nats_url, stop)
 
     def _ensure_model(self) -> None:
