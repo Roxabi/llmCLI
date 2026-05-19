@@ -12,8 +12,9 @@ from .providers import PROVIDERS
 logger = logging.getLogger(__name__)
 
 
+# Resolved at import time — set LLMCLI_CONFIG before import or pass path= to load().
 DEFAULT_CONFIG_PATH = Path(
-    os.environ.get("LLMCLI_CONFIG", Path.home() / ".config" / "llmcli" / "llmcli.toml")
+    os.environ.get("LLMCLI_CONFIG", Path.home() / ".roxabi" / "llmcli" / "llmcli.toml")
 )
 
 _VALID_PROTOCOLS = frozenset({"openai", "anthropic"})
@@ -130,8 +131,16 @@ def _parse_model_spec(name: str, spec: dict) -> ModelSpec:
 
 
 def load(path: Path = DEFAULT_CONFIG_PATH) -> Catalog:
-    with path.open("rb") as f:
-        data = tomllib.load(f)
+    try:
+        with path.open("rb") as f:
+            data = tomllib.load(f)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"llmCLI catalog not found at {path}.\n"
+            f"If you're upgrading from ~/.config/llmcli/, run:\n"
+            f"  mv ~/.config/llmcli ~/.roxabi/llmcli\n"
+            f"Or set LLMCLI_CONFIG=<path> to point at a custom location."
+        ) from e
 
     host_data = data.get("host", {})
     host = HostSettings(

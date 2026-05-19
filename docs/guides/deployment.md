@@ -74,9 +74,9 @@ if installed). No extra setup needed — `llmcli pull` downloads into this locat
 ### 2.5 API key
 
 ```bash
-mkdir -p ~/.config/llmcli
-echo "your-api-key-here" > ~/.config/llmcli/api_key
-chmod 600 ~/.config/llmcli/api_key
+install -d -m 700 ~/.roxabi/llmcli
+echo "your-api-key-here" > ~/.roxabi/llmcli/api_key
+chmod 600 ~/.roxabi/llmcli/api_key
 ```
 
 The supervisor wrapper (`supervisor/scripts/run_serve.sh`) sources
@@ -84,7 +84,7 @@ The supervisor wrapper (`supervisor/scripts/run_serve.sh`) sources
 
 ```bash
 cat > ~/projects/llmCLI/.env <<'EOF'
-LLMCLI_API_KEY=$(cat ~/.config/llmcli/api_key)
+LLMCLI_API_KEY=$(cat ~/.roxabi/llmcli/api_key)
 EOF
 ```
 
@@ -101,10 +101,10 @@ cd ~/projects/llmCLI
 uv sync
 
 # Set up catalog
-cp llmcli.example.toml ~/.config/llmcli/llmcli.toml
+cp llmcli.example.toml ~/.roxabi/llmcli/llmcli.toml
 ```
 
-Edit `~/.config/llmcli/llmcli.toml` for prod. Replace the dev models with small models
+Edit `~/.roxabi/llmcli/llmcli.toml` for prod. Replace the dev models with small models
 that fit within 10 GB VRAM. See `llmcli.example.toml` for the full schema.
 
 Minimal prod catalog:
@@ -223,7 +223,7 @@ Verify the proxy forwards to llmCLI:
 ```bash
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat ~/.config/llmcli/api_key)" \
+  -H "Authorization: Bearer $(cat ~/.roxabi/llmcli/api_key)" \
   -d '{"model":"qwen3-8b-q4","messages":[{"role":"user","content":"ping"}]}' \
   | jq .choices[0].message.content
 ```
@@ -304,7 +304,30 @@ prod catalog without updating `vram_budget_gib`.
 
 ---
 
-## 9. Troubleshooting
+## 9. Migration from ~/.config/llmcli/
+
+If you deployed an older version of llmCLI that stored its catalog at `~/.config/llmcli/`,
+run this sequence on the prod host to move to the new Roxabi data-dir path:
+
+```bash
+make llm stop
+mv ~/.config/llmcli ~/.roxabi/llmcli
+make llm start
+llmcli list  # verify catalog loads
+```
+
+If you cannot migrate immediately, set `LLMCLI_CONFIG=~/.config/llmcli/llmcli.toml` in
+your supervisor env (e.g. in `~/projects/llmCLI/.env`) to pin the old path explicitly.
+
+### Environment variable reference
+
+| Variable | Description |
+|---|---|
+| `LLMCLI_CONFIG` | Path to llmcli.toml. Defaults to `~/.roxabi/llmcli/llmcli.toml`. Useful as a migration escape hatch or for multi-tenant catalogs. |
+
+---
+
+## 10. Troubleshooting
 
 ### Stale socket after crash
 

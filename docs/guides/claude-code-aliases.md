@@ -33,32 +33,32 @@ Add to `~/.bashrc` or `~/.zshrc`:
 
 ```bash
 # llmCLI — claude-code aliases
-# Model names must match catalog keys in ~/.config/llmcli/llmcli.toml
+# Model names must match catalog keys in ~/.roxabi/llmcli/llmcli.toml
 
 # Local (roxabitower) — normal + fast (same model in v1)
 alias ccl='ANTHROPIC_BASE_URL=http://localhost:4000 \
            ANTHROPIC_MODEL=qwen3_6-35b-a3b-tq3 \
            ANTHROPIC_SMALL_FAST_MODEL=qwen3_6-35b-a3b-tq3 \
-           ANTHROPIC_API_KEY=$(cat ~/.config/llmcli/api_key) \
+           ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
            claude'
 
 alias cccl='ANTHROPIC_BASE_URL=http://localhost:4000 \
             ANTHROPIC_MODEL=qwen3_6-35b-a3b-tq3 \
             ANTHROPIC_SMALL_FAST_MODEL=qwen3_6-35b-a3b-tq3 \
-            ANTHROPIC_API_KEY=$(cat ~/.config/llmcli/api_key) \
+            ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
             claude'
 
 # Prod (roxabituwer) — normal + fast (same model in v1)
 alias ccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:4000 \
            ANTHROPIC_MODEL=qwen3-8b-q4 \
            ANTHROPIC_SMALL_FAST_MODEL=qwen3-8b-q4 \
-           ANTHROPIC_API_KEY=$(cat ~/.config/llmcli/api_key) \
+           ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
            claude'
 
 alias cccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:4000 \
             ANTHROPIC_MODEL=qwen3-8b-q4 \
             ANTHROPIC_SMALL_FAST_MODEL=qwen3-8b-q4 \
-            ANTHROPIC_API_KEY=$(cat ~/.config/llmcli/api_key) \
+            ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
             claude'
 ```
 
@@ -78,7 +78,7 @@ llmcli list   # prints catalog with name, engine, port, vram, status
 ```
 
 The example TOML (`llmcli.example.toml`) ships with `qwen3_6-35b-a3b-tq3` (local) and
-`qwen3-8b-q4` (prod). If your `~/.config/llmcli/llmcli.toml` uses different keys, update
+`qwen3-8b-q4` (prod). If your `~/.roxabi/llmcli/llmcli.toml` uses different keys, update
 the alias model names to match.
 
 ### v1 note: fast model
@@ -106,7 +106,7 @@ to `~/.claude/settings.json.local`:
 
 ```json
 {
-  "apiKeyHelper": "cat ~/.config/llmcli/api_key",
+  "apiKeyHelper": "cat ~/.roxabi/llmcli/api_key",
   "env": {
     "ANTHROPIC_BASE_URL": "http://localhost:4000",
     "ANTHROPIC_MODEL": "qwen3_6-35b-a3b-tq3",
@@ -125,7 +125,7 @@ to `~/.claude/settings.json.local`:
 
 ```json
 {
-  "apiKeyHelper": "cat ~/.config/llmcli/api_key",
+  "apiKeyHelper": "cat ~/.roxabi/llmcli/api_key",
   "env": {
     "ANTHROPIC_BASE_URL": "http://roxabituwer.lan:4000",
     "ANTHROPIC_MODEL": "qwen3-8b-q4",
@@ -135,7 +135,7 @@ to `~/.claude/settings.json.local`:
 ```
 
 Update `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` to match the catalog keys in
-`~/.config/llmcli/llmcli.toml` on the target host.
+`~/.roxabi/llmcli/llmcli.toml` on the target host.
 
 ---
 
@@ -168,15 +168,15 @@ Expected: non-empty text response for `-p "ping"`. If `--help` fails, `claude` i
 echo $LLMCLI_API_KEY
 
 # Check the key file
-cat ~/.config/llmcli/api_key
+cat ~/.roxabi/llmcli/api_key
 ```
 
 If the file is missing, create it:
 
 ```bash
-mkdir -p ~/.config/llmcli
-echo "your-key-here" > ~/.config/llmcli/api_key
-chmod 600 ~/.config/llmcli/api_key
+install -d -m 700 ~/.roxabi/llmcli
+echo "your-key-here" > ~/.roxabi/llmcli/api_key
+chmod 600 ~/.roxabi/llmcli/api_key
 ```
 
 ### Connection refused
@@ -212,7 +212,7 @@ If the proxy routes to the wrong host, check `public_base_url` in your catalog m
 what `llmcli register-proxy` emits:
 
 ```bash
-grep 'public_base_url' ~/.config/llmcli/llmcli.toml
+grep 'public_base_url' ~/.roxabi/llmcli/llmcli.toml
 grep 'api_base' ~/.litellm/config.yaml
 ```
 

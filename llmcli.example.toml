@@ -1,5 +1,5 @@
-# llmCLI host config — copy to ~/.config/llmcli/llmcli.toml and edit.
-# Model definitions live in ~/.config/llmcli/models/<name>.toml (one file per model).
+# llmCLI host config — copy to ~/.roxabi/llmcli/llmcli.toml and edit.
+# Model definitions live in ~/.roxabi/llmcli/models/<name>.toml (one file per model).
 # See models/ in this repo for examples to copy and adapt.
 #
 # Cloud passthrough examples (engine="remote", no GPU required):
