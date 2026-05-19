@@ -604,6 +604,80 @@ class TestRegisterProxyCommand:
             f"Expected mkdir hint or dir name in error output, got: {combined!r}"
         )
 
+    def test_register_proxy_mixed_catalog_writes_both_local_and_remote(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Mixed catalog: both local (llamacpp) and remote (fireworks/openai) entries appear
+        in the written litellm config block.
+        """
+        from llmcli import config as real_config
+        from llmcli.config import Catalog, HostSettings, ModelSpec
+        from llmcli.litellm_config import BLOCK_START, BLOCK_END
+
+        import yaml
+
+        # Build a catalog with 1 local + 1 remote spec.
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url="http://localhost",
+            api_key_env="LLMCLI_API_KEY",
+        )
+        local_spec = ModelSpec(
+            name="small-local",
+            engine="llamacpp",
+            repo="Org/Small-GGUF",
+            file="small.gguf",
+            port=8091,
+            vram_gib=5.0,
+        )
+        remote_spec = ModelSpec(
+            name="kimi-remote",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/kimi",
+            protocol="openai",
+        )
+        mixed_catalog = Catalog(
+            host=host, models={"small-local": local_spec, "kimi-remote": remote_spec}
+        )
+
+        config_path = tmp_path / "config.yaml"
+
+        with (
+            patch("llmcli.cli.config", create=True) as mock_config_mod,
+            patch("llmcli.cli.reload_proxy", create=True),
+        ):
+            mock_config_mod.load.return_value = mixed_catalog
+            mock_config_mod.check_vram_budget.side_effect = (
+                real_config.check_vram_budget
+            )
+            result = runner.invoke(
+                app, ["register-proxy", "--config", str(config_path)]
+            )
+
+        assert result.exit_code == 0, f"Unexpected exit: {result.output}"
+        assert config_path.exists(), "Config file was not created"
+
+        content = config_path.read_text()
+        assert BLOCK_START in content
+        assert BLOCK_END in content
+
+        inner = content.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        names_in_block = {entry["model_name"] for entry in parsed["model_list"]}
+        assert "small-local" in names_in_block, "Local entry missing from written block"
+        assert "kimi-remote" in names_in_block, "Remote entry missing from written block"
+
+        by_name = {e["model_name"]: e for e in parsed["model_list"]}
+        # Local entry: model=openai/<name>, local api_base
+        local_entry = by_name["small-local"]
+        assert local_entry["litellm_params"]["model"] == "openai/small-local"
+        assert "8091" in local_entry["litellm_params"]["api_base"]
+        # Remote entry: model=openai/<model_id>, provider api_base
+        remote_entry = by_name["kimi-remote"]
+        assert remote_entry["litellm_params"]["model"] == "openai/accounts/fireworks/models/kimi"
+        assert "fireworks" in remote_entry["litellm_params"]["api_base"]
+
 
 # ---------------------------------------------------------------------------
 # --help — all commands registered

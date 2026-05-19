@@ -35,7 +35,13 @@ def build_block(catalog: Catalog, public_base_url: str, *, hostname: str | None 
             continue
 
         if spec.engine == "remote":
-            provider = PROVIDERS[spec.provider]
+            provider_cfg = PROVIDERS.get(spec.provider)
+            if provider_cfg is None:
+                raise ValueError(
+                    f"Unknown provider '{spec.provider}' in spec '{name}'. "
+                    f"Valid providers: {sorted(PROVIDERS.keys())}."
+                )
+            provider = provider_cfg
             if spec.protocol == "anthropic":
                 entry = {
                     "model_name": name,

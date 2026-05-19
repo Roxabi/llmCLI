@@ -152,8 +152,12 @@ class TestBuildBlock:
         names_in_block = {entry["model_name"] for entry in parsed["model_list"]}
         assert names_in_block == set(catalog.models.keys())
 
-    def test_block_litellm_params_model_prefix(self, catalog: Catalog) -> None:
-        """Each entry's litellm_params.model is prefixed with 'openai/'."""
+    def test_local_block_litellm_params_model_prefix(self, catalog: Catalog) -> None:
+        """Each local-engine entry's litellm_params.model is 'openai/<name>'."""
+        # This test only applies to local-engine catalogs.
+        assert all(spec.engine != "remote" for spec in catalog.models.values()), (
+            "this test only applies to local-engine catalogs"
+        )
         # Arrange / Act
         result = build_block(catalog, PUBLIC_BASE_URL)
         parsed = yaml.safe_load(result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip())
@@ -652,5 +656,36 @@ class TestBuildBlockHostnameFilter:
         inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
         parsed = yaml.safe_load(inner)
         # Assert — spec excluded because mocked hostname doesn't match
+        model_list = parsed.get("model_list") if parsed else None
+        assert not model_list
+
+    def test_build_block_default_hostname_includes_when_matching(self) -> None:
+        """build_block includes spec when mocked gethostname() matches the machines list."""
+        # Arrange — catalog pinned to "matching-host"
+        catalog = _make_remote_catalog("openai", machines=["matching-host"])
+        # Act — no hostname kwarg → falls through to socket.gethostname() (mocked to match)
+        with patch("llmcli.litellm_config.socket.gethostname", return_value="matching-host"):
+            result = build_block(catalog, PUBLIC_BASE_URL)
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        # Assert — spec included because mocked hostname matches
+        assert parsed["model_list"] is not None
+        assert len(parsed["model_list"]) == 1
+
+    def test_machines_multi_host_includes_when_matching(self) -> None:
+        """Spec with machines=[host-a, host-b] is included when hostname is host-b."""
+        catalog = _make_remote_catalog("openai", machines=["host-a", "host-b"])
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="host-b")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
+        assert parsed["model_list"] is not None
+        assert len(parsed["model_list"]) == 1
+
+    def test_machines_multi_host_excludes_when_no_match(self) -> None:
+        """Spec with machines=[host-a, host-b] is excluded when hostname is host-c."""
+        catalog = _make_remote_catalog("openai", machines=["host-a", "host-b"])
+        result = build_block(catalog, PUBLIC_BASE_URL, hostname="host-c")
+        inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
+        parsed = yaml.safe_load(inner)
         model_list = parsed.get("model_list") if parsed else None
         assert not model_list

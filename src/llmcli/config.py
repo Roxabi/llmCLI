@@ -59,6 +59,12 @@ def _parse_model_spec(name: str, spec: dict) -> ModelSpec:
     engine = spec.get("engine", "")
     valid_engines = _LOCAL_ENGINES | {"remote"}
 
+    if "engine" not in spec:
+        raise ValueError(
+            f"Model '{name}' is missing required field 'engine'. "
+            f"Valid engines: {sorted(valid_engines)}."
+        )
+
     if engine not in valid_engines:
         raise ValueError(
             f"Model '{name}' has unknown engine '{engine}'. Valid engines: {sorted(valid_engines)}."
@@ -88,6 +94,17 @@ def _parse_model_spec(name: str, spec: dict) -> ModelSpec:
                 f"Model '{name}' has invalid protocol '{protocol}'. "
                 f"Valid protocols: {sorted(_VALID_PROTOCOLS)}."
             )
+        # Cross-validate provider × protocol
+        if provider == "anthropic" and protocol != "anthropic":
+            raise ValueError(
+                f"Model '{name}' uses provider='anthropic' which requires protocol='anthropic', "
+                f"got protocol='{protocol}'."
+            )
+        if provider != "anthropic" and protocol == "anthropic":
+            raise ValueError(
+                f"Model '{name}' uses protocol='anthropic' which is only supported by "
+                f"provider='anthropic', got provider='{provider}'."
+            )
         # Reject mixing remote with local-only fields
         mixed = _REMOTE_LOCAL_FIELDS & spec.keys()
         if mixed:
@@ -102,7 +119,7 @@ def _parse_model_spec(name: str, spec: dict) -> ModelSpec:
                 f"Model '{name}' is missing required field 'repo'. "
                 "Add a 'repo' key pointing to the HuggingFace repository (e.g. 'Org/Model-GGUF')."
             )
-        remote_fields = {"provider", "model_id"} & spec.keys()
+        remote_fields = {"provider", "model_id", "protocol"} & spec.keys()
         if remote_fields:
             raise ValueError(
                 f"Model '{name}' with engine='{engine}' must not set remote-engine fields: "

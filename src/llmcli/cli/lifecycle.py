@@ -36,9 +36,10 @@ def serve(
 
     spec = catalog.models[model_name]
 
-    # VRAM guard (C2 / SC-13)
+    # VRAM guard (C2 / SC-13) — Remote specs need no local GPU; skip VRAM check.
     try:
-        _cli.config.check_vram_budget(spec, catalog.host)
+        if spec.engine != "remote":
+            _cli.config.check_vram_budget(spec, catalog.host)
     except ValueError as exc:
         err_console.print(
             Panel(

@@ -459,20 +459,6 @@ class TestRemoteEngineSpec:
         with pytest.raises(ValueError, match="remote-engine fields"):
             _parse_model_spec("test-model", raw)
 
-    def test_machines_defaults_to_empty_list(self) -> None:
-        """ModelSpec.machines defaults to [] when not specified."""
-        # Arrange
-        raw = {
-            "engine": "remote",
-            "provider": "fireworks",
-            "model_id": "some/model",
-            "protocol": "openai",
-        }
-        # Act
-        spec = _parse_model_spec("test-model", raw)
-        # Assert
-        assert spec.machines == []
-
     def test_machines_parses_correctly(self) -> None:
         """ModelSpec.machines parses a list of hostnames correctly."""
         # Arrange
@@ -490,12 +476,91 @@ class TestRemoteEngineSpec:
 
     def test_all_known_providers_are_valid(self) -> None:
         """Each key in PROVIDERS can be used as provider in a remote spec."""
+        # implicit: no ValueError raised — purpose is to confirm all PROVIDERS pass validation.
         for provider_key in PROVIDERS:
+            # Anthropic requires protocol='anthropic'; all others use 'openai'.
+            protocol = "anthropic" if provider_key == "anthropic" else "openai"
             raw = {
                 "engine": "remote",
                 "provider": provider_key,
                 "model_id": "some/model",
-                "protocol": "openai",
+                "protocol": protocol,
             }
-            spec = _parse_model_spec(f"test-{provider_key}", raw)
-            assert spec.provider == provider_key
+            _parse_model_spec(f"test-{provider_key}", raw)
+
+    def test_unknown_provider_in_iteration_raises(self) -> None:
+        """A provider key NOT in PROVIDERS is rejected by _parse_model_spec."""
+        raw = {
+            "engine": "remote",
+            "provider": "not-a-real-provider",
+            "model_id": "some/model",
+            "protocol": "openai",
+        }
+        with pytest.raises(ValueError, match="unknown provider"):
+            _parse_model_spec("test-unknown", raw)
+
+    def test_machines_field_default_is_empty_list(self) -> None:
+        """ModelSpec.machines defaults to [] when not specified (direct construction)."""
+        # Arrange
+        raw = {
+            "engine": "remote",
+            "provider": "fireworks",
+            "model_id": "some/model",
+            "protocol": "openai",
+        }
+        # Act
+        spec = _parse_model_spec("test-model", raw)
+        # Assert
+        assert spec.machines == []
+
+    def test_machines_absent_from_toml_yields_empty_list(self, tmp_path: Path) -> None:
+        """ModelSpec.machines is [] when not present in TOML (load-path test)."""
+        toml_path = _write_toml(
+            tmp_path,
+            '[host]\nbind = "0.0.0.0"\n\n[models.kimi]\nengine = "remote"\n'
+            'provider = "fireworks"\nmodel_id = "accounts/fireworks/models/kimi"\nprotocol = "openai"\n',
+        )
+        catalog = load(toml_path)
+        assert catalog.models["kimi"].machines == []
+
+    def test_remote_with_extra_unknown_field_raises(self) -> None:
+        """engine='remote' with an unknown field raises TypeError from ModelSpec dataclass."""
+        raw = {
+            "engine": "remote",
+            "provider": "fireworks",
+            "model_id": "some/model",
+            "protocol": "openai",
+            "junk": "x",
+        }
+        with pytest.raises(TypeError):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_missing_provider_raises(self) -> None:
+        """engine='remote' without 'provider' raises ValueError matching 'missing required field'."""
+        raw = {"engine": "remote", "model_id": "m", "protocol": "openai"}
+        with pytest.raises(ValueError, match="missing required field 'provider'"):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_missing_model_id_raises(self) -> None:
+        """engine='remote' without 'model_id' raises ValueError matching 'missing required field'."""
+        raw = {"engine": "remote", "provider": "fireworks", "protocol": "openai"}
+        with pytest.raises(ValueError, match="missing required field 'model_id'"):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_invalid_protocol_raises(self) -> None:
+        """engine='remote' with unsupported protocol raises ValueError matching 'invalid protocol'."""
+        raw = {"engine": "remote", "provider": "fireworks", "model_id": "m", "protocol": "grpc"}
+        with pytest.raises(ValueError, match="invalid protocol"):
+            _parse_model_spec("test-model", raw)
+
+    def test_unknown_engine_raises(self) -> None:
+        """An unrecognised engine value raises ValueError matching 'unknown engine'."""
+        raw = {"engine": "deepspeed", "repo": "Org/M"}
+        with pytest.raises(ValueError, match="unknown engine"):
+            _parse_model_spec("test-model", raw)
+
+    def test_missing_engine_raises(self) -> None:
+        """A spec without 'engine' raises ValueError matching 'missing required field'."""
+        raw = {"repo": "Org/M"}
+        with pytest.raises(ValueError, match="missing required field 'engine'"):
+            _parse_model_spec("test-model", raw)
