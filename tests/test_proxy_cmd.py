@@ -906,30 +906,40 @@ class TestProxyBaseFailFast:
 
 
 class TestProxyEnvPortMalformed:
+    _EMPTY_CATALOG = _make_catalog()  # no models → provider validation is a no-op
+
     def test_malformed_env_proxy_port_exits_1(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """LLMCLI_PROXY_PORT='abc' produces a user-friendly error and exits 1."""
+        """LLMCLI_PROXY_PORT='abc' produces a user-friendly error and exits 1.
+
+        Uses patch("llmcli.cli.config") to bypass the module-import-time snapshot of
+        DEFAULT_CONFIG_PATH; LLMCLI_CONFIG=monkeypatch.setenv would arrive too late.
+        Same pattern as TestProxyBaseFailFast / TestConfigOutDryRun.
+        """
         from typer.testing import CliRunner
         from llmcli.cli._app import app as typer_app
 
-        # Arrange — minimal valid catalog so we get past Step 1
-        cfg = tmp_path / "llmcli.toml"
-        cfg.write_text(
-            '[host]\nbind = "0.0.0.0"\npublic_base_url = "http://x"\napi_key_env = "K"\n'
-        )
-        monkeypatch.setenv("LLMCLI_CONFIG", str(cfg))
-        monkeypatch.setenv("K", "test-key")
+        # Arrange
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
         monkeypatch.setenv("LLMCLI_PROXY_PORT", "abc")  # malformed
 
-        # Act
         runner = CliRunner()
-        result = runner.invoke(typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")])
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = self._EMPTY_CATALOG
+            result = runner.invoke(
+                typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")]
+            )
 
         # Assert
-        assert result.exit_code == 1
-        combined = result.output + (result.stderr or "")
-        assert "LLMCLI_PROXY_PORT" in combined
-        assert "abc" in combined
+        assert result.exit_code == 1, (
+            f"Expected exit 1; got {result.exit_code}; output: {result.output!r}"
+        )
+        combined = (result.output or "") + (result.stderr or "")
+        assert "LLMCLI_PROXY_PORT" in combined, (
+            f"Expected 'LLMCLI_PROXY_PORT' in output; got: {combined!r}"
+        )
+        assert "abc" in combined, f"Expected 'abc' in output; got: {combined!r}"
