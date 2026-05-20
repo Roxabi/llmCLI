@@ -1,0 +1,31 @@
+[Unit]
+Description=llmCLI LiteLLM proxy (:18091)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Container]
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli
+PublishPort=18091:18091
+Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
+EnvironmentFile=%h/.config/containers/systemd/llmcli.env
+Environment=LLMCLI_PROXY_PORT=18091
+Environment=LLMCLI_PROXY_HOST=0.0.0.0
+UserNS=keep-id:uid=1502,gid=1502
+Exec=proxy
+HealthCmd=pgrep -f litellm
+HealthInterval=30s
+HealthStartPeriod=15s
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20s
+# RestartForceExitStatus: skip restart on provider-key (1) and litellm-missing (127) errors
+RestartForceExitStatus=1 127
+
+[Install]
+WantedBy=default.target

@@ -13,7 +13,7 @@ reach back into the worker host directly.
 - `llm-worker` NKEY seed exists on the hub at `~/.lyra/nkeys/llm-worker.seed`
 - LiteLLM proxy running on the worker host at `:4000`
 - `llama-server` binary available in the container image; qwen3-8b model pre-pulled
-  into the shared HuggingFace cache volume (`llmcli-models`)
+  into the shared HuggingFace cache at `~/.cache/huggingface/`
 
 ## One-time setup on the worker host
 
@@ -29,17 +29,20 @@ rm /tmp/llm-worker.seed
 printf 'sk-...' | podman secret create llmcli-litellm-key -
 
 # 4. Write the worker env file (provides LLMCLI_NATS_URL to the container)
-mkdir -p ~/.config/llmcli
+install -d -m 700 ~/.roxabi/llmcli
 printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-fqdn>:4222\n' \
-    > ~/.config/llmcli/worker.env
-chmod 600 ~/.config/llmcli/worker.env
+    > ~/.roxabi/llmcli/worker.env
+chmod 600 ~/.roxabi/llmcli/worker.env
 
-# 5. Install the Quadlet unit
+# 5. Ensure the HuggingFace cache dir exists (Podman bind-mount source must pre-exist)
+mkdir -p ~/.cache/huggingface
+
+# 6. Install the Quadlet unit
 mkdir -p ~/.config/containers/systemd
 cp deploy/quadlet/llmcli-nats-worker.container \
    ~/.config/containers/systemd/
 
-# 6. Load and start
+# 7. Load and start
 systemctl --user daemon-reload
 systemctl --user start llmcli-nats-worker
 ```
@@ -79,6 +82,22 @@ The `EnvironmentFile` value from the base unit is superseded by the inline
 `Environment=` in the drop-in for `LLMCLI_NATS_URL`. The base unit's
 `worker.env` file must still exist (even if empty) to avoid a systemd
 fail-fast, or remove the `EnvironmentFile=` line in a second drop-in stanza.
+
+## Migration from ~/.config/llmcli/
+
+If you deployed an older version of the worker that read from `~/.config/llmcli/`, run this
+sequence on the worker host to move to the new path:
+
+```bash
+systemctl --user stop llmcli-nats-worker
+mv ~/.config/llmcli ~/.roxabi/llmcli
+systemctl --user daemon-reload
+systemctl --user start llmcli-nats-worker
+systemctl --user status llmcli-nats-worker  # verify
+```
+
+If you cannot migrate immediately, set `LLMCLI_CONFIG=~/.config/llmcli/llmcli.toml` in
+`~/.roxabi/llmcli/worker.env` to pin the old path explicitly.
 
 ## Gotchas / Production Notes
 

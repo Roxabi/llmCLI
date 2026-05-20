@@ -16,6 +16,7 @@ Markers:
   no_gpu  — CI-safe; no real binary, no GPU required
   gpu     — requires real vllm binary + GPU; skipped in CI
 """
+
 from __future__ import annotations
 
 import inspect
@@ -59,12 +60,15 @@ def vllm_spec_no_flags() -> ModelSpec:
 
 @pytest.fixture()
 def fake_instance() -> EngineInstance:
-    return EngineInstance(pid=12345, port=8093, model_name="qwen3-27b-nvfp4", started_at=1_700_000_000.0)
+    return EngineInstance(
+        pid=12345, port=8093, model_name="qwen3-27b-nvfp4", started_at=1_700_000_000.0
+    )
 
 
 @pytest.fixture()
 def engine():
     from llmcli.engines.vllm import VLLMEngine
+
     return VLLMEngine()
 
 
@@ -180,7 +184,7 @@ class TestVLLMCommandBuild:
         cmd = engine._build_cmd(vllm_spec)
         host_idx = cmd.index("--host")
         # Flags start after "--host" "0.0.0.0"
-        tail = cmd[host_idx + 2:]
+        tail = cmd[host_idx + 2 :]
         for flag in vllm_spec.flags:
             assert flag in tail, (
                 f"catalog flag '{flag}' must appear after '--host 0.0.0.0'; tail={tail}"
@@ -283,9 +287,7 @@ class TestVLLMStop:
     """stop(instance) must use os.killpg/os.getpgid (not os.kill) for process-group teardown."""
 
     @pytest.mark.no_gpu
-    def test_stop_sends_sigterm_via_killpg(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_stop_sends_sigterm_via_killpg(self, engine, fake_instance: EngineInstance) -> None:
         """stop() must call os.killpg(os.getpgid(pid), SIGTERM)."""
         with (
             patch("llmcli.engines.vllm.os.getpgid", return_value=55555) as mock_getpgid,
@@ -296,10 +298,7 @@ class TestVLLMStop:
             mock_getpgid.side_effect = [55555, ProcessLookupError("gone")]
             engine.stop(fake_instance)
 
-        sigterm_calls = [
-            c for c in mock_killpg.call_args_list
-            if c[0][1] == signal.SIGTERM
-        ]
+        sigterm_calls = [c for c in mock_killpg.call_args_list if c[0][1] == signal.SIGTERM]
         assert len(sigterm_calls) >= 1, (
             f"stop() must send at least one SIGTERM via killpg; calls={mock_killpg.call_args_list}"
         )
@@ -308,9 +307,7 @@ class TestVLLMStop:
         )
 
     @pytest.mark.no_gpu
-    def test_stop_escalates_to_sigkill(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_stop_escalates_to_sigkill(self, engine, fake_instance: EngineInstance) -> None:
         """stop() must escalate to SIGKILL when waitpid raises ChildProcessError after SIGTERM."""
         waitpid_calls = 0
 
@@ -328,18 +325,13 @@ class TestVLLMStop:
         ):
             engine.stop(fake_instance)
 
-        sigkill_calls = [
-            c for c in mock_killpg.call_args_list
-            if c[0][1] == signal.SIGKILL
-        ]
+        sigkill_calls = [c for c in mock_killpg.call_args_list if c[0][1] == signal.SIGKILL]
         assert len(sigkill_calls) >= 1, (
             f"stop() must escalate to SIGKILL; calls={mock_killpg.call_args_list}"
         )
 
     @pytest.mark.no_gpu
-    def test_stop_idempotent_when_process_gone(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_stop_idempotent_when_process_gone(self, engine, fake_instance: EngineInstance) -> None:
         """stop() must return without raising when os.getpgid raises ProcessLookupError."""
         with patch(
             "llmcli.engines.vllm.os.getpgid",
@@ -353,9 +345,7 @@ class TestVLLMStop:
                 )
 
     @pytest.mark.no_gpu
-    def test_stop_uses_getpgid_not_os_kill(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_stop_uses_getpgid_not_os_kill(self, engine, fake_instance: EngineInstance) -> None:
         """stop() must use os.killpg (process-group) rather than os.kill (single pid)."""
         with (
             patch("llmcli.engines.vllm.os.getpgid", return_value=55555),
@@ -379,9 +369,7 @@ class TestVLLMHealth:
     """health(instance) must probe /health and return a bool."""
 
     @pytest.mark.no_gpu
-    def test_health_returns_true_on_200(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_health_returns_true_on_200(self, engine, fake_instance: EngineInstance) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
@@ -391,14 +379,10 @@ class TestVLLMHealth:
         assert result is True, f"health() must return True on HTTP 200, got {result!r}"
         mock_get.assert_called_once()
         call_url: str = mock_get.call_args[0][0]
-        assert "/health" in call_url, (
-            f"health() must probe a /health endpoint, got URL: {call_url}"
-        )
+        assert "/health" in call_url, f"health() must probe a /health endpoint, got URL: {call_url}"
 
     @pytest.mark.no_gpu
-    def test_health_returns_false_on_503(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_health_returns_false_on_503(self, engine, fake_instance: EngineInstance) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 503
 
@@ -417,14 +401,10 @@ class TestVLLMHealth:
         ):
             result = engine.health(fake_instance)
 
-        assert result is False, (
-            "health() must catch connection errors and return False, not raise"
-        )
+        assert result is False, "health() must catch connection errors and return False, not raise"
 
     @pytest.mark.no_gpu
-    def test_health_probes_instance_port(
-        self, engine, fake_instance: EngineInstance
-    ) -> None:
+    def test_health_probes_instance_port(self, engine, fake_instance: EngineInstance) -> None:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
@@ -451,6 +431,7 @@ class TestVLLMImportGuard:
         """Importing VLLMEngine must not require the vllm package at import time."""
         # The import at module level in the fixture already proves this if we got here.
         from llmcli.engines.vllm import VLLMEngine  # noqa: F401  # re-import is fine
+
         assert True, "Import of VLLMEngine must succeed without vllm installed"
 
     @pytest.mark.no_gpu
@@ -555,7 +536,9 @@ class TestWaitReady:
             patch("llmcli.engines._common.time.sleep"),
             patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 0.1]),
         ):
-            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=10.0, engine_name="vllm serve")
+            _wait_ready(
+                "http://localhost:8093/v1", mock_proc, timeout=10.0, engine_name="vllm serve"
+            )
         # Should complete without raising
 
     @pytest.mark.no_gpu
@@ -587,7 +570,9 @@ class TestWaitReady:
                 side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
             ),
         ):
-            _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve")
+            _wait_ready(
+                "http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve"
+            )
 
         assert call_count >= 3, "Must poll at least 3 times (2× 503 + 1× 200)"
 
@@ -606,7 +591,9 @@ class TestWaitReady:
             patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 0.5]),
         ):
             with pytest.raises(RuntimeError, match="exited with code 1"):
-                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve")
+                _wait_ready(
+                    "http://localhost:8093/v1", mock_proc, timeout=60.0, engine_name="vllm serve"
+                )
 
     @pytest.mark.no_gpu
     def test_raises_on_timeout(self) -> None:
@@ -627,4 +614,6 @@ class TestWaitReady:
             patch("llmcli.engines._common.time.monotonic", side_effect=[0.0, 100.0]),
         ):
             with pytest.raises(RuntimeError, match="did not become ready"):
-                _wait_ready("http://localhost:8093/v1", mock_proc, timeout=1.0, engine_name="vllm serve")
+                _wait_ready(
+                    "http://localhost:8093/v1", mock_proc, timeout=1.0, engine_name="vllm serve"
+                )

@@ -79,7 +79,7 @@ that `llama-server` validates on each request.
 
 ```bash
 # ~/projects/lyra/.env
-LLMCLI_API_KEY=$(cat ~/.config/llmcli/api_key)
+LLMCLI_API_KEY=$(cat ~/.roxabi/llmcli/api_key)
 ```
 
 **Prod (`roxabituwer`):** add to the supervisor env block in
@@ -94,7 +94,7 @@ environment =
 Then set the var in `~/projects/lyra/.env` on prod (sourced by `run_*.sh` wrappers):
 
 ```bash
-LLMCLI_API_KEY=<the-same-key-in-~/.config/llmcli/api_key>
+LLMCLI_API_KEY=<the-same-key-in-~/.roxabi/llmcli/api_key>
 ```
 
 The key value on both hosts must match the key that `llmcli serve` is configured to

@@ -6,9 +6,9 @@ Unified CLI for local LLM serving — `llama.cpp` + TurboQuant GGUF backends, Op
 
 ```bash
 uv sync
-mkdir -p ~/.config/llmcli/models
-cp llmcli.example.toml ~/.config/llmcli/llmcli.toml
-cp models/*.toml ~/.config/llmcli/models/   # copy example model files, edit as needed
+mkdir -p ~/.roxabi/llmcli/models
+cp llmcli.example.toml ~/.roxabi/llmcli/llmcli.toml
+cp models/*.toml ~/.roxabi/llmcli/models/   # copy example model files, edit as needed
 make register            # wire supervisor hub
 llmcli pull qwen3_6-35b-a3b-tq3             # download model into HF hub cache
 make llm                 # start serving default model on :8091
@@ -35,13 +35,13 @@ Config is split into two parts:
 
 | File | Purpose |
 |---|---|
-| `~/.config/llmcli/llmcli.toml` | Host settings (`[host]` only) |
-| `~/.config/llmcli/models/<name>.toml` | One file per model — name = model key |
+| `~/.roxabi/llmcli/llmcli.toml` | Host settings (`[host]` only) |
+| `~/.roxabi/llmcli/models/<name>.toml` | One file per model — name = model key |
 
 Each model file is flat TOML (no section header):
 
 ```toml
-# ~/.config/llmcli/models/qwen3-14b-q5.toml
+# ~/.roxabi/llmcli/models/qwen3-14b-q5.toml
 engine   = "llamacpp"
 repo     = "Qwen/Qwen3-14B-GGUF"
 file     = "qwen3-14b-q5_k_m.gguf"
@@ -50,7 +50,7 @@ vram_gib = 11
 flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
 ```
 
-To add a model: copy any file from `models/` in this repo, drop it in `~/.config/llmcli/models/`, and edit. No restart needed — `llmcli list` picks it up immediately.
+To add a model: copy any file from `models/` in this repo, drop it in `~/.roxabi/llmcli/models/`, and edit. No restart needed — `llmcli list` picks it up immediately.
 
 Inline `[models.*]` in the main toml still works for backward compat; the `models/` dir takes precedence on name conflict. Local host (roxabitower, 5070 Ti 16 GB) holds heavy models; prod (roxabituwer, 3080 10 GB) pins small always-on models.
 
@@ -67,3 +67,15 @@ llama-server :PORT  ◄── llmcli_serve (supervisor, catalog-driven hot-swap)
 ## Supervisor
 
 Single program `llmcli_serve` registered into the lyra hub supervisor via `make register`. Local: `autostart=false`. Prod: `autostart=true`.
+
+## Quadlet (production HTTP proxy)
+
+Run `llmcli proxy` under user-systemd via a Podman Quadlet on `:18091`:
+
+```bash
+make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env
+systemctl --user start llmcli
+```
+
+See `docs/guides/deployment.md` → "Running `llmcli proxy` as a Quadlet" for the full flow.

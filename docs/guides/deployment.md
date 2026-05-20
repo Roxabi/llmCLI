@@ -74,9 +74,9 @@ if installed). No extra setup needed — `llmcli pull` downloads into this locat
 ### 2.5 API key
 
 ```bash
-mkdir -p ~/.config/llmcli
-echo "your-api-key-here" > ~/.config/llmcli/api_key
-chmod 600 ~/.config/llmcli/api_key
+install -d -m 700 ~/.roxabi/llmcli
+echo "your-api-key-here" > ~/.roxabi/llmcli/api_key
+chmod 600 ~/.roxabi/llmcli/api_key
 ```
 
 The supervisor wrapper (`supervisor/scripts/run_serve.sh`) sources
@@ -84,7 +84,7 @@ The supervisor wrapper (`supervisor/scripts/run_serve.sh`) sources
 
 ```bash
 cat > ~/projects/llmCLI/.env <<'EOF'
-LLMCLI_API_KEY=$(cat ~/.config/llmcli/api_key)
+LLMCLI_API_KEY=$(cat ~/.roxabi/llmcli/api_key)
 EOF
 ```
 
@@ -101,10 +101,10 @@ cd ~/projects/llmCLI
 uv sync
 
 # Set up catalog
-cp llmcli.example.toml ~/.config/llmcli/llmcli.toml
+cp llmcli.example.toml ~/.roxabi/llmcli/llmcli.toml
 ```
 
-Edit `~/.config/llmcli/llmcli.toml` for prod. Replace the dev models with small models
+Edit `~/.roxabi/llmcli/llmcli.toml` for prod. Replace the dev models with small models
 that fit within 10 GB VRAM. See `llmcli.example.toml` for the full schema.
 
 Minimal prod catalog:
@@ -223,7 +223,7 @@ Verify the proxy forwards to llmCLI:
 ```bash
 curl -s http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat ~/.config/llmcli/api_key)" \
+  -H "Authorization: Bearer $(cat ~/.roxabi/llmcli/api_key)" \
   -d '{"model":"qwen3-8b-q4","messages":[{"role":"user","content":"ping"}]}' \
   | jq .choices[0].message.content
 ```
@@ -304,7 +304,30 @@ prod catalog without updating `vram_budget_gib`.
 
 ---
 
-## 9. Troubleshooting
+## 9. Migration from ~/.config/llmcli/
+
+If you deployed an older version of llmCLI that stored its catalog at `~/.config/llmcli/`,
+run this sequence on the prod host to move to the new Roxabi data-dir path:
+
+```bash
+make llm stop
+mv ~/.config/llmcli ~/.roxabi/llmcli
+make llm start
+llmcli list  # verify catalog loads
+```
+
+If you cannot migrate immediately, set `LLMCLI_CONFIG=~/.config/llmcli/llmcli.toml` in
+your supervisor env (e.g. in `~/projects/llmCLI/.env`) to pin the old path explicitly.
+
+### Environment variable reference
+
+| Variable | Description |
+|---|---|
+| `LLMCLI_CONFIG` | Path to llmcli.toml. Defaults to `~/.roxabi/llmcli/llmcli.toml`. Useful as a migration escape hatch or for multi-tenant catalogs. |
+
+---
+
+## 10. Troubleshooting
 
 ### Stale socket after crash
 
@@ -512,3 +535,230 @@ The `run_serve.sh` probe polls `/health` for up to 180 s before supervisor marks
 program ready (see [`supervisor/scripts/run_serve.sh`](../../supervisor/scripts/run_serve.sh),
 `LLMCLI_PROBE_TIMEOUT`). A timeout here means the model failed to load — check VRAM and
 binary availability.
+
+---
+
+## Running `llmcli proxy` (managed LiteLLM portal)
+
+`llmcli proxy` reads the llmcli catalog (`~/.roxabi/llmcli/llmcli.toml`), builds a
+complete LiteLLM config, and spawns `litellm` as a supervised foreground process on
+`:18091` by default. This replaces the hand-maintained `~/.litellm/config.yaml` + lyra
+supervisor pattern for new deployments.
+
+### Invocation
+
+```bash
+llmcli proxy                           # bind 0.0.0.0:18091 (defaults)
+llmcli proxy --port 4001 --host 127.0.0.1
+LLMCLI_PROXY_PORT=4002 llmcli proxy
+```
+
+`--port` and `--host` can also be set via environment variables `LLMCLI_PROXY_PORT` and
+`LLMCLI_PROXY_HOST`. The command blocks until the child exits; stdout and stderr from
+`litellm` are inherited directly (structured JSON logs, no Rich wrapping).
+
+### Dry-run mode (`--config-out`)
+
+```bash
+llmcli proxy --config-out /tmp/proxy.config.yaml
+cat /tmp/proxy.config.yaml | yq .general_settings.master_key
+```
+
+Writes the generated LiteLLM YAML to `PATH` and exits `0` without spawning `litellm`.
+Provider-key validation still runs — missing keys abort before writing. Useful for:
+
+- Inspecting the catalog-to-YAML mapping during development
+- `ExecStartPre` in a Podman Quadlet unit (validate config before the service starts)
+
+When `--config-out` is not provided, the generated config is written to
+`~/.local/state/llmcli/proxy.config.yaml` (file mode `0600`, directory mode `0700`)
+before `litellm` is spawned.
+
+### Required environment variables
+
+Set these in the process environment or in `~/.litellm/.env` (litellm reads this file at
+startup):
+
+| Variable | Purpose | When required |
+|---|---|---|
+| `LLMCLI_API_KEY` | Master key clients use to authenticate to the proxy (`Authorization: Bearer`) | Always |
+| `FIREWORKS_API_KEY` | Fireworks AI backend | Catalog has `provider = "fireworks"` remote models |
+| `ANTHROPIC_API_KEY` | Anthropic backend | Catalog has `provider = "anthropic"` remote models |
+| `NVIDIA_API_KEY` | NVIDIA NIM backend | Catalog has `provider = "nvidia-nim"` remote models |
+
+`LLMCLI_API_KEY` is passed to LiteLLM as an `os.environ/` reference in `general_settings.master_key`; litellm resolves it at startup. Missing provider keys are caught by `llmcli proxy` before the child spawns — the command exits `1` and prints one actionable line per missing key:
+
+```
+Missing provider key for 'kimi-k2.6': set FIREWORKS_API_KEY (in environment or ~/.litellm/.env)
+```
+
+### Manual smoke commands (post-spawn, separate terminal)
+
+```bash
+# Liveliness
+curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/health/liveliness | jq .
+
+# Model list
+curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/v1/models | jq '.data[].id'
+
+# No orphan litellm processes after Ctrl-C
+pgrep -fa litellm
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean exit from the child `litellm` process |
+| `1` | Missing provider key — pre-spawn validation failure |
+| `127` | `litellm` binary not found on `PATH` — install with `uv add 'litellm[proxy]'` |
+| `130` | Interrupted via Ctrl-C (POSIX convention: 128 + SIGINT 2) |
+| `137` | Child killed by SIGKILL — e.g. OOM (POSIX: 128 + 9) |
+| `143` | Child killed by SIGTERM (POSIX: 128 + 15) |
+
+Any other non-zero code is the child's own exit code, passed through unchanged.
+
+### Signal handling
+
+`llmcli proxy` installs handlers for both SIGTERM and SIGINT before blocking on the
+child:
+
+1. **First SIGTERM or SIGINT** — calls `child.terminate()` (sends SIGTERM to the litellm
+   process), then polls `child.poll()` in 0.1s ticks for up to 10 seconds. If the child
+   has not exited after the drain window, `child.kill()` (SIGKILL) is sent.
+2. **Second SIGINT during the drain window** — bypasses the remaining drain and calls
+   `child.kill()` immediately, then exits `130`.
+
+This ensures that `systemd`, `supervisord`, and interactive Ctrl-C all receive a clean
+shutdown while preventing the process from hanging indefinitely on an unresponsive child.
+
+---
+
+## Running `llmcli proxy` as a Quadlet
+
+### When to use this
+
+Use this path for production deployments on M₁ (roxabituwer) and for development on M₂
+(roxabitower) when you want `llmcli proxy` to start automatically and survive reboots.
+User-systemd owns the lifecycle: `systemctl --user start/restart/stop/status llmcli`.
+If you only need a quick one-off run or are troubleshooting the proxy interactively, use the
+foreground invocation described in the
+[Running `llmcli proxy` (managed LiteLLM portal)](#running-llmcli-proxy-managed-litellm-portal)
+section above.
+
+### Pre-merge local-build flow
+
+On the dev host (roxabitower), the published image at `ghcr.io/roxabi/llmcli:staging` does
+not yet contain `litellm` until this PR merges and CI rebuilds. Build locally with the same
+tag so the Quadlet picks it up without any unit-file change:
+
+```bash
+# On the dev host (roxabitower) before the PR merges:
+podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .
+make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env   # fill in keys
+systemctl --user start llmcli
+```
+
+The local build overrides the registry image with the same tag, so the Quadlet picks it up
+without any change to the unit file.
+
+### Post-merge registry pull
+
+After the PR merges to staging, CI's `.github/workflows/publish.yml` rebuilds and pushes the
+updated image to `ghcr.io/roxabi/llmcli:staging`. The `Label=io.containers.autoupdate=registry`
+directive in the Quadlet hooks into the system-wide `podman auto-update.timer` — enable it
+if you want fully automatic image refresh (optional). Manual refresh:
+
+```bash
+podman pull ghcr.io/roxabi/llmcli:staging && systemctl --user restart llmcli
+```
+
+### Env file template
+
+The env file lives at `~/.config/containers/systemd/llmcli.env` (chmod 600). `make install-quadlet`
+creates this stub idempotently — it **never** overwrites an existing file:
+
+```bash
+# ~/.config/containers/systemd/llmcli.env — chmod 600
+LLMCLI_API_KEY=
+FIREWORKS_API_KEY=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+NVIDIA_API_KEY=
+```
+
+To rotate a key, edit the file and `systemctl --user restart llmcli`.
+
+### systemctl --user lifecycle
+
+```bash
+systemctl --user start    llmcli           # start (idempotent)
+systemctl --user restart  llmcli           # restart after env or catalog change
+systemctl --user stop     llmcli           # graceful drain (TimeoutStopSec=20s)
+systemctl --user status   llmcli           # current state + last log lines
+systemctl --user is-active llmcli          # binary check, exit 0 if active
+journalctl --user -u llmcli -f             # live tail
+journalctl --user -u llmcli --since today  # today's log
+```
+
+### Failure modes
+
+| Failure | Symptom | Recovery |
+|---|---|---|
+| `~/.config/containers/systemd/llmcli.env` missing | `daemon-reload` warns; `start` fails with `EnvironmentFile not found` | `make install-quadlet` recreates stub |
+| `LLMCLI_API_KEY` or provider key empty | `llmcli proxy` exits 1; `RestartForceExitStatus=1` suppresses restart — unit enters `failed` immediately with no retry burn-up | populate env file, `systemctl --user reset-failed llmcli && systemctl --user start llmcli` |
+| `litellm` missing in image | `llmcli proxy` exits 127 ("litellm binary not found"); `RestartForceExitStatus=127` suppresses restart — unit `failed` immediately | rebuild image locally with this PR's `Dockerfile.llm` OR wait for CI rebuild |
+| Image not present + no network on M₁ | `podman` run fails (no pull source) | `podman pull ghcr.io/roxabi/llmcli:staging` on host first, OR local `podman build` from this repo |
+| Port 18091 already bound | container fails to publish port; unit `failed` | identify conflict, free port, restart |
+| User-linger off on M₁ | service stops after logout | `loginctl enable-linger mickael` |
+| Operator runs `systemctl --user enable llmcli.service` | "Created symlink … → /dev/null" — Quadlet generator masks the unit name | ignore; nothing is broken |
+| Container binds 127.0.0.1 inside (PROXY_HOST override accident) | `:18091` answers nothing externally | `Environment=LLMCLI_PROXY_HOST=0.0.0.0` default in unit prevents this unless explicitly overridden in env file |
+
+### `reset-failed` after StartLimitBurst exhaustion
+
+If the proxy crashes 5 times within 60s, systemd parks the unit in `failed` and stops
+retrying. After fixing the root cause (check `journalctl --user -u llmcli` for details):
+
+```bash
+systemctl --user reset-failed llmcli
+systemctl --user start llmcli
+```
+
+The proxy's two non-retryable exit codes — `1` (provider key missing) and `127` (litellm
+binary missing in image) — are declared in `RestartForceExitStatus=1 127`, so they enter
+`failed` immediately without burning the restart budget.
+
+### Inspecting config from inside the container
+
+The container name is fixed at `llmcli` (set by `ContainerName=llmcli` in the unit). While
+the container is running, dump the rendered LiteLLM config with:
+
+```bash
+# Dump the rendered LiteLLM config (proxy is a one-shot here)
+podman exec llmcli llmcli proxy --config-out /dev/stdout
+```
+
+Note that `curl` is intentionally absent from the image; for external HTTP probing use
+`curl -s http://localhost:18091/health/liveliness` from the host.
+
+### M₁ (prod) one-time linger setup
+
+Linger allows the user-systemd instance to start at boot even when no interactive session is
+open. On M₁ (roxabituwer) this is already configured because lyra requires it:
+
+```bash
+# Once per machine (prod). Already set on roxabituwer (lyra requires it).
+loginctl enable-linger mickael
+loginctl show-user mickael | grep Linger=yes
+```
+
+Without linger, the unit only runs while a user session is open. M₂ (roxabitower) typically
+has linger off, so the operator runs `systemctl --user start llmcli` after login.
+
+### Drop-ins
+
+The Quadlet generator emits an immutable `llmcli.service` at runtime — any direct edits to
+that file are overwritten on the next `daemon-reload`. Persistent overrides go in
+`~/.config/systemd/user/llmcli.service.d/*.conf`; drop-in files are merged on `daemon-reload`
+and survive Quadlet regeneration.

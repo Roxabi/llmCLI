@@ -51,15 +51,19 @@ class GenerationMixin:
             "trace_id": payload.get("trace_id"),
         }
         # builders.py does not accept worker_error= — build envelope manually.
-        data = LlmResponse(
-            contract_version=CONTRACT_VERSION,
-            trace_id=safe_payload.get("trace_id") or safe_payload["request_id"],
-            issued_at=datetime.now(timezone.utc),
-            request_id=safe_payload["request_id"],
-            ok=False,
-            error=worker_error.message,
-            worker_error=worker_error,
-        ).model_dump_json(exclude_none=True).encode()
+        data = (
+            LlmResponse(
+                contract_version=CONTRACT_VERSION,
+                trace_id=safe_payload.get("trace_id") or safe_payload["request_id"],
+                issued_at=datetime.now(timezone.utc),
+                request_id=safe_payload["request_id"],
+                ok=False,
+                error=worker_error.message,
+                worker_error=worker_error,
+            )
+            .model_dump_json(exclude_none=True)
+            .encode()
+        )
         await self.reply(msg, data)
 
     # ------------------------------------------------------------------
@@ -125,16 +129,20 @@ class GenerationMixin:
         if stream and msg.reply and self._nc:
             try:
                 # builders.py does not accept worker_error= — build envelope manually.
-                data = LlmChunkEvent(
-                    contract_version=CONTRACT_VERSION,
-                    trace_id=payload.get("trace_id") or request_id,
-                    issued_at=datetime.now(timezone.utc),
-                    request_id=request_id,
-                    done=True,
-                    is_error=True,
-                    error=we.message,
-                    worker_error=we,
-                ).model_dump_json(exclude_none=True).encode()
+                data = (
+                    LlmChunkEvent(
+                        contract_version=CONTRACT_VERSION,
+                        trace_id=payload.get("trace_id") or request_id,
+                        issued_at=datetime.now(timezone.utc),
+                        request_id=request_id,
+                        done=True,
+                        is_error=True,
+                        error=we.message,
+                        worker_error=we,
+                    )
+                    .model_dump_json(exclude_none=True)
+                    .encode()
+                )
                 await self._nc.publish(msg.reply, data)
             except Exception:  # noqa: BLE001
                 pass
@@ -148,9 +156,7 @@ class GenerationMixin:
     # HTTP calls
     # ------------------------------------------------------------------
 
-    async def _stream_response(
-        self, msg, payload: dict, body: dict, t0: float
-    ) -> None:
+    async def _stream_response(self, msg, payload: dict, body: dict, t0: float) -> None:
         body = {**body, "stream": True}
         nc = self._nc
 
@@ -169,11 +175,7 @@ class GenerationMixin:
                     chunk_data = json.loads(data)
                 except json.JSONDecodeError:
                     continue
-                delta = (
-                    chunk_data.get("choices", [{}])[0]
-                    .get("delta", {})
-                    .get("content")
-                )
+                delta = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta and msg.reply:
                     await nc.publish(
                         msg.reply,
@@ -191,9 +193,7 @@ class GenerationMixin:
                 build_llm_chunk(payload, done=True, duration_ms=duration_ms).encode(),
             )
 
-    async def _blocking_response(
-        self, msg, payload: dict, body: dict, t0: float
-    ) -> None:
+    async def _blocking_response(self, msg, payload: dict, body: dict, t0: float) -> None:
         body = {**body, "stream": False}
         resp = await self._client.post("/chat/completions", json=body)
         resp.raise_for_status()

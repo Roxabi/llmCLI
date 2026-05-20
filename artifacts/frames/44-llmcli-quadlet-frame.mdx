@@ -1,0 +1,64 @@
+---
+title: feat(deploy) — package `llmcli proxy` as Podman Quadlet on M₁ + M₂
+issue: 44
+status: approved
+tier: F-lite
+date: 2026-05-20
+---
+
+## Problem
+
+Step 3 of the central-portal plan (#40) shipped `llmcli proxy` as a foreground binary that owns both config generation and process lifecycle. Step 4 now packages that binary as a Podman Quadlet so user-systemd supervises it directly on both M₁ (prod) and M₂ (dev) — finally allowing the `:4000` lyra-supervisor instance to be retired (Step 6).
+
+Trigger: Step 3 is merged; consumers (lyra, hermes, claude-code) need a stable, restart-survivable `:18091` endpoint that survives reboots without manual `make llm`.
+
+Observable today: `llmcli proxy` must be started manually on both hosts (`make llm` or shell). Crash on M₁ requires manual intervention. M₂ has no clean lifecycle (`make llm` blocks the shell).
+
+## Who
+
+- **Primary:** Mickael (ops) — needs `systemctl --user start/restart/status llmcli` to manage the portal on both hosts with the same grammar
+- **Secondary:**
+  - lyra, hermes, claude-code consumers — gain a stable, restart-survivable `:18091`
+  - M₁ (roxabituwer) — finally drops lyra-supervisor as a hard dep for proxy hosting
+  - Future Quadlet adopters (voiceCLI, imageCLI) — `llmcli.container` becomes the reference pattern
+
+## Constraints
+
+- Quadlet `.container` unit only — no Compose, no Kubernetes (lyra/voiceCLI pattern)
+- M₁ (roxabituwer, prod): autostart via user-linger; restart on crash
+- M₂ (roxabitower, dev): manual `systemctl --user start`, no auto-restart on crash
+- Mount: `~/.roxabi/llmcli/` (catalog, RW) + `~/.local/state/llmcli/` (state, RW) + `~/.cache/huggingface/` (model cache, RW)
+- Env: `LLMCLI_API_KEY`, `LLMCLI_PROXY_PORT=18091`, `LLMCLI_PROXY_HOST=0.0.0.0`
+- Image: reuse llmcli's published image OR build local from `pyproject.toml` if none exists (decide in spec)
+- `enable` is a no-op for Quadlet-generated user units — persistence is auto-wired by the generator (per project memory: `feedback_quadlet_enable_is_noop.md`)
+- Python 3.12, `uv` + `hatchling` (existing stack — no new build runtime)
+
+## Out of Scope
+
+- Retiring the `:4000` lyra-supervisor instance — Step 6 (separate ops task, blocked-by this)
+- Migrating `cccc/cccfk/ccd` aliases from `:4000` → `:18091` — Step 7
+- Resuming Hermes (2 Telegram bots) — Step 8
+- Migrating `deepseek-v4-pro` from hand-written `~/.litellm/config.yaml` to catalog — Step 5b
+- Building / pushing a container image to a registry — if a local image must be built, scope minimally (single `Containerfile`, local `podman build`)
+- Multi-host orchestration tooling (Ansible, Nomad, etc.) — out of band
+
+## Premise Validity
+
+**Success in 6 months:** `systemctl --user status llmcli` is green on M₁ and M₂; the unit survives M₁ reboots (validated via at least one observed reboot); consumers (lyra, hermes, claude-code) transit `:18091`; the `:4000` lyra-supervisor proxy is retired and the `litellm.conf` removed from `~/projects/lyra/deploy/supervisor/conf.d/`.
+
+**Failure in 6 months:** ≥1 prod incident per month on M₁ where the Quadlet fails to start or restart and requires manual `podman` intervention, OR M₂ never adopts the Quadlet (still using `make llm` 6 months in). Either condition is a falsifiable rollback signal — observable via `journalctl --user -u llmcli` (start/restart failures) and via the absence of `llmcli.service` in `systemctl --user list-units` on M₂.
+
+**Simplest alternative:** Raw systemd `.service` unit (no Quadlet) wrapping `podman run …` manually — declares the same restart policy, mounts, env, and port via standard `[Service]` directives.
+**Why not simplest:** Re-invents what Quadlet's generator already does — image refresh hooks (`AutoUpdate=registry`), volume + network plumbing, dependency wiring (`Requires=`/`After=`). Bare-`.service` units drift between M₁ and M₂ because each host's `podman run` flags get edited independently. Quadlet's declarative `.container` format keeps both hosts on the same source-of-truth; the rest of Roxabi (lyra, voiceCLI) is already on this pattern, so reusing it pays a one-time learning cost across the fleet.
+
+## Complexity
+
+**Tier: F-lite** — single new Quadlet unit + Makefile/docs touch + 1 ops smoke; reuses an established pattern (lyra/voiceCLI); no new arch, no new code path in `src/`, single domain (devops).
+
+Signals observed:
+- 1–3 new files: `deploy/quadlet/llmcli.container` + optional `deploy/quadlet/Containerfile` + docs section
+- 0 new dependencies (Podman + systemd already on both hosts)
+- Risk concentration: getting volume mode (`:Z`/`:U`) and user-linger semantics right on M₁ vs M₂; image source (published vs local-build) decision
+- Test surface bounded: smoke (`systemctl --user start llmcli` + `curl :18091/health/liveliness`) on both hosts
+- Multi-host but single domain — no FE / BE / cross-stack coupling
+- Issue label: `enhancement` (no size label assigned; F-lite confirmed by scope review)
