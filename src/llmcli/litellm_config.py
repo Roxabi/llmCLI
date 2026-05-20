@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import logging
 import socket
 import subprocess
 from pathlib import Path
@@ -10,15 +12,54 @@ import yaml
 from .config import Catalog
 from .providers import PROVIDERS
 
+log = logging.getLogger(__name__)
+
 LITELLM_CONFIG = Path.home() / ".litellm" / "config.yaml"
 BLOCK_START = "# --- llmCLI managed block start ---"
 BLOCK_END = "# --- llmCLI managed block end ---"
 
+# Default proxy base used as a fallback when no proxy-base.yaml exists and no catalog is loaded.
+# build_full_config uses a dynamic api_key_ref derived from catalog.host.api_key_env instead.
+_DEFAULT_PROXY_BASE: dict[str, Any] = {
+    "general_settings": {"master_key": "os.environ/LLMCLI_API_KEY"},
+    "litellm_settings": {"drop_params": True},
+}
 
-def build_full_config(
+
+def load_proxy_base(path: Path) -> dict:
+    """Load LiteLLM transport config from optional proxy-base.yaml.
+
+    - File absent (FileNotFoundError) → return deep copy of _DEFAULT_PROXY_BASE.
+    - File present but empty (yaml.safe_load → None) → warn + return deep copy of default.
+    - File present + valid → return parsed dict.
+    - YAML error (syntax error or ConstructorError from unsafe tags) → re-raise yaml.YAMLError.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return copy.deepcopy(_DEFAULT_PROXY_BASE)
+    parsed = yaml.safe_load(text)
+    if parsed is None:
+        log.warning("proxy-base.yaml at %s is empty; using built-in defaults", path)
+        return copy.deepcopy(_DEFAULT_PROXY_BASE)
+    return parsed
+
+
+def merge_proxy_config(base: dict, model_list: list[dict]) -> dict:
+    """Overlay catalog-derived model_list on base; backfill defaults for missing keys."""
+    result = {**base}
+    gs = result.setdefault("general_settings", {})
+    gs.setdefault("master_key", _DEFAULT_PROXY_BASE["general_settings"]["master_key"])
+    ls = result.setdefault("litellm_settings", {})
+    ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
+    result["model_list"] = model_list
+    return result
+
+
+def build_model_list(
     catalog: Catalog, public_base_url: str, *, hostname: str | None = None
-) -> dict[str, Any]:
-    """Build a complete LiteLLM proxy config dict from the catalog.
+) -> list[dict[str, Any]]:
+    """Build the model_list entries from the catalog.
 
     Args:
         catalog: Loaded catalog with host settings and model specs.
@@ -26,8 +67,7 @@ def build_full_config(
         hostname: Override hostname for machine filter (default: socket.gethostname()).
 
     Returns:
-        Dict with keys: general_settings, litellm_settings, model_list.
-        model_list is [] (not None) when the filtered catalog is empty.
+        List of model_list entry dicts. Empty list when the filtered catalog is empty.
     """
     effective_hostname = hostname if hostname is not None else socket.gethostname()
     api_key_ref = f"os.environ/{catalog.host.api_key_env}"
@@ -76,6 +116,25 @@ def build_full_config(
             }
         model_list.append(entry)
 
+    return model_list
+
+
+def build_full_config(
+    catalog: Catalog, public_base_url: str, *, hostname: str | None = None
+) -> dict[str, Any]:
+    """Build a complete LiteLLM proxy config dict from the catalog.
+
+    Args:
+        catalog: Loaded catalog with host settings and model specs.
+        public_base_url: Base URL for the host (e.g. 'http://roxabitower.lan').
+        hostname: Override hostname for machine filter (default: socket.gethostname()).
+
+    Returns:
+        Dict with keys: general_settings, litellm_settings, model_list.
+        model_list is [] (not None) when the filtered catalog is empty.
+    """
+    api_key_ref = f"os.environ/{catalog.host.api_key_env}"
+    model_list = build_model_list(catalog, public_base_url, hostname=hostname)
     return {
         "general_settings": {"master_key": api_key_ref},
         "litellm_settings": {"drop_params": True},

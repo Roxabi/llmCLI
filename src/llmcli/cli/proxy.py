@@ -14,15 +14,8 @@ import yaml
 
 from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
-from llmcli.litellm_config import build_full_config
+from llmcli.litellm_config import load_proxy_base, merge_proxy_config
 from llmcli.providers import PROVIDERS
-
-# Import style note: pure functions (build_full_config, PROVIDERS) are imported
-# directly because tests never patch them through the `llmcli.cli` namespace.
-# Patchable surface (config, build_block, write_block, reload_proxy) goes via
-# the lazy `_cli = llmcli.cli` indirection inside the command bodies — see the
-# patchable-surface docstring in `llmcli/cli/__init__.py`.
-
 
 # ---------------------------------------------------------------------------
 # register-proxy
@@ -102,7 +95,9 @@ def register_proxy(
 
 @app.command()
 def proxy(
-    port: int = typer.Option(18091, "--port", envvar="LLMCLI_PROXY_PORT"),
+    port: Optional[int] = typer.Option(
+        None, "--port", help="Proxy TCP port (env LLMCLI_PROXY_PORT > --port > catalog > 18091)."
+    ),
     host: str = typer.Option("0.0.0.0", "--host", envvar="LLMCLI_PROXY_HOST"),
     config_out: Optional[Path] = typer.Option(
         None, "--config-out", help="Write generated YAML to PATH and exit (dry-run)."
@@ -118,6 +113,14 @@ def proxy(
         err_console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1)
 
+    # 1a. Resolve port via precedence: env > flag > catalog > default(18091)
+    env_port_raw = os.environ.get("LLMCLI_PROXY_PORT")
+    resolved_port = _resolve_port(
+        env_val=int(env_port_raw) if env_port_raw else None,
+        flag_val=port,
+        catalog_port=catalog.host.port,
+    )
+
     # 2. Validate provider keys
     errors = _validate_provider_keys(catalog)
     if errors:
@@ -125,8 +128,19 @@ def proxy(
             err_console.print(f"[red]{err}[/red]")
         raise typer.Exit(1)
 
-    # 3. Build config dict + serialize to YAML
-    cfg = build_full_config(catalog, catalog.host.public_base_url)
+    # 3. Load optional proxy-base.yaml
+    proxy_base_path = Path.home() / ".roxabi" / "llmcli" / "proxy-base.yaml"
+    try:
+        base = load_proxy_base(proxy_base_path)
+    except yaml.YAMLError as exc:
+        err_console.print(f"[red]proxy-base.yaml: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    # 4. Build model_list + merge into layered config
+    from llmcli.litellm_config import build_model_list
+
+    model_list = build_model_list(catalog, catalog.host.public_base_url)
+    cfg = merge_proxy_config(base, model_list)
     yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
 
     # 4. Choose target path
@@ -152,15 +166,15 @@ def proxy(
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
-        if port != 18091:
+        if resolved_port != 18091:
             err_console.print(
-                f"[yellow]--port {port} ignored in --config-out (dry-run) mode[/yellow]"
+                f"[yellow]--port {resolved_port} ignored in --config-out (dry-run) mode[/yellow]"
             )
         console.print(f"[green]Wrote proxy config to {target}[/green]")
         raise typer.Exit(0)
 
     # 7. Spawn litellm, install signal handlers, wait, propagate exit code
-    child = _spawn_litellm(target, port, host)
+    child = _spawn_litellm(target, resolved_port, host)
     _install_signal_handlers(child)
     returncode = child.wait()
     # POSIX convention: negative return = killed by signal N → exit 128+N
@@ -168,6 +182,17 @@ def proxy(
     if returncode < 0:
         raise typer.Exit(128 + abs(returncode))
     raise typer.Exit(returncode)
+
+
+def _resolve_port(env_val: int | None, flag_val: int | None, catalog_port: int | None) -> int:
+    """Resolve final proxy port via precedence: env > flag > catalog > default(18091)."""
+    if env_val is not None:
+        return env_val
+    if flag_val is not None:
+        return flag_val
+    if catalog_port is not None:
+        return catalog_port
+    return 18091
 
 
 def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> list[str]:
