@@ -473,6 +473,14 @@ class TestExitCodePropagation:
         # Act
         with patch("llmcli.cli.config") as mock_config:
             mock_config.load.return_value = catalog
+            # Mock shutil.which so the early binary check passes regardless of host env
+            import llmcli.cli.proxy as proxy_mod
+
+            monkeypatch.setattr(
+                proxy_mod.shutil,
+                "which",
+                lambda name: "/usr/local/bin/litellm" if name == "litellm" else None,
+            )
             monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
             monkeypatch.setattr(
                 "llmcli.cli.proxy._install_signal_handlers",
@@ -509,6 +517,14 @@ class TestExitCodePropagation:
         # Act
         with patch("llmcli.cli.config") as mock_config:
             mock_config.load.return_value = catalog
+            # Mock shutil.which so the early binary check passes regardless of host env
+            import llmcli.cli.proxy as proxy_mod
+
+            monkeypatch.setattr(
+                proxy_mod.shutil,
+                "which",
+                lambda name: "/usr/local/bin/litellm" if name == "litellm" else None,
+            )
             monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
             monkeypatch.setattr(
                 "llmcli.cli.proxy._install_signal_handlers",
@@ -547,6 +563,14 @@ class TestExitCodePropagation:
         # Act
         with patch("llmcli.cli.config") as mock_config:
             mock_config.load.return_value = catalog
+            # Mock shutil.which so the early binary check passes regardless of host env
+            import llmcli.cli.proxy as proxy_mod
+
+            monkeypatch.setattr(
+                proxy_mod.shutil,
+                "which",
+                lambda name: "/usr/local/bin/litellm" if name == "litellm" else None,
+            )
             monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
             monkeypatch.setattr(
                 "llmcli.cli.proxy._install_signal_handlers",
