@@ -689,3 +689,93 @@ class TestBuildBlockHostnameFilter:
         parsed = yaml.safe_load(inner)
         model_list = parsed.get("model_list") if parsed else None
         assert not model_list
+
+
+# ---------------------------------------------------------------------------
+# build_full_config — complete proxy config dict (issue #40)
+# ---------------------------------------------------------------------------
+
+
+def _make_mixed_catalog(
+    remote_machines: list[str] | None = None,
+    local_machines: list[str] | None = None,
+) -> Catalog:
+    """Build a catalog with one remote (openai) model and one local (llamacpp) model."""
+    host = HostSettings(
+        bind="0.0.0.0",
+        public_base_url=PUBLIC_BASE_URL,
+        api_key_env="LLMCLI_API_KEY",
+    )
+    remote_spec = ModelSpec(
+        name="kimi-k2",
+        engine="remote",
+        provider="fireworks",
+        model_id="accounts/fireworks/models/kimi",
+        protocol="openai",
+        machines=remote_machines or [],
+    )
+    local_spec = ModelSpec(
+        name="qwen3-8b",
+        engine="llamacpp",
+        repo="Org/Qwen3-8B-GGUF",
+        file="qwen3-8b-q4_k_m.gguf",
+        port=8091,
+        vram_gib=5.5,
+        machines=local_machines or [],
+    )
+    return Catalog(host=host, models={"kimi-k2": remote_spec, "qwen3-8b": local_spec})
+
+
+from llmcli.litellm_config import build_full_config  # noqa: E402
+
+
+class TestBuildFullConfig:
+    def test_returns_dict_with_required_keys(self) -> None:
+        """Catalog with 1 remote + 1 local model → result has all 3 keys; litellm_settings correct."""
+        # Arrange
+        catalog = _make_mixed_catalog()
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert — all three top-level keys present
+        assert "general_settings" in result
+        assert "litellm_settings" in result
+        assert "model_list" in result
+        # litellm_settings is exactly {"drop_params": True}
+        assert result["litellm_settings"] == {"drop_params": True}
+        # model_list contains entries for both models
+        names = {entry["model_name"] for entry in result["model_list"]}
+        assert names == {"kimi-k2", "qwen3-8b"}
+
+    def test_machines_filter_excludes_non_matching(self) -> None:
+        """Model with machines=["other-host"] is excluded when hostname="this-host"."""
+        # Arrange — remote pinned to "other-host", local open
+        catalog = _make_mixed_catalog(remote_machines=["other-host"], local_machines=[])
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="this-host")
+        # Assert — only the open local model survives the filter
+        names = {entry["model_name"] for entry in result["model_list"]}
+        assert "kimi-k2" not in names
+        assert "qwen3-8b" in names
+
+    def test_master_key_from_api_key_env(self) -> None:
+        """general_settings.master_key == 'os.environ/<api_key_env>'."""
+        # Arrange
+        catalog = _make_mixed_catalog()
+        expected_key = f"os.environ/{catalog.host.api_key_env}"
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert
+        assert result["general_settings"]["master_key"] == expected_key
+
+    def test_empty_filter_yields_empty_list(self) -> None:
+        """All models filtered out → model_list is [] (not None, not absent)."""
+        # Arrange — both models pinned to "never-host"
+        catalog = _make_mixed_catalog(
+            remote_machines=["never-host"],
+            local_machines=["never-host"],
+        )
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="this-host")
+        # Assert — model_list is present AND is an empty list (not None)
+        assert "model_list" in result
+        assert result["model_list"] == []
