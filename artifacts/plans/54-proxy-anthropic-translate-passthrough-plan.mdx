@@ -1,0 +1,762 @@
+---
+title: "Plan: layer hand-curated LiteLLM base over catalog model_list"
+issue: 54
+spec: artifacts/specs/54-proxy-anthropic-translate-passthrough-spec.mdx
+complexity: 5/10
+tier: F-lite
+generated: 2026-05-20
+---
+
+## Summary
+
+Refactor `llmcli proxy` to load an optional `~/.roxabi/llmcli/proxy-base.yaml` (LiteLLM transport config), overlay catalog-derived `model_list`, and spawn LiteLLM against the merged result. Add `[host].port` to catalog with a 4-level resolver (env > flag > catalog > default). Preserve `build_full_config` for legacy `register-proxy`. Ship example template + deployment doc updates.
+
+## Architecture
+
+### Data flow
+
+```mermaid
+flowchart TD
+    subgraph host[Host fs ~/.roxabi/llmcli/]
+        toml["llmcli.toml<br/>[host] + models/"]
+        baseyaml[("proxy-base.yaml<br/>OPTIONAL")]
+    end
+
+    subgraph config[src/llmcli/config.py]
+        loadCatalog["load() → Catalog"]
+        hostsettings["HostSettings<br/>+port: int = 18091"]
+    end
+
+    subgraph litellmcfg[src/llmcli/litellm_config.py]
+        defaultConst["_DEFAULT_PROXY_BASE<br/>module constant"]
+        buildModelList["build_model_list(catalog, base_url)<br/>NEW — extracted"]
+        buildFull["build_full_config(...)<br/>UNCHANGED shape<br/>(register-proxy compat)"]
+    end
+
+    subgraph proxyMod[src/llmcli/cli/proxy.py]
+        loadBase["load_proxy_base(path)<br/>NEW"]
+        mergeConf["merge_proxy_config(base, ml)<br/>NEW"]
+        resolvePort["_resolve_port(env, flag, cat)<br/>NEW"]
+        proxyCmd["proxy() command<br/>REFACTORED"]
+        registerProxy["register-proxy()<br/>UNCHANGED"]
+    end
+
+    merged[("~/.local/state/llmcli/<br/>proxy.config.yaml<br/>0600")]
+    litellm{{"litellm --config"}}
+
+    toml --> loadCatalog --> hostsettings
+    baseyaml --> loadBase
+    defaultConst -.->|fallback| loadBase
+    defaultConst -.->|fallback| mergeConf
+    hostsettings --> buildModelList
+    buildModelList --> mergeConf
+    buildModelList --> buildFull
+    loadBase --> mergeConf
+    mergeConf --> proxyCmd
+    hostsettings --> resolvePort
+    resolvePort --> proxyCmd
+    proxyCmd --> merged
+    merged --> litellm
+    buildFull -.->|legacy path| registerProxy
+
+    style buildModelList fill:#e1f5e1
+    style loadBase fill:#e1f5e1
+    style mergeConf fill:#e1f5e1
+    style resolvePort fill:#e1f5e1
+    style defaultConst fill:#e1f5e1
+    style buildFull fill:#fff4cc
+    style registerProxy fill:#fff4cc
+```
+
+Legend: green = new code, yellow = preserved-untouched, white = refactor surface.
+
+### File × Function map
+
+```mermaid
+flowchart LR
+    subgraph cfg[src/llmcli/config.py]
+        HostSettings["class HostSettings<br/>+port: int = 18091"]
+        Catalog["class Catalog"]
+        parse_host["_parse_host()"]
+    end
+
+    subgraph llc[src/llmcli/litellm_config.py]
+        DEFAULT["_DEFAULT_PROXY_BASE"]
+        buildML["build_model_list()"]
+        buildFC["build_full_config()"]
+        buildBlock["build_block()"]
+    end
+
+    subgraph cli_proxy[src/llmcli/cli/proxy.py]
+        loadPB["load_proxy_base()"]
+        mergePC["merge_proxy_config()"]
+        resPort["_resolve_port()"]
+        proxyFn["proxy()"]
+        regFn["register_proxy()"]
+        validate["_validate_provider_keys()"]
+        spawn["_spawn_litellm()"]
+    end
+
+    subgraph tests
+        tcfg["test_config.py"]
+        tllc["test_litellm_config.py"]
+        tproxy["test_proxy_cmd.py"]
+    end
+
+    parse_host --> HostSettings
+    HostSettings -.->|.port| resPort
+    buildFC --> buildML
+    buildBlock --> buildFC
+    regFn --> buildBlock
+    proxyFn --> loadPB
+    proxyFn --> buildML
+    proxyFn --> mergePC
+    proxyFn --> resPort
+    proxyFn --> validate
+    proxyFn --> spawn
+    loadPB -.->|fallback| DEFAULT
+    mergePC -.->|backfill| DEFAULT
+
+    tcfg --> HostSettings
+    tllc --> buildML
+    tllc --> buildFC
+    tproxy --> loadPB
+    tproxy --> mergePC
+    tproxy --> resPort
+    tproxy --> proxyFn
+```
+
+## Agents
+
+| Agent | Instance | Task count | Files |
+|---|---|---|---|
+| tester | tester-A | 3 | tests/test_config.py, tests/test_proxy_cmd.py |
+| tester | tester-B | 5 | tests/test_litellm_config.py, tests/test_proxy_cmd.py |
+| backend-dev | backend-dev-A | 1 | src/llmcli/config.py, src/llmcli/cli/proxy.py |
+| backend-dev | backend-dev-B | 3 | src/llmcli/litellm_config.py, src/llmcli/cli/proxy.py |
+| devops | devops-A | 2 | llmcli.example.toml, deploy/proxy-base.yaml.example |
+| doc-writer | doc-writer-A | 1 | docs/guides/deployment.md (¬ docs/deploy/deployment.md — spec used wrong subdir; actual home is guides/) |
+
+Total: 15 tasks across 6 agent instances.
+
+## Wave Structure
+
+7 waves, max 4 parallel agents. Elapsed ~3-4 hours vs ~6-8 hours sequential.
+
+| Wave | Trigger | Agents | Tasks |
+|---|---|---|---|
+| 1 | start | 2 ∥ | tester-A: T1 · tester-B: T6→T7→T8 |
+| 2 | Wave 1 done | 2 ∥ | tester-A: T2 · tester-B: T9 |
+| 3 | Wave 2 done | 2 ∥ | backend-dev-A: T3 · backend-dev-B: T10 |
+| 4 | T10 done | 1 | backend-dev-B: T11 |
+| 5 | T3 + T11 done | 1 | backend-dev-B: T12 |
+| 6 | T12 done | 4 ∥ | tester-A: T5 · tester-B: T13 · devops-A: T4→T14 · doc-writer-A: (waits Wave 7) |
+| 7 | Wave 6 done | 1 | doc-writer-A: T15 |
+
+### Budget
+
+| Task | Items | Class | Est. ops | Split? |
+|---|---|---|---|---|
+| T1 V1 tests | 1 | bounded | 3 | — |
+| T2 V1 RED-GATE | 1 | trivial | 2 | — |
+| T3 V1 impl (port + resolver + Typer sig) | 1 | judgmental | 5 | — |
+| T4 example.toml port comment | 1 | trivial | 2 | — |
+| T5 V1 verify | 1 | trivial | 2 | — |
+| T6 load_proxy_base tests | 1 | bounded | 3 | — |
+| T7 merge_proxy_config tests | 1 | bounded | 3 | — |
+| T8 build_model_list + regression tests | 1 | bounded | 3 | — |
+| T9 V2 RED-GATE | 1 | trivial | 2 | — |
+| T10 _DEFAULT_PROXY_BASE + build_model_list extract | 1 | judgmental | 5 | — |
+| T11 load_proxy_base + merge_proxy_config | 1 | judgmental | 5 | — |
+| T12 proxy() refactor | 1 | judgmental | 6 | — |
+| T13 V2 verify + /v1/messages smoke | 1 | bounded | 3 | — |
+| T14 deploy/proxy-base.yaml.example | 1 | bounded | 3 | — |
+| T15 docs/guides/deployment.md update | 1 | judgmental | 5 | — |
+
+**Total estimated ops: ~52** (below force-split threshold of 50 per individual task; total elapsed is fine).
+
+## Consistency Report
+
+| SC | Covered by | Status |
+|---|---|---|
+| SC-1 (port default + parse) | T1 → T3 → T5 | ✓ |
+| SC-2 (env > flag > catalog > default) | T1 → T3 → T5 | ✓ |
+| SC-3 (no file → minimal shape) | T6 → T11 → T13 | ✓ |
+| SC-4 (/v1/messages end-to-end 200) | T13 (live smoke) | ✓ |
+| SC-5 (model_list overwrite) | T7 → T11 → T13 | ✓ |
+| SC-6 (forward-compat for new litellm key) | T7 → T11 → T13 | ✓ |
+| SC-7 (YAML error fail-fast, empty warns) | T6 → T11 → T13 | ✓ |
+| SC-8 (0600/0700 modes) | existing code preserved in T12; T13 verify | ✓ |
+| SC-9 (Quadlet mount via existing dir) | T13 (smoke from container) | ✓ |
+| SC-10 (llmcli.example.toml port comment) | T4 | ✓ |
+| SC-11 (proxy-base.yaml.example) | T14 | ✓ |
+| SC-12 (deployment.md migration recipe) | T15 | ✓ |
+| SC-13 (register-proxy untouched) | T8 (regression test for build_full_config shape) | ✓ |
+| SC-14 (proxy-base.yaml byte-for-byte unchanged) | T8 (hash invariance test) | ✓ |
+| QG-1 (unit test coverage) | T1 + T6 + T7 + T8 | ✓ |
+| QG-2 (existing tests pass) | T8 (build_full_config regression) + T13 (verify suite) | ✓ |
+
+Coverage: 16/16. No uncovered, no untraced.
+
+## Micro-Tasks
+
+### Slice V1 — Catalog `[host].port` + port resolver + Typer signature
+
+#### T1 [RED, tester-A, diff=2]
+
+- **Description:** Write failing tests for `HostSettings.port` (default 18091, parse from TOML) and `_resolve_port(env, flag, catalog) -> int` (4-level precedence).
+- **File:** `tests/test_config.py` (add cases) + `tests/test_proxy_cmd.py` (add `_resolve_port` cases).
+- **Code snippet (test_config.py):**
+  ```python
+  def test_host_settings_port_default():
+      host_data = {"bind": "0.0.0.0", "public_base_url": "http://x.lan", "api_key_env": "K"}
+      hs = _parse_host(host_data)
+      assert hs.port == 18091
+
+  def test_host_settings_port_from_toml():
+      host_data = {"bind": "0.0.0.0", "public_base_url": "http://x.lan",
+                   "api_key_env": "K", "port": 19999}
+      hs = _parse_host(host_data)
+      assert hs.port == 19999
+  ```
+- **Code snippet (test_proxy_cmd.py):**
+  ```python
+  def test_resolve_port_env_wins(monkeypatch):
+      from llmcli.cli.proxy import _resolve_port
+      monkeypatch.setenv("LLMCLI_PROXY_PORT", "20000")
+      assert _resolve_port(env_val=20000, flag_val=21000, catalog_port=19999) == 20000
+
+  def test_resolve_port_flag_beats_catalog():
+      from llmcli.cli.proxy import _resolve_port
+      assert _resolve_port(env_val=None, flag_val=21000, catalog_port=19999) == 21000
+
+  def test_resolve_port_catalog_beats_default():
+      from llmcli.cli.proxy import _resolve_port
+      assert _resolve_port(env_val=None, flag_val=None, catalog_port=19999) == 19999
+
+  def test_resolve_port_default():
+      from llmcli.cli.proxy import _resolve_port
+      assert _resolve_port(env_val=None, flag_val=None, catalog_port=None) == 18091
+  ```
+- **Verify:** `uv run pytest tests/test_config.py tests/test_proxy_cmd.py -k "port or resolve_port" -x 2>&1 | tail -20`
+- **Expected:** All 4 new tests FAIL (AttributeError for HostSettings.port, ImportError for _resolve_port).
+- **Spec trace:** SC-1, SC-2.
+- **Slice:** V1. **Phase:** RED. **[P]:** Y (independent file).
+
+#### T2 [RED-GATE V1, tester-A, diff=1]
+
+- **Description:** Confirm V1 RED tests fail as expected; emit sentinel for V1 GREEN gate.
+- **Verify:** `uv run pytest tests/test_config.py tests/test_proxy_cmd.py -k "port or resolve_port" 2>&1 | grep -E "FAILED|ERROR" | wc -l`
+- **Expected:** ≥ 4 (matches T1 test count).
+- **Spec trace:** N/A (sentinel).
+- **Slice:** V1. **Phase:** RED-GATE.
+
+#### T3 [GREEN, backend-dev-A, diff=3]
+
+- **Description:** Add `port: int = 18091` to `HostSettings`. Parse from `[host]` TOML. Add `_resolve_port(env_val, flag_val, catalog_port) -> int` in `cli/proxy.py`. Change `proxy()` `--port` Typer option from `int = typer.Option(18091, ...)` to `Optional[int] = typer.Option(None, ...)`. Wire `_resolve_port` to pick final port before validate/spawn.
+- **Files:** `src/llmcli/config.py`, `src/llmcli/cli/proxy.py`.
+- **Code snippet (config.py):**
+  ```python
+  @dataclass(frozen=True)
+  class HostSettings:
+      bind: str = "0.0.0.0"
+      public_base_url: str = "http://localhost"
+      api_key_env: str = "LLMCLI_API_KEY"
+      port: int = 18091
+      default_model: str | None = None
+      vram_budget_gib: float | None = None
+  ```
+- **Code snippet (proxy.py):**
+  ```python
+  def _resolve_port(env_val: int | None, flag_val: int | None, catalog_port: int | None) -> int:
+      if env_val is not None: return env_val
+      if flag_val is not None: return flag_val
+      if catalog_port is not None: return catalog_port
+      return 18091
+
+  @app.command()
+  def proxy(
+      port: Optional[int] = typer.Option(None, "--port", envvar="LLMCLI_PROXY_PORT"),
+      ...
+  ) -> None:
+      ...
+      env_port = os.environ.get("LLMCLI_PROXY_PORT")
+      resolved_port = _resolve_port(
+          env_val=int(env_port) if env_port else None,
+          flag_val=port,
+          catalog_port=catalog.host.port,
+      )
+      # use resolved_port for spawn
+  ```
+  Note: Typer auto-resolves env via `envvar=`, but to preserve precedence (env > flag > catalog), the code reads the env raw and resolves manually rather than relying on Typer's merge. The `--port` Typer option remains `Optional[int]` for the explicit-set vs. default distinction.
+- **Verify:** `uv run pytest tests/test_config.py tests/test_proxy_cmd.py -k "port or resolve_port" -x 2>&1 | tail -10`
+- **Expected:** All 4 new tests PASS.
+- **Spec trace:** SC-1, SC-2.
+- **Slice:** V1. **Phase:** GREEN.
+
+#### T4 [REFACTOR, devops-A, diff=1]
+
+- **Description:** Add `# port = 18091  # default` line to `[host]` block in `llmcli.example.toml`.
+- **File:** `llmcli.example.toml`.
+- **Verify:** `grep -E "^# port = 18091" llmcli.example.toml`
+- **Expected:** 1 match.
+- **Spec trace:** SC-10.
+- **Slice:** V1. **Phase:** REFACTOR.
+
+#### T5 [VERIFY, tester-A, diff=1]
+
+- **Description:** Confirm V1 GREEN tests + integration: catalog with `[host].port = 19999` boots proxy on 19999.
+- **Verify:** `cd /tmp && mkdir -p .test-cat/models && cat > .test-cat/llmcli.toml <<EOF
+[host]
+port = 19999
+public_base_url = "http://localhost"
+api_key_env = "LLMCLI_API_KEY"
+EOF
+LLMCLI_CATALOG=$PWD/.test-cat LLMCLI_API_KEY=test uv run llmcli proxy --config-out /tmp/v1-test.yaml && grep -q '"port"\|19999' /tmp/v1-test.yaml || echo "manual: would bind 19999"`
+- **Expected:** Dry-run succeeds; port resolution echoes 19999 in startup log (or merged config reflects it implicitly via spawn args).
+- **Spec trace:** SC-1.
+- **Slice:** V1. **Phase:** VERIFY.
+
+### Slice V2 — Base loader + merge + dry-run + spawn
+
+#### T6 [RED, tester-B, diff=2]
+
+- **Description:** Write failing tests for `load_proxy_base(path: Path) -> dict`: absent file (FNF → _DEFAULT_PROXY_BASE), empty file (yaml.safe_load → None → warn + default), valid YAML, syntax error → raises, ConstructorError → raises.
+- **File:** `tests/test_proxy_cmd.py`.
+- **Code snippet:**
+  ```python
+  def test_load_proxy_base_absent(tmp_path):
+      from llmcli.cli.proxy import load_proxy_base, _DEFAULT_PROXY_BASE
+      result = load_proxy_base(tmp_path / "missing.yaml")
+      assert result == _DEFAULT_PROXY_BASE
+
+  def test_load_proxy_base_empty(tmp_path, caplog):
+      from llmcli.cli.proxy import load_proxy_base, _DEFAULT_PROXY_BASE
+      f = tmp_path / "empty.yaml"
+      f.touch()
+      result = load_proxy_base(f)
+      assert result == _DEFAULT_PROXY_BASE
+      assert any("empty" in r.message.lower() for r in caplog.records)
+
+  def test_load_proxy_base_valid(tmp_path):
+      from llmcli.cli.proxy import load_proxy_base
+      f = tmp_path / "valid.yaml"
+      f.write_text("general_settings:\n  master_key: os.environ/K\n")
+      result = load_proxy_base(f)
+      assert result["general_settings"]["master_key"] == "os.environ/K"
+
+  def test_load_proxy_base_syntax_error(tmp_path):
+      from llmcli.cli.proxy import load_proxy_base
+      f = tmp_path / "broken.yaml"
+      f.write_text("key: : : :\n")
+      with pytest.raises(yaml.YAMLError):
+          load_proxy_base(f)
+
+  def test_load_proxy_base_python_tag(tmp_path):
+      from llmcli.cli.proxy import load_proxy_base
+      f = tmp_path / "unsafe.yaml"
+      f.write_text("foo: !!python/object:os.system []\n")
+      with pytest.raises(yaml.YAMLError):  # ConstructorError is YAMLError subclass
+          load_proxy_base(f)
+  ```
+- **Verify:** `uv run pytest tests/test_proxy_cmd.py -k "load_proxy_base" -x 2>&1 | tail -15`
+- **Expected:** All 5 tests FAIL (ImportError on `load_proxy_base` / `_DEFAULT_PROXY_BASE`).
+- **Spec trace:** SC-3, SC-7.
+- **Slice:** V2. **Phase:** RED. **[P]:** Y.
+
+#### T7 [RED, tester-B, diff=2]
+
+- **Description:** Write failing tests for `merge_proxy_config(base: dict, model_list: list[dict]) -> dict`: default backfill (missing master_key/drop_params → injected), base sections preserved (pass_through, custom litellm settings, unknown sections), model_list always overwritten by computed, forward-compat passthrough.
+- **File:** `tests/test_proxy_cmd.py`.
+- **Code snippet:**
+  ```python
+  def test_merge_backfills_missing_general():
+      from llmcli.cli.proxy import merge_proxy_config
+      base = {"litellm_settings": {"drop_params": True}}
+      result = merge_proxy_config(base, model_list=[])
+      assert result["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+
+  def test_merge_backfills_missing_litellm():
+      from llmcli.cli.proxy import merge_proxy_config
+      base = {"general_settings": {"master_key": "os.environ/X"}}
+      result = merge_proxy_config(base, model_list=[])
+      assert result["litellm_settings"]["drop_params"] is True
+
+  def test_merge_preserves_pass_through():
+      from llmcli.cli.proxy import merge_proxy_config
+      base = {
+          "general_settings": {
+              "master_key": "os.environ/X",
+              "pass_through_endpoints": [{"path": "/fw", "target": "https://fw.ai"}],
+          },
+          "litellm_settings": {
+              "drop_params": True,
+              "use_chat_completions_url_for_anthropic_messages": True,
+          },
+      }
+      result = merge_proxy_config(base, model_list=[])
+      assert result["general_settings"]["pass_through_endpoints"] == [
+          {"path": "/fw", "target": "https://fw.ai"}
+      ]
+      assert result["litellm_settings"]["use_chat_completions_url_for_anthropic_messages"] is True
+
+  def test_merge_overwrites_stray_model_list():
+      from llmcli.cli.proxy import merge_proxy_config
+      base = {"model_list": [{"model_name": "STALE"}]}
+      computed = [{"model_name": "FRESH"}]
+      result = merge_proxy_config(base, model_list=computed)
+      assert result["model_list"] == computed
+
+  def test_merge_forward_compat_passthrough():
+      from llmcli.cli.proxy import merge_proxy_config
+      base = {"router_settings": {"timeout": 600}, "environment_variables": {"FOO": "bar"}}
+      result = merge_proxy_config(base, model_list=[])
+      assert result["router_settings"] == {"timeout": 600}
+      assert result["environment_variables"] == {"FOO": "bar"}
+  ```
+- **Verify:** `uv run pytest tests/test_proxy_cmd.py -k "merge" -x 2>&1 | tail -15`
+- **Expected:** All 5 tests FAIL (ImportError on `merge_proxy_config`).
+- **Spec trace:** SC-3, SC-5, SC-6.
+- **Slice:** V2. **Phase:** RED. **[P]:** Y.
+
+#### T8 [RED, tester-B, diff=2]
+
+- **Description:** Write failing tests for `build_model_list(catalog, base_url)` extraction + regression test confirming `build_full_config` shape unchanged (register-proxy compat) + SC-14 invariance check.
+- **File:** `tests/test_litellm_config.py`.
+- **Code snippet:**
+  ```python
+  def test_build_model_list_matches_build_full_config():
+      """build_model_list returns same list that build_full_config emits in model_list key."""
+      from llmcli.litellm_config import build_full_config, build_model_list
+      cat = _make_catalog({"m1": {"engine": "remote", "provider": "fireworks",
+                                   "model_id": "x/y", "protocol": "openai"}})
+      ml_extracted = build_model_list(cat, PUBLIC_BASE_URL)
+      ml_legacy = build_full_config(cat, PUBLIC_BASE_URL)["model_list"]
+      assert ml_extracted == ml_legacy
+
+  def test_build_full_config_shape_unchanged():
+      """Regression: build_full_config returns dict with same top-level keys as before."""
+      from llmcli.litellm_config import build_full_config
+      cat = _make_catalog({})
+      cfg = build_full_config(cat, PUBLIC_BASE_URL)
+      assert set(cfg.keys()) == {"general_settings", "litellm_settings", "model_list"}
+      assert cfg["general_settings"] == {"master_key": "os.environ/LLMCLI_API_KEY"}
+      assert cfg["litellm_settings"] == {"drop_params": True}
+
+  def test_default_proxy_base_constant_shape():
+      """_DEFAULT_PROXY_BASE matches the minimal shape build_full_config emits."""
+      from llmcli.litellm_config import _DEFAULT_PROXY_BASE
+      assert "general_settings" in _DEFAULT_PROXY_BASE
+      assert _DEFAULT_PROXY_BASE["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+      assert _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"] is True
+
+  def test_proxy_base_yaml_never_mutated(tmp_path, monkeypatch):
+      """SC-14: llmcli proxy + register-proxy do NOT write to proxy-base.yaml."""
+      from llmcli.cli.proxy import load_proxy_base
+      import hashlib
+      f = tmp_path / "proxy-base.yaml"
+      content = "general_settings:\n  master_key: os.environ/X\n"
+      f.write_text(content)
+      h_before = hashlib.sha256(f.read_bytes()).hexdigest()
+      _ = load_proxy_base(f)
+      # Also exercise merge — it must take a dict, not the path
+      h_after = hashlib.sha256(f.read_bytes()).hexdigest()
+      assert h_before == h_after
+  ```
+- **Verify:** `uv run pytest tests/test_litellm_config.py -k "build_model_list or shape_unchanged or default_proxy_base or never_mutated" -x 2>&1 | tail -15`
+- **Expected:** All tests FAIL (ImportError for `build_model_list`, `_DEFAULT_PROXY_BASE`, `load_proxy_base`).
+- **Spec trace:** SC-13, SC-14, QG-1, QG-2.
+- **Slice:** V2. **Phase:** RED. **[P]:** Y.
+
+#### T9 [RED-GATE V2, tester-B, diff=1]
+
+- **Description:** Confirm all V2 RED tests fail; emit sentinel for V2 GREEN gate.
+- **Verify:** `uv run pytest tests/test_proxy_cmd.py tests/test_litellm_config.py -k "load_proxy_base or merge or build_model_list or shape_unchanged or default_proxy_base or never_mutated" 2>&1 | grep -cE "FAILED|ERROR"`
+- **Expected:** ≥ 14 (matches T6+T7+T8 test count).
+- **Spec trace:** N/A (sentinel).
+- **Slice:** V2. **Phase:** RED-GATE.
+
+#### T10 [GREEN, backend-dev-B, diff=3]
+
+- **Description:** Add `_DEFAULT_PROXY_BASE` module-level dict in `litellm_config.py`. Extract `build_model_list(catalog, public_base_url) -> list[dict]` from `build_full_config` internals; refactor `build_full_config` to call `build_model_list` for its `model_list` key (shape preserved). Reuse `_DEFAULT_PROXY_BASE` in `build_full_config`'s `general_settings` + `litellm_settings`.
+- **Files:** `src/llmcli/litellm_config.py`.
+- **Code snippet:**
+  ```python
+  _DEFAULT_PROXY_BASE: dict[str, Any] = {
+      "general_settings": {"master_key": "os.environ/LLMCLI_API_KEY"},
+      "litellm_settings": {"drop_params": True},
+  }
+
+  def build_model_list(
+      catalog: Catalog, public_base_url: str, *, hostname: str | None = None
+  ) -> list[dict[str, Any]]:
+      """Extract model_list from catalog (was inlined in build_full_config)."""
+      effective_hostname = hostname if hostname is not None else socket.gethostname()
+      api_key_ref = f"os.environ/{catalog.host.api_key_env}"
+      model_list: list[dict[str, Any]] = []
+      for name, spec in catalog.models.items():
+          # ... existing per-model logic moved verbatim from build_full_config
+      return model_list
+
+  def build_full_config(
+      catalog: Catalog, public_base_url: str, *, hostname: str | None = None
+  ) -> dict[str, Any]:
+      """Build a complete LiteLLM proxy config dict from the catalog (legacy shape)."""
+      model_list = build_model_list(catalog, public_base_url, hostname=hostname)
+      api_key_ref = f"os.environ/{catalog.host.api_key_env}"
+      return {
+          "general_settings": {"master_key": api_key_ref},
+          "litellm_settings": {"drop_params": True},
+          "model_list": model_list,
+      }
+  ```
+- **Verify:** `uv run pytest tests/test_litellm_config.py -x 2>&1 | tail -10`
+- **Expected:** All V2 litellm_config tests PASS (incl. extraction + shape regression). Existing tests unaffected.
+- **Spec trace:** SC-13, QG-2.
+- **Slice:** V2. **Phase:** GREEN.
+
+#### T11 [GREEN, backend-dev-B, diff=3]
+
+- **Description:** Add `load_proxy_base(path: Path) -> dict` and `merge_proxy_config(base: dict, model_list: list) -> dict` in `cli/proxy.py`. Import `_DEFAULT_PROXY_BASE` from `litellm_config`. `load_proxy_base` handles: FNF → default, None (empty) → warn + default, valid → parsed, YAMLError → re-raise. `merge_proxy_config` backfills missing `general_settings.master_key` and `litellm_settings.drop_params` from `_DEFAULT_PROXY_BASE`, then overlays `model_list`.
+- **Files:** `src/llmcli/cli/proxy.py`.
+- **Code snippet:**
+  ```python
+  import logging
+  from pathlib import Path
+  import yaml
+  from llmcli.litellm_config import _DEFAULT_PROXY_BASE
+
+  log = logging.getLogger(__name__)
+
+  def load_proxy_base(path: Path) -> dict:
+      """Load LiteLLM transport config from optional proxy-base.yaml.
+
+      File absent → return _DEFAULT_PROXY_BASE deep copy.
+      File empty → log warning, return _DEFAULT_PROXY_BASE deep copy.
+      File present + valid → return parsed dict.
+      YAML error (syntax or ConstructorError) → re-raise yaml.YAMLError.
+      """
+      import copy
+      try:
+          text = path.read_text()
+      except FileNotFoundError:
+          return copy.deepcopy(_DEFAULT_PROXY_BASE)
+      parsed = yaml.safe_load(text)
+      if parsed is None:
+          log.warning("proxy-base.yaml at %s is empty; using built-in defaults", path)
+          return copy.deepcopy(_DEFAULT_PROXY_BASE)
+      return parsed
+
+  def merge_proxy_config(base: dict, model_list: list[dict]) -> dict:
+      """Overlay catalog-derived model_list on base; backfill defaults for missing keys."""
+      result = {**base}
+      # Backfill general_settings.master_key
+      gs = result.setdefault("general_settings", {})
+      gs.setdefault("master_key", _DEFAULT_PROXY_BASE["general_settings"]["master_key"])
+      # Backfill litellm_settings.drop_params
+      ls = result.setdefault("litellm_settings", {})
+      ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
+      # Catalog owns models
+      result["model_list"] = model_list
+      return result
+  ```
+- **Verify:** `uv run pytest tests/test_proxy_cmd.py -k "load_proxy_base or merge" -x 2>&1 | tail -15`
+- **Expected:** All 10 V2 proxy_cmd tests PASS.
+- **Spec trace:** SC-3, SC-5, SC-6, SC-7.
+- **Slice:** V2. **Phase:** GREEN.
+
+#### T12 [GREEN, backend-dev-B, diff=4]
+
+- **Description:** Refactor `proxy()` command body: replace `build_full_config(...)` call with `load_proxy_base + build_model_list + merge_proxy_config`. Apply `_resolve_port` for final port. Preserve `--config-out` dry-run path (also uses the merged config). Keep all existing protections: `_validate_provider_keys`, litellm binary check before write, 0o700/0o600 modes, signal handlers.
+- **Files:** `src/llmcli/cli/proxy.py`.
+- **Code snippet (within `proxy()`):**
+  ```python
+  # 1. Load catalog
+  try:
+      catalog = _cli.config.load()
+  except FileNotFoundError as exc:
+      err_console.print(f"[red]{exc}[/red]")
+      raise typer.Exit(code=1)
+
+  # 2. Validate provider keys
+  errors = _validate_provider_keys(catalog)
+  if errors: ...
+
+  # 3. Load proxy base (optional)
+  proxy_base_path = Path.home() / ".roxabi" / "llmcli" / "proxy-base.yaml"
+  try:
+      base = load_proxy_base(proxy_base_path)
+  except yaml.YAMLError as exc:
+      err_console.print(f"[red]proxy-base.yaml: {exc}[/red]")
+      raise typer.Exit(code=1)
+
+  # 4. Build model_list + merge
+  model_list = build_model_list(catalog, catalog.host.public_base_url)
+  cfg = merge_proxy_config(base, model_list)
+  yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+
+  # 5. Resolve port
+  env_port_raw = os.environ.get("LLMCLI_PROXY_PORT")
+  resolved_port = _resolve_port(
+      env_val=int(env_port_raw) if env_port_raw else None,
+      flag_val=port,
+      catalog_port=catalog.host.port,
+  )
+
+  # 6. Write merged + spawn (existing logic, parameterized on resolved_port)
+  ```
+- **Verify (1):** `uv run pytest tests/test_proxy_cmd.py tests/test_litellm_config.py -x 2>&1 | tail -15`
+- **Verify (2 — dry-run end-to-end):** `LLMCLI_API_KEY=test uv run llmcli proxy --config-out /tmp/dryrun.yaml && yq '.litellm_settings, .general_settings, .model_list' /tmp/dryrun.yaml | head -30`
+- **Expected:** All tests pass. Dry-run produces merged YAML with `general_settings`, `litellm_settings`, `model_list` keys.
+- **Spec trace:** SC-1, SC-2, SC-3, SC-5, SC-7, SC-8.
+- **Slice:** V2. **Phase:** GREEN.
+
+#### T13 [VERIFY, tester-B, diff=3]
+
+- **Description:** Run full pytest suite. Rebuild + restart Quadlet container with M₂'s `~/.roxabi/llmcli/proxy-base.yaml` containing FW pass-through + Anthropic translate. Smoke `POST /v1/messages` returns non-4xx (SC-4 end-to-end). Verify SC-9 (container reads file): `podman exec llmcli test -r /home/llmcli/.roxabi/llmcli/proxy-base.yaml`.
+- **Verify:**
+  ```bash
+  # Tests
+  uv run pytest 2>&1 | tail -5
+
+  # Build proxy-base.yaml for smoke (idempotent — copy from example)
+  install -m 600 deploy/proxy-base.yaml.example ~/.roxabi/llmcli/proxy-base.yaml
+
+  # Rebuild + restart
+  podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .
+  systemctl --user reset-failed llmcli
+  systemctl --user restart llmcli
+  sleep 10
+
+  # SC-9
+  podman exec llmcli test -r /home/llmcli/.roxabi/llmcli/proxy-base.yaml && echo "SC-9 ✓"
+
+  # SC-4 end-to-end Anthropic
+  curl -sS -o /tmp/anth -w '%{http_code}\n' \
+    -H "Authorization: Bearer sk-roxabitower-local" \
+    -H 'content-type: application/json' \
+    -H 'anthropic-version: 2023-06-01' \
+    -d '{"model":"kimi-k2.6","max_tokens":16,"messages":[{"role":"user","content":"ok"}]}' \
+    http://127.0.0.1:18091/v1/messages
+  ```
+- **Expected:** pytest 0 failures. SC-9 exit 0. SC-4 HTTP < 400 (non-4xx, body is valid).
+- **Spec trace:** SC-4, SC-9, QG-1, QG-2.
+- **Slice:** V2. **Phase:** VERIFY.
+
+### Slice V3 — Example + Docs
+
+#### T14 [P, devops-A, diff=2]
+
+- **Description:** Create `deploy/proxy-base.yaml.example` with FW pass-through, Anthropic translate, drop_params, master_key. Include inline comments: `# secrets MUST use os.environ/FOO; literals are NOT validated and will leak`. Match the spec example block.
+- **File:** `deploy/proxy-base.yaml.example`.
+- **Verify:** `yq '.general_settings.pass_through_endpoints[0].path, .litellm_settings.use_chat_completions_url_for_anthropic_messages' deploy/proxy-base.yaml.example`
+- **Expected:** Outputs `/fw-anthropic` and `true`.
+- **Spec trace:** SC-11.
+- **Slice:** V3. **Phase:** GREEN. **[P]:** Y.
+
+#### T15 [P, doc-writer-A, diff=4]
+
+- **Description:** Update `docs/guides/deployment.md` `## Running llmcli proxy as a Quadlet` section. Add subsections:
+  1. **Files and roles** table (catalog / proxy-base.yaml / merged.yaml).
+  2. **Port precedence** numbered list (env > flag > catalog > default 18091).
+  3. **Migration recipe** from `:4000` to Quadlet:
+     - Pre-flight: catalog has `[host].port` (or default applies)
+     - `install -m 600 deploy/proxy-base.yaml.example ~/.roxabi/llmcli/proxy-base.yaml`
+     - Edit `~/.roxabi/llmcli/proxy-base.yaml` (FW key ref, Anthropic translate)
+     - Dry-run: `llmcli proxy --config-out /tmp/check.yaml; yq . /tmp/check.yaml`
+     - Restart: `systemctl --user restart llmcli`
+     - Smoke: `curl :PORT/health` + `curl :PORT/v1/models -H "Authorization: Bearer …"`
+     - Rollback: `rm ~/.roxabi/llmcli/proxy-base.yaml && systemctl --user restart llmcli`
+  4. Note: spec's reference to `docs/deploy/deployment.md` was a typo — content goes to `docs/guides/deployment.md` (existing file with Quadlet section).
+- **File:** `docs/guides/deployment.md`.
+- **Verify:** `grep -E "^### (Files and roles|Port precedence|Migration recipe)" docs/guides/deployment.md | wc -l`
+- **Expected:** 3.
+- **Spec trace:** SC-12.
+- **Slice:** V3. **Phase:** GREEN. **[P]:** Y.
+
+## Wave Structure (Detailed Dependencies)
+
+```
+Wave 1: T1 (tester-A) ∥ T6→T7→T8 (tester-B)
+Wave 2: T2 (tester-A) ∥ T9 (tester-B)
+Wave 3: T3 (backend-dev-A) ∥ T10 (backend-dev-B)
+Wave 4: T11 (backend-dev-B)        [blockedBy T10]
+Wave 5: T12 (backend-dev-B)        [blockedBy T3, T11]
+Wave 6: T4 (devops-A) ∥ T5 (tester-A) ∥ T13 (tester-B) ∥ T14 (devops-A — after T4)
+Wave 7: T15 (doc-writer-A)         [blockedBy T13 — needs verified behavior to document]
+```
+
+## Task Seeding Blueprint
+
+<!-- Used by /implement to seed TaskCreate calls on session start.
+     Format: T{n} | agent-instance | blockedBy | subject
+     blockedBy refs T-numbers within this list (not session task IDs). -->
+
+### Wave 1 — no deps, 2 testers ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T1 | tester-A | — | RED: V1 tests — port + _resolve_port |
+| T6 | tester-B | — | RED: load_proxy_base tests (FNF/empty/valid/syntax/python-tag) |
+| T7 | tester-B | T6 | RED: merge_proxy_config tests (backfill/preserve/overwrite/forward-compat) |
+| T8 | tester-B | T7 | RED: build_model_list extract + build_full_config shape + SC-14 hash invariance |
+
+### Wave 2 — RED-GATEs, after Wave 1
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T2 | tester-A | T1 | RED-GATE V1: verify port tests fail |
+| T9 | tester-B | T6, T7, T8 | RED-GATE V2: verify all V2 tests fail |
+
+### Wave 3 — GREEN initial, after Wave 2
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T3 | backend-dev-A | T2 | GREEN V1: HostSettings.port + _resolve_port + --port Optional |
+| T10 | backend-dev-B | T9 | GREEN V2 part 1: _DEFAULT_PROXY_BASE + build_model_list extract |
+
+### Wave 4 — V2 mid, after T10
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T11 | backend-dev-B | T10 | GREEN V2 part 2: load_proxy_base + merge_proxy_config |
+
+### Wave 5 — V2 final, after T3 + T11
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T12 | backend-dev-B | T3, T11 | GREEN V2 part 3: proxy() refactor + _resolve_port wiring |
+
+### Wave 6 — VERIFY + examples ∥, after T12
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T4 | devops-A | T3 | REFACTOR: llmcli.example.toml port comment |
+| T5 | tester-A | T12 | VERIFY V1: integration test for port resolution |
+| T13 | tester-B | T12, T14 | VERIFY V2: full pytest + Quadlet rebuild + /v1/messages smoke |
+| T14 | devops-A | T4 | REFACTOR: deploy/proxy-base.yaml.example with FW + translate |
+
+### Wave 7 — Docs, after T13
+
+| Task | Agent instance | blockedBy | Subject |
+|------|----------------|-----------|---------|
+| T15 | doc-writer-A | T13 | REFACTOR: docs/guides/deployment.md migration recipe |
+
+## Task IDs
+
+<!-- Generated by /plan. Used by /implement to resume tasks on session restart. -->
+- T1: 91 — RED: HostSettings.port + _resolve_port tests
+- T2: 92 — RED-GATE V1: verify port tests fail
+- T3: 93 — GREEN V1: HostSettings.port + _resolve_port + --port Optional
+- T4: 94 — REFACTOR: llmcli.example.toml port comment
+- T5: 95 — VERIFY V1: integration test for port resolution
+- T6: 96 — RED: load_proxy_base tests (FNF/empty/valid/syntax/python-tag)
+- T7: 97 — RED: merge_proxy_config tests (backfill/preserve/overwrite/forward-compat)
+- T8: 98 — RED: build_model_list extract + build_full_config shape + SC-14 invariance
+- T9: 99 — RED-GATE V2: verify all V2 tests fail
+- T10: 100 — GREEN V2 part 1: _DEFAULT_PROXY_BASE + build_model_list extract
+- T11: 101 — GREEN V2 part 2: load_proxy_base + merge_proxy_config
+- T12: 102 — GREEN V2 part 3: proxy() refactor + _resolve_port wiring
+- T13: 103 — VERIFY V2: full pytest + Quadlet rebuild + /v1/messages smoke
+- T14: 104 — REFACTOR: deploy/proxy-base.yaml.example with FW + translate
+- T15: 105 — REFACTOR: docs/guides/deployment.md migration recipe
