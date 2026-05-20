@@ -596,7 +596,7 @@ Missing provider key for 'kimi-k2.6': set FIREWORKS_API_KEY (in environment or ~
 
 ```bash
 # Liveliness
-curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/health | jq .
+curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/health/liveliness | jq .
 
 # Model list
 curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/v1/models | jq '.data[].id'

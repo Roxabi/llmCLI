@@ -135,6 +135,16 @@ def proxy(
     else:
         target = Path.home() / ".local" / "state" / "llmcli" / "proxy.config.yaml"
 
+    # 4a. Spawn path: validate litellm binary exists BEFORE writing the config file
+    # so we never leave a stale ~/.local/state/llmcli/proxy.config.yaml on PATH failure.
+    if config_out is None:
+        if shutil.which("litellm") is None:
+            err_console.print(
+                "[red]litellm binary not found on PATH.[/red] "
+                "Install with: uv tool install 'litellm[proxy]' or `uv add 'litellm[proxy]'`"
+            )
+            raise typer.Exit(127)
+
     # 5. Write with 0o700 dir mode, 0o600 file mode
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     target.write_text(yaml_text)

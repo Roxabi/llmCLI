@@ -812,6 +812,27 @@ class TestBuildFullConfig:
         assert "model_list" in result
         assert result["model_list"] == []
 
+    def test_unknown_provider_raises_value_error(self) -> None:
+        """build_full_config raises ValueError for an engine='remote' spec with unknown provider."""
+        # Arrange: catalog with engine="remote", provider not in PROVIDERS
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        bad_spec = ModelSpec(
+            name="unknown-model",
+            engine="remote",
+            provider="not-a-real-provider",
+            model_id="some/model",
+            protocol="openai",
+            machines=[],
+        )
+        catalog = Catalog(host=host, models={"unknown-model": bad_spec})
+        # Act + Assert
+        with pytest.raises(ValueError, match="Unknown provider"):
+            build_full_config(catalog, PUBLIC_BASE_URL)
+
     def test_anthropic_protocol_entry_has_no_api_base(self) -> None:
         """Anthropic-protocol remote spec produces an entry without api_base, model prefixed anthropic/.
 
