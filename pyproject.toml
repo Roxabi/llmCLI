@@ -61,7 +61,7 @@ nats = [
     "roxabi-contracts",
 ]
 proxy = [
-    "litellm>=1.0",
+    "litellm[proxy]>=1.0",
 ]
 
 [tool.uv.sources]
