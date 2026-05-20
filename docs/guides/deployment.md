@@ -535,3 +535,99 @@ The `run_serve.sh` probe polls `/health` for up to 180 s before supervisor marks
 program ready (see [`supervisor/scripts/run_serve.sh`](../../supervisor/scripts/run_serve.sh),
 `LLMCLI_PROBE_TIMEOUT`). A timeout here means the model failed to load — check VRAM and
 binary availability.
+
+---
+
+## Running `llmcli proxy` (managed LiteLLM portal)
+
+`llmcli proxy` reads the llmcli catalog (`~/.roxabi/llmcli/llmcli.toml`), builds a
+complete LiteLLM config, and spawns `litellm` as a supervised foreground process on
+`:18091` by default. This replaces the hand-maintained `~/.litellm/config.yaml` + lyra
+supervisor pattern for new deployments.
+
+### Invocation
+
+```bash
+llmcli proxy                           # bind 0.0.0.0:18091 (defaults)
+llmcli proxy --port 4001 --host 127.0.0.1
+LLMCLI_PROXY_PORT=4002 llmcli proxy
+```
+
+`--port` and `--host` can also be set via environment variables `LLMCLI_PROXY_PORT` and
+`LLMCLI_PROXY_HOST`. The command blocks until the child exits; stdout and stderr from
+`litellm` are inherited directly (structured JSON logs, no Rich wrapping).
+
+### Dry-run mode (`--config-out`)
+
+```bash
+llmcli proxy --config-out /tmp/proxy.config.yaml
+cat /tmp/proxy.config.yaml | yq .general_settings.master_key
+```
+
+Writes the generated LiteLLM YAML to `PATH` and exits `0` without spawning `litellm`.
+Provider-key validation still runs — missing keys abort before writing. Useful for:
+
+- Inspecting the catalog-to-YAML mapping during development
+- `ExecStartPre` in a Podman Quadlet unit (validate config before the service starts)
+
+When `--config-out` is not provided, the generated config is written to
+`~/.local/state/llmcli/proxy.config.yaml` (file mode `0600`, directory mode `0700`)
+before `litellm` is spawned.
+
+### Required environment variables
+
+Set these in the process environment or in `~/.litellm/.env` (litellm reads this file at
+startup):
+
+| Variable | Purpose | When required |
+|---|---|---|
+| `LLMCLI_API_KEY` | Master key clients use to authenticate to the proxy (`Authorization: Bearer`) | Always |
+| `FIREWORKS_API_KEY` | Fireworks AI backend | Catalog has `provider = "fireworks"` remote models |
+| `ANTHROPIC_API_KEY` | Anthropic backend | Catalog has `provider = "anthropic"` remote models |
+| `NVIDIA_API_KEY` | NVIDIA NIM backend | Catalog has `provider = "nvidia-nim"` remote models |
+
+`LLMCLI_API_KEY` is passed to LiteLLM as an `os.environ/` reference in `general_settings.master_key`; litellm resolves it at startup. Missing provider keys are caught by `llmcli proxy` before the child spawns — the command exits `1` and prints one actionable line per missing key:
+
+```
+Missing provider key for 'kimi-k2.6': set FIREWORKS_API_KEY (in environment or ~/.litellm/.env)
+```
+
+### Manual smoke commands (post-spawn, separate terminal)
+
+```bash
+# Liveliness
+curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/health | jq .
+
+# Model list
+curl -s -H "Authorization: Bearer $LLMCLI_API_KEY" http://localhost:18091/v1/models | jq '.data[].id'
+
+# No orphan litellm processes after Ctrl-C
+pgrep -fa litellm
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean exit from the child `litellm` process |
+| `1` | Missing provider key — pre-spawn validation failure |
+| `127` | `litellm` binary not found on `PATH` — install with `uv add 'litellm[proxy]'` |
+| `130` | Interrupted via Ctrl-C (POSIX convention: 128 + SIGINT 2) |
+| `137` | Child killed by SIGKILL — e.g. OOM (POSIX: 128 + 9) |
+| `143` | Child killed by SIGTERM (POSIX: 128 + 15) |
+
+Any other non-zero code is the child's own exit code, passed through unchanged.
+
+### Signal handling
+
+`llmcli proxy` installs handlers for both SIGTERM and SIGINT before blocking on the
+child:
+
+1. **First SIGTERM or SIGINT** — calls `child.terminate()` (sends SIGTERM to the litellm
+   process), then polls `child.poll()` in 0.1s ticks for up to 10 seconds. If the child
+   has not exited after the drain window, `child.kill()` (SIGKILL) is sent.
+2. **Second SIGINT during the drain window** — bypasses the remaining drain and calls
+   `child.kill()` immediately, then exits `130`.
+
+This ensures that `systemd`, `supervisord`, and interactive Ctrl-C all receive a clean
+shutdown while preventing the process from hanging indefinitely on an unresponsive child.
