@@ -9,7 +9,8 @@ Label=io.containers.autoupdate=registry
 ContainerName=llmcli-nats-worker
 # host network — rootless podman cannot route tailnet 100.x without it
 Network=host
-Volume=llmcli-models:/home/llmcli/.cache/huggingface
+Volume=%h/.cache/huggingface:/home/llmcli/.cache/huggingface
+Environment=HF_HOME=/home/llmcli/.cache/huggingface
 # Optional: bind-mount host daemon socket to enable SWAP/STATUS pre-check on startup.
 # Requires llmcli daemon running on the worker host at ~/.local/state/llmcli/llmcli.sock.
 # Without this, _ensure_model auto-skips (daemon-optional mode) — safe for pure remote-worker.
