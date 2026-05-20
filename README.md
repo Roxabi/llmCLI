@@ -67,3 +67,15 @@ llama-server :PORT  ◄── llmcli_serve (supervisor, catalog-driven hot-swap)
 ## Supervisor
 
 Single program `llmcli_serve` registered into the lyra hub supervisor via `make register`. Local: `autostart=false`. Prod: `autostart=true`.
+
+## Quadlet (production HTTP proxy)
+
+Run `llmcli proxy` under user-systemd via a Podman Quadlet on `:18091`:
+
+```bash
+make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env
+systemctl --user start llmcli
+```
+
+See `docs/guides/deployment.md` → "Running `llmcli proxy` as a Quadlet" for the full flow.
