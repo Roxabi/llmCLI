@@ -631,3 +631,134 @@ child:
 
 This ensures that `systemd`, `supervisord`, and interactive Ctrl-C all receive a clean
 shutdown while preventing the process from hanging indefinitely on an unresponsive child.
+
+---
+
+## Running `llmcli proxy` as a Quadlet
+
+### When to use this
+
+Use this path for production deployments on M₁ (roxabituwer) and for development on M₂
+(roxabitower) when you want `llmcli proxy` to start automatically and survive reboots.
+User-systemd owns the lifecycle: `systemctl --user start/restart/stop/status llmcli`.
+If you only need a quick one-off run or are troubleshooting the proxy interactively, use the
+foreground invocation described in the
+[Running `llmcli proxy` (managed LiteLLM portal)](#running-llmcli-proxy-managed-litellm-portal)
+section above.
+
+### Pre-merge local-build flow
+
+On the dev host (roxabitower), the published image at `ghcr.io/roxabi/llmcli:staging` does
+not yet contain `litellm` until this PR merges and CI rebuilds. Build locally with the same
+tag so the Quadlet picks it up without any unit-file change:
+
+```bash
+# On the dev host (roxabitower) before the PR merges:
+podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .
+make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env   # fill in keys
+systemctl --user start llmcli
+```
+
+The local build overrides the registry image with the same tag, so the Quadlet picks it up
+without any change to the unit file.
+
+### Post-merge registry pull
+
+After the PR merges to staging, CI's `.github/workflows/publish.yml` rebuilds and pushes the
+updated image to `ghcr.io/roxabi/llmcli:staging`. The `Label=io.containers.autoupdate=registry`
+directive in the Quadlet hooks into the system-wide `podman auto-update.timer` — enable it
+if you want fully automatic image refresh (optional). Manual refresh:
+
+```bash
+podman pull ghcr.io/roxabi/llmcli:staging && systemctl --user restart llmcli
+```
+
+### Env file template
+
+The env file lives at `~/.config/containers/systemd/llmcli.env` (chmod 600). `make install-quadlet`
+creates this stub idempotently — it **never** overwrites an existing file:
+
+```bash
+# ~/.config/containers/systemd/llmcli.env — chmod 600
+LLMCLI_API_KEY=
+FIREWORKS_API_KEY=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+NVIDIA_API_KEY=
+```
+
+To rotate a key, edit the file and `systemctl --user restart llmcli`.
+
+### systemctl --user lifecycle
+
+```bash
+systemctl --user start    llmcli           # start (idempotent)
+systemctl --user restart  llmcli           # restart after env or catalog change
+systemctl --user stop     llmcli           # graceful drain (TimeoutStopSec=20s)
+systemctl --user status   llmcli           # current state + last log lines
+systemctl --user is-active llmcli          # binary check, exit 0 if active
+journalctl --user -u llmcli -f             # live tail
+journalctl --user -u llmcli --since today  # today's log
+```
+
+### Failure modes
+
+| Failure | Symptom | Recovery |
+|---|---|---|
+| `~/.config/containers/systemd/llmcli.env` missing | `daemon-reload` warns; `start` fails with `EnvironmentFile not found` | `make install-quadlet` recreates stub |
+| `LLMCLI_API_KEY` or provider key empty | `llmcli proxy` exits 1; `RestartForceExitStatus=1` suppresses restart — unit enters `failed` immediately with no retry burn-up | populate env file, `systemctl --user reset-failed llmcli && systemctl --user start llmcli` |
+| `litellm` missing in image | `llmcli proxy` exits 127 ("litellm binary not found"); `RestartForceExitStatus=127` suppresses restart — unit `failed` immediately | rebuild image locally with this PR's `Dockerfile.llm` OR wait for CI rebuild |
+| Image not present + no network on M₁ | `podman` run fails (no pull source) | `podman pull ghcr.io/roxabi/llmcli:staging` on host first, OR local `podman build` from this repo |
+| Port 18091 already bound | container fails to publish port; unit `failed` | identify conflict, free port, restart |
+| User-linger off on M₁ | service stops after logout | `loginctl enable-linger mickael` |
+| Operator runs `systemctl --user enable llmcli.service` | "Created symlink … → /dev/null" — Quadlet generator masks the unit name | ignore; nothing is broken |
+| Container binds 127.0.0.1 inside (PROXY_HOST override accident) | `:18091` answers nothing externally | `Environment=LLMCLI_PROXY_HOST=0.0.0.0` default in unit prevents this unless explicitly overridden in env file |
+
+### `reset-failed` after StartLimitBurst exhaustion
+
+If the proxy crashes 5 times within 60s, systemd parks the unit in `failed` and stops
+retrying. After fixing the root cause (check `journalctl --user -u llmcli` for details):
+
+```bash
+systemctl --user reset-failed llmcli
+systemctl --user start llmcli
+```
+
+The proxy's two non-retryable exit codes — `1` (provider key missing) and `127` (litellm
+binary missing in image) — are declared in `RestartForceExitStatus=1 127`, so they enter
+`failed` immediately without burning the restart budget.
+
+### Inspecting config from inside the container
+
+The container name is fixed at `llmcli` (set by `ContainerName=llmcli` in the unit). While
+the container is running, dump the rendered LiteLLM config with:
+
+```bash
+# Dump the rendered LiteLLM config (proxy is a one-shot here)
+podman exec llmcli llmcli proxy --config-out /dev/stdout
+```
+
+Note that `curl` is intentionally absent from the image; for external HTTP probing use
+`curl -s http://localhost:18091/health/liveliness` from the host.
+
+### M₁ (prod) one-time linger setup
+
+Linger allows the user-systemd instance to start at boot even when no interactive session is
+open. On M₁ (roxabituwer) this is already configured because lyra requires it:
+
+```bash
+# Once per machine (prod). Already set on roxabituwer (lyra requires it).
+loginctl enable-linger mickael
+loginctl show-user mickael | grep Linger=yes
+```
+
+Without linger, the unit only runs while a user session is open. M₂ (roxabitower) typically
+has linger off, so the operator runs `systemctl --user start llmcli` after login.
+
+### Drop-ins
+
+The Quadlet generator emits an immutable `llmcli.service` at runtime — any direct edits to
+that file are overwritten on the next `daemon-reload`. Persistent overrides go in
+`~/.config/systemd/user/llmcli.service.d/*.conf`; drop-in files are merged on `daemon-reload`
+and survive Quadlet regeneration.
