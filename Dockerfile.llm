@@ -41,14 +41,14 @@ RUN UV_SKIP="--no-install-package torch \
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project \
         $(cat /uv-skip-flags) \
-        --extra nats
+        --extra nats --extra proxy
 
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev \
         $(cat /uv-skip-flags) \
-        --extra nats
+        --extra nats --extra proxy
 
-COPY deploy/entrypoint-nats.sh /entrypoint.sh
+COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # ── runtime stage ─────────────────────────────────────────────────────────────
