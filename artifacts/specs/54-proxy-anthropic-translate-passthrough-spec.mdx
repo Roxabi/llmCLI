@@ -1,0 +1,252 @@
+---
+title: "Spec: layer hand-curated LiteLLM base over catalog model_list"
+issue: 54
+status: approved
+tier: F-lite
+frame: artifacts/frames/54-proxy-anthropic-translate-passthrough-frame.mdx
+date: 2026-05-20
+---
+
+## Context
+
+Promoted from [frame](../frames/54-proxy-anthropic-translate-passthrough-frame.mdx). The Quadlet `llmcli proxy` (`:18091`) generates a minimal LiteLLM config from the catalog (`build_full_config` in `src/llmcli/litellm_config.py:79-83`) and misses transport features (Anthropic→OpenAI auto-translate, Fireworks pass-through) that the supervisor `:4000` proxy provides via hand-curated `~/.litellm/config.yaml`. This blocks alias migration (#52) and `:4000` retirement (#51).
+
+Design choice (frame, Option B): introduce a separate `~/.roxabi/llmcli/proxy-base.yaml` file for LiteLLM transport config (hand-curated, never mutated by tooling) and merge in the catalog-derived `model_list` at startup. Catalog stays focused on model metadata; LiteLLM-specific knobs stay in LiteLLM YAML. `register-proxy` and the legacy `~/.litellm/config.yaml` sentinel flow remain functional and untouched.
+
+## Goal
+
+`llmcli proxy` reads an optional `~/.roxabi/llmcli/proxy-base.yaml` for LiteLLM transport config and merges in `model_list` from the catalog, producing a fully-functional LiteLLM config that supports Anthropic protocol and pass-through endpoints. Listening port becomes a catalog field. The Quadlet unit is unchanged — the existing `~/.roxabi/llmcli` directory mount already exposes the new file.
+
+## Users
+
+- **Primary:** Mickael (Claude Code via aliases on M₁ + M₂)
+- **Secondary:** lyra agents (LLMCLI_API_KEY consumers)
+
+## Expected Behavior
+
+### Startup flow
+
+User runs `llmcli proxy` (directly or via Quadlet):
+
+1. Catalog loaded from `~/.roxabi/llmcli/llmcli.toml` (existing flow).
+2. Optional base config loaded from `~/.roxabi/llmcli/proxy-base.yaml`:
+   - File **absent** (`FileNotFoundError`) → use built-in `_DEFAULT_PROXY_BASE`.
+   - File **empty** (`yaml.safe_load` → `None`) → log warning, use `_DEFAULT_PROXY_BASE`.
+   - File **malformed** (any `yaml.YAMLError`, including `ConstructorError` from `!!python/...` tags) → exit non-zero with `proxy-base.yaml: <error>`. Do NOT fall back.
+   - File **present and valid** → use parsed dict as base.
+3. Section-level backfill: ∀ section ∈ {`general_settings`, `litellm_settings`}: if section is missing OR section is present but `master_key`/`drop_params` keys absent, backfill from `_DEFAULT_PROXY_BASE`. Other sections (`router_settings`, `environment_variables`, future LiteLLM keys) pass through unmodified.
+4. `model_list` computed from catalog via `build_model_list(catalog, public_base_url)` (new function — extracted from `build_full_config`'s internals; `build_full_config` keeps its current shape for legacy `register-proxy` compat).
+5. Merge: `merged = {**base, "model_list": computed_model_list}`. Any pre-existing `model_list` inside `proxy-base.yaml` is overwritten (catalog owns models; base owns transport).
+6. Merged YAML written to `~/.local/state/llmcli/proxy.config.yaml` (mode `0o600`, parent dir created with `0o700`).
+7. `litellm --config <merged>` spawned on the resolved port (see precedence below).
+
+```yaml
+# _DEFAULT_PROXY_BASE — module constant, single source of truth for the minimal shape
+general_settings:
+  master_key: os.environ/LLMCLI_API_KEY
+litellm_settings:
+  drop_params: true
+```
+
+### Pass-through example
+
+User edits `~/.roxabi/llmcli/proxy-base.yaml`:
+
+```yaml
+general_settings:
+  master_key: os.environ/LLMCLI_API_KEY
+  pass_through_endpoints:
+    - path: "/fw-anthropic"
+      target: "https://api.fireworks.ai/inference"
+      include_subpath: true
+      forward_headers: false
+      headers:
+        Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
+
+litellm_settings:
+  drop_params: true
+  use_chat_completions_url_for_anthropic_messages: true
+```
+
+Restart `llmcli proxy` → both the pass-through endpoint AND the Anthropic-protocol auto-translate are active. Catalog model_list merged in automatically. **Secrets must use `os.environ/FOO` indirection** — `llmcli proxy` does NOT validate this; literal secrets in `proxy-base.yaml` will be copied verbatim into the merged config on disk (the example template documents this constraint inline).
+
+### Port resolution
+
+`HostSettings.port: int = 18091` added. The `--port` CLI option signature changes from `int = typer.Option(18091, ...)` to `Optional[int] = typer.Option(None, ...)` so the resolver can distinguish "explicitly set" from "not set".
+
+Resolution precedence (highest first):
+
+1. `LLMCLI_PROXY_PORT` environment variable (parsed as int by Typer's `envvar=`)
+2. `--port` CLI flag (only when value is non-`None`)
+3. Catalog `[host].port` (when key present in TOML)
+4. Built-in default `18091` (when catalog omits the key)
+
+### Dry-run via `--config-out`
+
+`llmcli proxy --config-out <path>` follows steps 1-5 of the startup flow then writes the merged YAML to `<path>` (preserving 0o600 file mode) and exits 0 without spawning LiteLLM. This is the supported way to inspect the merged shape during migration / debugging.
+
+### Backwards compat
+
+Catalogs without `[host].port` AND no `proxy-base.yaml` on the host → `llmcli proxy` produces the same minimal config shape as today (`master_key` + `drop_params` + `model_list`). No existing setup breaks. `register-proxy` (legacy `:4000` flow) continues calling `build_full_config` unchanged.
+
+## Data Model & Consumers
+
+### Data structure diagram
+
+```mermaid
+classDiagram
+    class HostSettings {
+        +str bind
+        +str public_base_url
+        +str api_key_env
+        +int port [NEW, default 18091]
+        +str~None~ default_model
+        +float~None~ vram_budget_gib
+    }
+
+    class ModelSpec {
+        +str name
+        +str engine
+        +str provider
+        +str model_id
+        +str protocol
+        +list~str~ machines
+    }
+
+    class Catalog {
+        +HostSettings host
+        +dict~str,ModelSpec~ models
+    }
+
+    class ProxyBaseConfig {
+        <<file: proxy-base.yaml, optional, host-side>>
+        +dict general_settings
+        +dict litellm_settings
+        +dict other [forward-compat]
+    }
+
+    class MergedConfig {
+        <<written: proxy.config.yaml, 0o600, container-ephemeral>>
+        +dict general_settings [base + default backfill]
+        +dict litellm_settings [base + default backfill]
+        +list model_list [from catalog]
+        +dict other [base pass-through]
+    }
+
+    Catalog "1" --> "*" ModelSpec : models
+    Catalog --> MergedConfig : model_list (via build_model_list)
+    ProxyBaseConfig --> MergedConfig : non-model_list sections
+```
+
+### Consumer map
+
+```mermaid
+flowchart LR
+    subgraph host["Host fs ~/.roxabi/llmcli/"]
+        catalog[(llmcli.toml + models/*.toml)]
+        base[(proxy-base.yaml<br/>OPTIONAL)]
+    end
+
+    subgraph container["Quadlet container (uid 1502)"]
+        proxy[llmcli proxy]
+        merged[(merged.yaml<br/>container-ephemeral)]
+        litellm{{litellm process}}
+    end
+
+    host -->|single dir RO mount<br/>:ro,Z keep-id| proxy
+    proxy -->|merge in mem| merged
+    merged -->|--config| litellm
+
+    claude[Claude Code aliases] -->|Anthropic, OpenAI| litellm
+    lyra[lyra agents] -->|OpenAI| litellm
+```
+
+### Consumer summary
+
+| Consumer | Fields | When | Status |
+|---|---|---|---|
+| `llmcli proxy` startup | `host.port`, `proxy-base.yaml` (all sections), catalog models | every start | this issue |
+| `llmcli proxy --config-out` | same as above | manual inspection | this issue |
+| Claude Code (`ccd`, `ccfk`, `ccfg`) | `/v1/messages`, `/fw-anthropic`, `/v1/chat/completions` | per request | this issue (post-merge migration #52) |
+| lyra agents | `/v1/chat/completions` | per request | already works (no change) |
+| `register-proxy` (legacy) | `~/.litellm/config.yaml` managed block | manual sync | legacy compat (untouched, SC-12) |
+
+## Breadboard
+
+### Affordances
+
+| ID | Surface | Element | Notes |
+|---|---|---|---|
+| N1 | `llmcli proxy` CLI entry | startup orchestration: load + merge + write + spawn | refactor of existing `proxy()` |
+| N2 | `~/.roxabi/llmcli/proxy-base.yaml` | optional host file (RO via dir mount) | user-owned, never mutated by llmCLI |
+| N3 | catalog `[host].port` | new TOML field, default 18091 | overridable via env / CLI |
+| N4 | merged YAML at `~/.local/state/llmcli/proxy.config.yaml` | runtime artifact, container-ephemeral | written each startup |
+| N5 | `llmcli proxy --config-out <path>` | dry-run output | same merge logic as live spawn |
+| S1 | `load_proxy_base(path) -> dict` | read YAML, validate, fallback / fail-fast per error class | new pure function |
+| S2 | `build_model_list(catalog, public_base_url) -> list[dict]` | extracted from `build_full_config` internals | new function, `build_full_config` reuses it |
+| S3 | `merge_proxy_config(base, model_list) -> dict` | section-level backfill + `model_list` overlay | new pure function |
+| S4 | `HostSettings.port: int = 18091` | dataclass field, parsed from TOML | catalog config layer |
+| S5 | `_DEFAULT_PROXY_BASE` | module-level dict constant | shared by S1 fallback + `build_full_config` no-base path |
+| S6 | `--port` Typer signature → `Optional[int] = None` | enables explicit-set detection | `proxy()` arg change |
+| S7 | `_resolve_port(env, flag, catalog) -> int` | precedence resolver | new helper |
+| S8 | `deploy/proxy-base.yaml.example` | shipped template with `os.environ/` indirection | new file |
+| S9 | `llmcli.example.toml` | add `port` to `[host]` (commented default) | example update |
+| S10 | `docs/deploy/deployment.md` | section: two-file model, port precedence, migration recipe checklist | doc update |
+
+### Wiring
+
+- N1 → S1 + S2 + S3 + S4 + S6 + S7 (orchestration calls all)
+- N2 → S1 (file is optional input)
+- N3 → S4, S7 (catalog provides port)
+- N4 ← S3 (merge writes the merged YAML)
+- N5 → S3 (dry-run uses same merge logic, skips spawn)
+- S1 ↔ S5 (fallback reads default)
+- `build_full_config` (existing, unchanged signature/shape) → S2 + S5 (no behavior change for `register-proxy` callers)
+
+**Quadlet:** existing `Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z` in `deploy/quadlet/llmcli.container` already covers the new file. No unit edit required.
+
+## Slices
+
+| Slice | Description | Affordances | Demo |
+|---|---|---|---|
+| V1 | Catalog `[host].port` + Typer signature + port resolver | N3, S4, S6, S7, S9 | `llmcli proxy --config-out /tmp/a.yaml` with `[host].port = 19999` in catalog + no env / no flag → merged file's port reflects 19999 in spawn args (verify via `--port` echo logging or by running and `ss -tln \| grep 19999`). With `LLMCLI_PROXY_PORT=20000` + `--port 21000` + catalog `19999` → resolves to 20000 (env wins). |
+| V2 | Base loader + merge + dry-run + spawn | N1, N2, N4, N5, S1, S2, S3, S5 | (a) No `proxy-base.yaml` on host: `llmcli proxy --config-out /tmp/m.yaml`; `python -c "import yaml; print(yaml.safe_load(open('/tmp/m.yaml')).keys())"` shows `{general_settings, litellm_settings, model_list}` only. (b) With `proxy-base.yaml` containing `pass_through_endpoints` + `use_chat_completions_url_for_anthropic_messages: true`: live `llmcli proxy` → `curl -H "Authorization: Bearer $LLMCLI_API_KEY" -d '{...}' :PORT/v1/messages` returns non-4xx (LiteLLM accepted Anthropic-protocol request). |
+| V3 | Example template + deployment doc | S8, S10 | `deploy/proxy-base.yaml.example` exists in repo. `docs/deploy/deployment.md` contains: (a) files-and-roles table, (b) 4-level port precedence rules, (c) numbered migration steps from `:4000` to Quadlet. |
+
+## Success Criteria
+
+### User-observable
+
+- [ ] SC-1: `[host].port = 19999` in catalog + no env + no `--port` → `llmcli proxy --config-out /tmp/x.yaml` writes a file AND `ss -tln \| grep 19999` after `llmcli proxy` shows the port bound; with the field absent, port `18091` is used.
+- [ ] SC-2: `LLMCLI_PROXY_PORT=20000 llmcli proxy --port 21000` with catalog `[host].port = 19999` → port `20000` is bound (env beats flag beats catalog beats default).
+- [ ] SC-3: No `proxy-base.yaml` on host: `llmcli proxy --config-out /tmp/m.yaml` produces a merged YAML whose top-level keys are exactly `{general_settings, litellm_settings, model_list}`, with `general_settings.master_key == "os.environ/LLMCLI_API_KEY"` and `litellm_settings.drop_params == true`.
+- [ ] SC-4: With `proxy-base.yaml` containing `pass_through_endpoints` (Fireworks `/fw-anthropic`) + `use_chat_completions_url_for_anthropic_messages: true`, `llmcli proxy` running → `curl -H "Authorization: Bearer $LLMCLI_API_KEY" -d '{"model":"kimi-k2.6","max_tokens":16,"messages":[{"role":"user","content":"ok"}]}' http://localhost:PORT/v1/messages` returns a non-4xx response (LiteLLM accepted the Anthropic-protocol request and routed to FW).
+- [ ] SC-5: `proxy-base.yaml` containing a top-level `model_list: [...]` (user mistake) is overwritten by catalog-derived list — the merged YAML's `model_list` matches the catalog, not the base file.
+- [ ] SC-6: Adding a new `litellm_settings` key not currently in the example (e.g. `request_timeout: 600`) to `proxy-base.yaml` and restarting `llmcli proxy` → the key appears in the merged YAML with no llmCLI code change (proves the spec's "no schema translation" promise).
+- [ ] SC-7: `proxy-base.yaml` with YAML syntax error OR `!!python/object` tag → `llmcli proxy` exits non-zero within 5s and stderr contains `proxy-base.yaml` and a line/column or error message. Empty file (`yaml.safe_load → None`) → warning log line, then falls back to default.
+- [ ] SC-8: `~/.local/state/llmcli/proxy.config.yaml` written with mode `0o600`; parent dir created `0o700`.
+- [ ] SC-9: After `make install-quadlet` + `systemctl --user restart llmcli`, the container can read `proxy-base.yaml` from the host (`podman exec llmcli test -r /home/llmcli/.roxabi/llmcli/proxy-base.yaml` exit 0, given the host file exists). No new `Volume=` line is added — the existing `~/.roxabi/llmcli` dir mount covers it.
+- [ ] SC-10: `llmcli.example.toml` shows `port` in `[host]` with a commented-out line documenting the default (`# port = 18091  # default`).
+- [ ] SC-11: `deploy/proxy-base.yaml.example` exists with: `general_settings.master_key`, `general_settings.pass_through_endpoints[/fw-anthropic]` using `Bearer os.environ/FIREWORKS_API_KEY`, `litellm_settings.use_chat_completions_url_for_anthropic_messages: true`, `litellm_settings.drop_params: true`, and an inline comment `# secrets MUST use os.environ/FOO; literals are NOT validated and will leak to the merged config`.
+- [ ] SC-12: `docs/deploy/deployment.md` contains: (a) file-roles table (catalog vs proxy-base vs merged), (b) 4-level port precedence list, (c) numbered migration steps including `install -m 600 deploy/proxy-base.yaml.example ~/.roxabi/llmcli/proxy-base.yaml`, edit, `llmcli proxy --config-out /tmp/check.yaml`, restart Quadlet, smoke-test endpoints, rollback (remove file → restart).
+
+### Non-mutation invariants (frame failure modes #3, #4)
+
+- [ ] SC-13: `register-proxy` command + `~/.litellm/config.yaml` sentinel block logic work unchanged (`grep -c "# --- llmCLI managed block"` ~/.litellm/config.yaml stays at 2 before/after running `llmcli register-proxy`).
+- [ ] SC-14: After running `llmcli proxy --config-out /tmp/check.yaml` AND `llmcli register-proxy` against a fresh `proxy-base.yaml`, the host `proxy-base.yaml` byte-for-byte unchanged (`sha256sum` matches pre and post). Verifies llmCLI never writes to or appends sentinels in `proxy-base.yaml`.
+
+### Quality Gate (dev-tier — not user-observable, run before merge)
+
+- [ ] QG-1: Unit tests cover: `load_proxy_base` (absent, empty, valid, syntax error, ConstructorError); `merge_proxy_config` (default backfill, base preserved, model_list overwrite, forward-compat pass-through of unknown sections); `_resolve_port` (env, flag-explicit, catalog, default); `HostSettings.port` parsing.
+- [ ] QG-2: All existing tests pass without modification (regression check across the test surface).
+
+## Edge Cases
+
+- **`proxy-base.yaml` empty (zero bytes):** `yaml.safe_load → None` → warning log, fallback to `_DEFAULT_PROXY_BASE`. Distinct from "file absent" (no log) only by the warning emission.
+- **`proxy-base.yaml` malformed (YAML syntax error OR `!!python/...` tag):** `llmcli proxy` exits non-zero with the file path and parser error. Catches `yaml.YAMLError` (covers both `ScannerError`/`ParserError` for syntax and `ConstructorError` for unsafe tags). No fallback — fail fast.
+- **`proxy-base.yaml` contains keys outside `general_settings` / `litellm_settings` / `model_list`** (e.g. `router_settings`, `environment_variables`): passed through to merged YAML as-is (forward-compat with future LiteLLM features). Only `model_list` is overwritten.
+- **`proxy-base.yaml` contains inline literal secret** (e.g. `Bearer sk-abc123` instead of `Bearer os.environ/FOO`): llmCLI does NOT validate the indirection — secret is echoed verbatim into the merged config on disk. SC-11 example file documents the constraint inline. Out of scope to validate at startup (LiteLLM doesn't either).
+- **Catalog `[host].port` invalid value** (negative, > 65535, non-integer): caught at catalog-parse time with clear error (parallel to existing port validation for local-engine `ModelSpec.port`).
+- **Quadlet mount source missing**: not applicable — the existing `~/.roxabi/llmcli` directory mount is always present (the catalog itself is bind-mounted); `proxy-base.yaml` is just a file within that already-mounted dir.
+- **Host file `proxy-base.yaml` created with wrong mode** (e.g. 644 instead of 600): not enforced by llmCLI; deployment doc (SC-12) recommends `install -m 600`. Example file shipped at default mode (644) is fine — the live file copy is what needs 600.
+- **`~/.local/state/llmcli/` directory pre-exists with wrong mode**: `Path.mkdir(..., exist_ok=True, mode=0o700)` does NOT retroactively chmod an existing dir. Acceptable in practice (the image doesn't pre-create the path); add a one-time `chmod` after `mkdir` if needed in implementation.
