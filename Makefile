@@ -42,6 +42,7 @@ install:
 
 install-quadlet:
 	@mkdir -p $(QUADLET_DIR)
+	@mkdir -p $(HOME)/.cache/huggingface
 	@install -m 644 deploy/quadlet/llmcli.container $(QUADLET_DIR)/llmcli.container
 	@if [ ! -f "$(QUADLET_ENV)" ]; then \
 	  install -m 600 /dev/null "$(QUADLET_ENV)" ; \

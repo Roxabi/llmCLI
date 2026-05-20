@@ -13,7 +13,7 @@ reach back into the worker host directly.
 - `llm-worker` NKEY seed exists on the hub at `~/.lyra/nkeys/llm-worker.seed`
 - LiteLLM proxy running on the worker host at `:4000`
 - `llama-server` binary available in the container image; qwen3-8b model pre-pulled
-  into the shared HuggingFace cache volume (`llmcli-models`)
+  into the shared HuggingFace cache at `~/.cache/huggingface/`
 
 ## One-time setup on the worker host
 
@@ -34,12 +34,15 @@ printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-fqdn>:4222\n' \
     > ~/.roxabi/llmcli/worker.env
 chmod 600 ~/.roxabi/llmcli/worker.env
 
-# 5. Install the Quadlet unit
+# 5. Ensure the HuggingFace cache dir exists (Podman bind-mount source must pre-exist)
+mkdir -p ~/.cache/huggingface
+
+# 6. Install the Quadlet unit
 mkdir -p ~/.config/containers/systemd
 cp deploy/quadlet/llmcli-nats-worker.container \
    ~/.config/containers/systemd/
 
-# 6. Load and start
+# 7. Load and start
 systemctl --user daemon-reload
 systemctl --user start llmcli-nats-worker
 ```
