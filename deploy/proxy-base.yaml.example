@@ -21,6 +21,7 @@ general_settings:
       include_subpath: true
       forward_headers: false
       headers:
+        # secrets MUST use os.environ/FOO — literal values leak verbatim to the merged config on disk.
         Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
 
 litellm_settings:

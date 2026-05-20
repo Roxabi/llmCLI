@@ -605,11 +605,11 @@ class TestRemoteEngineSpec:
 
 class TestHostSettingsPort:
     def test_host_settings_port_default(self) -> None:
-        """HostSettings.port defaults to 18091 when not provided."""
+        """HostSettings.port defaults to None when not provided (None means 'absent from TOML')."""
         # Arrange / Act
         hs = HostSettings()
         # Assert
-        assert hs.port == 18091
+        assert hs.port is None
 
     def test_host_settings_port_from_toml(self, tmp_path: Path) -> None:
         """[host].port in TOML is parsed onto HostSettings.port."""

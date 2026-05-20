@@ -14,7 +14,7 @@ import yaml
 
 from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
-from llmcli.litellm_config import load_proxy_base, merge_proxy_config
+from llmcli.litellm_config import build_model_list, load_proxy_base, merge_proxy_config
 from llmcli.providers import PROVIDERS
 
 # ---------------------------------------------------------------------------
@@ -115,8 +115,19 @@ def proxy(
 
     # 1a. Resolve port via precedence: env > flag > catalog > default(18091)
     env_port_raw = os.environ.get("LLMCLI_PROXY_PORT")
+    env_port: int | None
+    if env_port_raw:
+        try:
+            env_port = int(env_port_raw)
+        except ValueError:
+            err_console.print(
+                f"[red]LLMCLI_PROXY_PORT={env_port_raw!r} is not a valid integer.[/red]"
+            )
+            raise typer.Exit(code=1)
+    else:
+        env_port = None
     resolved_port = _resolve_port(
-        env_val=int(env_port_raw) if env_port_raw else None,
+        env_val=env_port,
         flag_val=port,
         catalog_port=catalog.host.port,
     )
@@ -137,10 +148,8 @@ def proxy(
         raise typer.Exit(code=1)
 
     # 4. Build model_list + merge into layered config
-    from llmcli.litellm_config import build_model_list
-
     model_list = build_model_list(catalog, catalog.host.public_base_url)
-    cfg = merge_proxy_config(base, model_list)
+    cfg = merge_proxy_config(base, model_list, api_key_env=catalog.host.api_key_env)
     yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
 
     # 4. Choose target path

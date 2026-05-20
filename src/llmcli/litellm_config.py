@@ -26,13 +26,14 @@ _DEFAULT_PROXY_BASE: dict[str, Any] = {
 }
 
 
-def load_proxy_base(path: Path) -> dict:
+def load_proxy_base(path: Path) -> dict[str, Any]:
     """Load LiteLLM transport config from optional proxy-base.yaml.
 
     - File absent (FileNotFoundError) → return deep copy of _DEFAULT_PROXY_BASE.
     - File present but empty (yaml.safe_load → None) → warn + return deep copy of default.
-    - File present + valid → return parsed dict.
-    - YAML error (syntax error or ConstructorError from unsafe tags) → re-raise yaml.YAMLError.
+    - File present + valid mapping → return parsed dict.
+    - File present + non-mapping (int, list, scalar) → raise yaml.YAMLError.
+    - YAML error (syntax or ConstructorError from unsafe tags) → re-raise yaml.YAMLError.
     """
     try:
         text = path.read_text()
@@ -42,14 +43,27 @@ def load_proxy_base(path: Path) -> dict:
     if parsed is None:
         log.warning("proxy-base.yaml at %s is empty; using built-in defaults", path)
         return copy.deepcopy(_DEFAULT_PROXY_BASE)
+    if not isinstance(parsed, dict):
+        raise yaml.YAMLError(
+            f"proxy-base.yaml must be a YAML mapping (dict), got {type(parsed).__name__}"
+        )
     return parsed
 
 
-def merge_proxy_config(base: dict, model_list: list[dict]) -> dict:
-    """Overlay catalog-derived model_list on base; backfill defaults for missing keys."""
-    result = {**base}
+def merge_proxy_config(
+    base: dict[str, Any],
+    model_list: list[dict[str, Any]],
+    *,
+    api_key_env: str = "LLMCLI_API_KEY",
+) -> dict[str, Any]:
+    """Overlay catalog-derived model_list on base; backfill defaults for missing keys.
+
+    The api_key_env param is used to build the dynamic master_key fallback
+    (matches build_full_config behavior). Default 'LLMCLI_API_KEY' for no-catalog callers.
+    """
+    result = copy.deepcopy(base)  # B3 — deep copy to prevent mutation of caller's base
     gs = result.setdefault("general_settings", {})
-    gs.setdefault("master_key", _DEFAULT_PROXY_BASE["general_settings"]["master_key"])
+    gs.setdefault("master_key", f"os.environ/{api_key_env}")
     ls = result.setdefault("litellm_settings", {})
     ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
     result["model_list"] = model_list

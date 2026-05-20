@@ -591,12 +591,17 @@ class TestExitCodePropagation:
 
 
 class TestResolvePort:
-    def test_resolve_port_env_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """env beats flag, catalog, and default (env=20000 > flag=21000 > catalog=19999)."""
+    def test_resolve_port_env_wins(self) -> None:
+        """env beats flag, catalog, and default (env=20000 > flag=21000 > catalog=19999).
+
+        _resolve_port is a pure function that takes the parsed env_val directly — the env
+        var → int parsing happens in proxy() and is covered by TestProxyEnvPortMalformed +
+        TestProxyBaseFailFast. This test only exercises the precedence wiring inside
+        _resolve_port itself.
+        """
         # Arrange
         from llmcli.cli.proxy import _resolve_port
 
-        monkeypatch.setenv("LLMCLI_PROXY_PORT", "20000")
         # Act
         result = _resolve_port(env_val=20000, flag_val=21000, catalog_port=19999)
         # Assert
@@ -693,6 +698,15 @@ class TestLoadProxyBase:
         with pytest.raises(yaml.YAMLError):
             load_proxy_base(unsafe_file)
 
+    def test_load_proxy_base_non_dict(self, tmp_path: Path) -> None:
+        """Non-mapping YAML (int, list, scalar) raises yaml.YAMLError, not silent passthrough."""
+        from llmcli.litellm_config import load_proxy_base  # lazy
+
+        non_dict_file = tmp_path / "non_dict.yaml"
+        non_dict_file.write_text("42\n")  # valid YAML, but it's an int
+        with pytest.raises(yaml.YAMLError):
+            load_proxy_base(non_dict_file)
+
 
 # ---------------------------------------------------------------------------
 # T7 — merge_proxy_config RED tests
@@ -770,3 +784,152 @@ class TestMergeProxyConfig:
         # Assert
         assert result["router_settings"] == {"timeout": 600}
         assert result["environment_variables"] == {"FOO": "bar"}
+
+
+# ---------------------------------------------------------------------------
+# TestProxyEnvPortMalformed
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# TestProxyBaseFailFast — SC-7: CLI-layer fail-fast for malformed proxy-base.yaml
+# ---------------------------------------------------------------------------
+
+
+class TestProxyBaseFailFast:
+    """SC-7 — CLI-layer fail-fast for malformed proxy-base.yaml.
+
+    Mutation discipline: if the `except yaml.YAMLError` branch in `proxy()` is
+    removed, these tests fail because a raised YAMLError propagates as an
+    unhandled exception (non-zero exit, but no "proxy-base.yaml" string in
+    output — the runner captures it as a traceback, not the formatted message).
+    Deleting the branch also silently loses the actionable user-facing error.
+    """
+
+    _EMPTY_CATALOG = _make_catalog()  # no models → provider validation is a no-op
+
+    def _invoke_with_broken_proxy_base(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        proxy_base_content: str,
+    ):
+        """Shared arrange+act helper: redirect HOME, patch catalog, write broken proxy-base.yaml."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Redirect Path.home() so proxy step 3 reads proxy-base.yaml from tmp_path
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        # Set the master-key env var that catalog.host.api_key_env references
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+
+        # Place the broken proxy-base.yaml at the hardcoded location
+        proxy_base = tmp_path / ".roxabi" / "llmcli" / "proxy-base.yaml"
+        proxy_base.parent.mkdir(parents=True, exist_ok=True)
+        proxy_base.write_text(proxy_base_content)
+
+        runner = CliRunner()
+        out_path = tmp_path / "out.yaml"
+
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = self._EMPTY_CATALOG
+            result = runner.invoke(typer_app, ["proxy", "--config-out", str(out_path)])
+
+        return result
+
+    def test_syntax_error_exits_nonzero_with_filename(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Malformed YAML in proxy-base.yaml → exit 1 + output mentions 'proxy-base.yaml'."""
+        # Arrange + Act
+        result = self._invoke_with_broken_proxy_base(
+            tmp_path,
+            monkeypatch,
+            proxy_base_content="key: : : :\n",  # syntax error
+        )
+
+        # Assert — non-zero exit
+        assert result.exit_code != 0, (
+            f"Expected non-zero exit; got {result.exit_code}; output: {result.output!r}"
+        )
+        # Assert — actionable filename appears in user-facing output
+        combined = (result.output or "") + (result.stderr or "")
+        assert "proxy-base.yaml" in combined, (
+            f"Expected 'proxy-base.yaml' in output; got: {combined!r}"
+        )
+
+    def test_python_tag_exits_nonzero_with_filename(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """!!python/object tag in proxy-base.yaml (ConstructorError) → exit 1 + filename in output."""
+        # Arrange + Act
+        result = self._invoke_with_broken_proxy_base(
+            tmp_path,
+            monkeypatch,
+            proxy_base_content="foo: !!python/object:os.system []\n",  # unsafe tag
+        )
+
+        # Assert
+        assert result.exit_code != 0, (
+            f"Expected non-zero exit; got {result.exit_code}; output: {result.output!r}"
+        )
+        combined = (result.output or "") + (result.stderr or "")
+        assert "proxy-base.yaml" in combined, (
+            f"Expected 'proxy-base.yaml' in output; got: {combined!r}"
+        )
+
+    def test_non_dict_exits_nonzero_with_filename(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """YAML int scalar (not a mapping) raises yaml.YAMLError at CLI layer → exit 1 + filename."""
+        # Arrange + Act
+        result = self._invoke_with_broken_proxy_base(
+            tmp_path,
+            monkeypatch,
+            proxy_base_content="42\n",  # valid YAML scalar, not a mapping
+        )
+
+        # Assert
+        assert result.exit_code != 0, (
+            f"Expected non-zero exit; got {result.exit_code}; output: {result.output!r}"
+        )
+        combined = (result.output or "") + (result.stderr or "")
+        assert "proxy-base.yaml" in combined, (
+            f"Expected 'proxy-base.yaml' in output; got: {combined!r}"
+        )
+
+
+class TestProxyEnvPortMalformed:
+    def test_malformed_env_proxy_port_exits_1(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LLMCLI_PROXY_PORT='abc' produces a user-friendly error and exits 1."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange — minimal valid catalog so we get past Step 1
+        cfg = tmp_path / "llmcli.toml"
+        cfg.write_text(
+            '[host]\nbind = "0.0.0.0"\npublic_base_url = "http://x"\napi_key_env = "K"\n'
+        )
+        monkeypatch.setenv("LLMCLI_CONFIG", str(cfg))
+        monkeypatch.setenv("K", "test-key")
+        monkeypatch.setenv("LLMCLI_PROXY_PORT", "abc")  # malformed
+
+        # Act
+        runner = CliRunner()
+        result = runner.invoke(typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")])
+
+        # Assert
+        assert result.exit_code == 1
+        combined = result.output + (result.stderr or "")
+        assert "LLMCLI_PROXY_PORT" in combined
+        assert "abc" in combined
