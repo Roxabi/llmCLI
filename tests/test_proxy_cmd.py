@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+import yaml
 from rich.console import Console
 
 from llmcli.config import Catalog, HostSettings, ModelSpec
@@ -582,3 +583,190 @@ class TestExitCodePropagation:
         assert result.exit_code == 137, (
             f"Expected 137 (128+9); got {result.exit_code}; output: {result.output!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T1 (V1 slice) — _resolve_port 4-level precedence: env > flag > catalog > default
+# ---------------------------------------------------------------------------
+
+
+class TestResolvePort:
+    def test_resolve_port_env_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """env beats flag, catalog, and default (env=20000 > flag=21000 > catalog=19999)."""
+        # Arrange
+        from llmcli.cli.proxy import _resolve_port
+
+        monkeypatch.setenv("LLMCLI_PROXY_PORT", "20000")
+        # Act
+        result = _resolve_port(env_val=20000, flag_val=21000, catalog_port=19999)
+        # Assert
+        assert result == 20000
+
+    def test_resolve_port_flag_beats_catalog(self) -> None:
+        """flag beats catalog and default when env is absent (flag=21000 > catalog=19999)."""
+        # Arrange / Act
+        from llmcli.cli.proxy import _resolve_port
+
+        result = _resolve_port(env_val=None, flag_val=21000, catalog_port=19999)
+        # Assert
+        assert result == 21000
+
+    def test_resolve_port_catalog_beats_default(self) -> None:
+        """catalog beats the hardcoded default when env and flag are absent (catalog=19999 > 18091)."""
+        # Arrange / Act
+        from llmcli.cli.proxy import _resolve_port
+
+        result = _resolve_port(env_val=None, flag_val=None, catalog_port=19999)
+        # Assert
+        assert result == 19999
+
+    def test_resolve_port_default(self) -> None:
+        """Falls back to hardcoded default 18091 when env, flag, and catalog are all absent."""
+        # Arrange / Act
+        from llmcli.cli.proxy import _resolve_port
+
+        result = _resolve_port(env_val=None, flag_val=None, catalog_port=None)
+        # Assert
+        assert result == 18091
+
+
+# ---------------------------------------------------------------------------
+# T6 — load_proxy_base RED tests
+# ---------------------------------------------------------------------------
+
+
+class TestLoadProxyBase:
+    def test_load_proxy_base_absent(self, tmp_path: Path) -> None:
+        """Missing file → returns _DEFAULT_PROXY_BASE unchanged."""
+        # Arrange
+        from llmcli.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
+
+        absent = tmp_path / "nonexistent.yaml"
+        # Act
+        result = load_proxy_base(absent)
+        # Assert
+        assert result == _DEFAULT_PROXY_BASE
+
+    def test_load_proxy_base_empty(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        """Empty file → emits warning log and returns _DEFAULT_PROXY_BASE."""
+        import logging
+        from llmcli.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
+
+        empty_file = tmp_path / "proxy_base.yaml"
+        empty_file.write_text("")
+        # Act
+        with caplog.at_level(logging.WARNING):
+            result = load_proxy_base(empty_file)
+        # Assert
+        assert result == _DEFAULT_PROXY_BASE
+        assert len(caplog.records) >= 1
+
+    def test_load_proxy_base_valid(self, tmp_path: Path) -> None:
+        """Valid YAML file → returns parsed dict."""
+        from llmcli.litellm_config import load_proxy_base  # lazy
+
+        content = "general_settings:\n  master_key: os.environ/K\n"
+        yaml_file = tmp_path / "proxy_base.yaml"
+        yaml_file.write_text(content)
+        # Act
+        result = load_proxy_base(yaml_file)
+        # Assert
+        assert result == {"general_settings": {"master_key": "os.environ/K"}}
+
+    def test_load_proxy_base_syntax_error(self, tmp_path: Path) -> None:
+        """Malformed YAML → raises yaml.YAMLError."""
+        from llmcli.litellm_config import load_proxy_base  # lazy
+
+        bad_file = tmp_path / "proxy_base.yaml"
+        bad_file.write_text("key: : : :\n")
+        # Act + Assert
+        with pytest.raises(yaml.YAMLError):
+            load_proxy_base(bad_file)
+
+    def test_load_proxy_base_python_tag(self, tmp_path: Path) -> None:
+        """Unsafe python tag → raises yaml.YAMLError (ConstructorError is a subclass)."""
+        from llmcli.litellm_config import load_proxy_base  # lazy
+
+        unsafe_file = tmp_path / "proxy_base.yaml"
+        unsafe_file.write_text("foo: !!python/object:os.system []\n")
+        # Act + Assert
+        with pytest.raises(yaml.YAMLError):
+            load_proxy_base(unsafe_file)
+
+
+# ---------------------------------------------------------------------------
+# T7 — merge_proxy_config RED tests
+# ---------------------------------------------------------------------------
+
+
+class TestMergeProxyConfig:
+    def test_merge_backfills_missing_general(self) -> None:
+        """Base without general_settings → result has default master_key."""
+        from llmcli.litellm_config import merge_proxy_config  # lazy
+
+        base = {"litellm_settings": {"drop_params": True}}
+        computed = []
+        # Act
+        result = merge_proxy_config(base, computed)
+        # Assert
+        assert result["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+
+    def test_merge_backfills_missing_litellm(self) -> None:
+        """Base without litellm_settings → result has drop_params True."""
+        from llmcli.litellm_config import merge_proxy_config  # lazy
+
+        base = {"general_settings": {"master_key": "os.environ/X"}}
+        computed = []
+        # Act
+        result = merge_proxy_config(base, computed)
+        # Assert
+        assert result["litellm_settings"]["drop_params"] is True
+
+    def test_merge_preserves_pass_through(self) -> None:
+        """pass_through_endpoints and use_chat_completions_url_for_anthropic_messages survive merge."""
+        from llmcli.litellm_config import merge_proxy_config  # lazy
+
+        base = {
+            "general_settings": {
+                "master_key": "os.environ/LLMCLI_API_KEY",
+                "pass_through_endpoints": [
+                    {"path": "/api/messages", "target": "https://api.anthropic.com/v1/messages"}
+                ],
+            },
+            "litellm_settings": {
+                "drop_params": True,
+                "use_chat_completions_url_for_anthropic_messages": True,
+            },
+        }
+        computed = []
+        # Act
+        result = merge_proxy_config(base, computed)
+        # Assert — both pass-through fields survive
+        assert "pass_through_endpoints" in result["general_settings"]
+        assert result["litellm_settings"]["use_chat_completions_url_for_anthropic_messages"] is True
+
+    def test_merge_overwrites_stray_model_list(self) -> None:
+        """Base model_list is replaced by computed model_list."""
+        from llmcli.litellm_config import merge_proxy_config  # lazy
+
+        base = {"model_list": [{"model_name": "STALE"}]}
+        computed = [{"model_name": "FRESH"}]
+        # Act
+        result = merge_proxy_config(base, computed)
+        # Assert
+        assert result["model_list"] == computed
+
+    def test_merge_forward_compat_passthrough(self) -> None:
+        """Unknown top-level keys (router_settings, environment_variables) survive unmodified."""
+        from llmcli.litellm_config import merge_proxy_config  # lazy
+
+        base = {
+            "router_settings": {"timeout": 600},
+            "environment_variables": {"FOO": "bar"},
+        }
+        computed = []
+        # Act
+        result = merge_proxy_config(base, computed)
+        # Assert
+        assert result["router_settings"] == {"timeout": 600}
+        assert result["environment_variables"] == {"FOO": "bar"}
