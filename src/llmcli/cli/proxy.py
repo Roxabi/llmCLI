@@ -98,7 +98,9 @@ def register_proxy(
 def proxy(
     port: int = typer.Option(18091, "--port", envvar="LLMCLI_PROXY_PORT"),
     host: str = typer.Option("0.0.0.0", "--host", envvar="LLMCLI_PROXY_HOST"),
-    config_out: Optional[Path] = typer.Option(None, "--config-out", help="Write generated YAML to PATH and exit (dry-run)."),
+    config_out: Optional[Path] = typer.Option(
+        None, "--config-out", help="Write generated YAML to PATH and exit (dry-run)."
+    ),
 ) -> None:
     """Run a managed LiteLLM proxy bound to :{port} from the llmCLI catalog."""
     import llmcli.cli as _cli

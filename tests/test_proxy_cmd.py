@@ -121,7 +121,11 @@ class TestSpawnLitellm:
 
         # Arrange
         fake_popen = MagicMock()
-        monkeypatch.setattr(proxy_mod.shutil, "which", lambda name: "/usr/local/bin/litellm" if name == "litellm" else None)
+        monkeypatch.setattr(
+            proxy_mod.shutil,
+            "which",
+            lambda name: "/usr/local/bin/litellm" if name == "litellm" else None,
+        )
         monkeypatch.setattr(proxy_mod.subprocess, "Popen", fake_popen)
 
         # Act
@@ -129,7 +133,15 @@ class TestSpawnLitellm:
 
         # Assert
         fake_popen.assert_called_once_with(
-            ["/usr/local/bin/litellm", "--config", "/tmp/cfg.yaml", "--port", "18091", "--host", "0.0.0.0"]
+            [
+                "/usr/local/bin/litellm",
+                "--config",
+                "/tmp/cfg.yaml",
+                "--port",
+                "18091",
+                "--host",
+                "0.0.0.0",
+            ]
         )
 
     def test_missing_binary_exits_127(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +175,6 @@ class TestSignalForwarding:
         """Handler terminates child and returns without kill when child exits within drain."""
         import signal
         import subprocess
-        import time as time_mod
 
         import llmcli.cli.proxy as proxy_mod
         from llmcli.cli.proxy import _install_signal_handlers
@@ -191,9 +202,7 @@ class TestSignalForwarding:
         assert child.poll.call_count >= 1
         assert child.kill.called is False
 
-    def test_drain_timeout_exceeded_kills_child(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_drain_timeout_exceeded_kills_child(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Handler calls kill when child does not exit within drain_timeout."""
         import signal
         import subprocess
@@ -259,7 +268,7 @@ class TestSignalForwarding:
         # To isolate the reentrant path, call handler once to set drain_state
         # active, then call again.
         handler(signal.SIGINT, None)  # first — sets active, drain exhausts, kills
-        child.kill.reset_mock()       # reset so we can assert the reentrant kill
+        child.kill.reset_mock()  # reset so we can assert the reentrant kill
 
         with pytest.raises(SystemExit) as exc_info:
             handler(signal.SIGINT, None)  # second — reentrant path
@@ -418,7 +427,9 @@ class TestExitCodePropagation:
             result = runner.invoke(typer_app, ["proxy"])
 
         # Assert
-        assert result.exit_code == 0, f"Expected 0; got {result.exit_code}; output: {result.output!r}"
+        assert result.exit_code == 0, (
+            f"Expected 0; got {result.exit_code}; output: {result.output!r}"
+        )
 
     def test_exit_forty_two_propagates(
         self,
@@ -452,7 +463,9 @@ class TestExitCodePropagation:
             result = runner.invoke(typer_app, ["proxy"])
 
         # Assert
-        assert result.exit_code == 42, f"Expected 42; got {result.exit_code}; output: {result.output!r}"
+        assert result.exit_code == 42, (
+            f"Expected 42; got {result.exit_code}; output: {result.output!r}"
+        )
 
     def test_negative_nine_maps_to_137(
         self,
@@ -488,4 +501,6 @@ class TestExitCodePropagation:
             result = runner.invoke(typer_app, ["proxy"])
 
         # Assert
-        assert result.exit_code == 137, f"Expected 137 (128+9); got {result.exit_code}; output: {result.output!r}"
+        assert result.exit_code == 137, (
+            f"Expected 137 (128+9); got {result.exit_code}; output: {result.output!r}"
+        )
