@@ -188,3 +188,31 @@ def _spawn_litellm(config_path: Path, port: int, host: str) -> subprocess.Popen:
     return subprocess.Popen(  # noqa: S603
         [binary, "--config", str(config_path), "--port", str(port), "--host", host]
     )
+
+
+def _install_signal_handlers(child: subprocess.Popen, drain_timeout: float = 10.0) -> None:
+    """Forward SIGTERM/SIGINT to the litellm child with a poll-loop drain.
+
+    First signal: child.terminate() → poll child.poll() in 0.1s ticks until
+    child exits or drain_timeout elapses; if still alive → child.kill().
+
+    Reentrant: a second SIGINT during drain triggers immediate child.kill()
+    and raises SystemExit(130) (POSIX convention for SIGINT).
+    """
+    drain_state = {"active": False}
+
+    def handler(signum, frame):  # noqa: ARG001 (signature required by signal.signal)
+        if drain_state["active"] and signum == signal.SIGINT:
+            child.kill()
+            raise SystemExit(130)
+        drain_state["active"] = True
+        child.terminate()
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                return
+            time.sleep(0.1)
+        child.kill()
+
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)

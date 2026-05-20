@@ -690,6 +690,38 @@ class TestBuildBlockHostnameFilter:
         model_list = parsed.get("model_list") if parsed else None
         assert not model_list
 
+    def test_build_block_empty_filter_yields_null(self) -> None:
+        """Empty filtered catalog → block contains 'model_list: null', NOT 'model_list: []'."""
+        # Arrange — catalog where ALL models have non-matching machines
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        pinned_a = ModelSpec(
+            name="kimi-k2",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/kimi",
+            protocol="openai",
+            machines=["other-host"],
+        )
+        pinned_b = ModelSpec(
+            name="qwen3-8b",
+            engine="llamacpp",
+            repo="Org/Qwen3-8B-GGUF",
+            file="qwen3-8b-q4_k_m.gguf",
+            port=8091,
+            vram_gib=5.5,
+            machines=["other-host"],
+        )
+        catalog = Catalog(host=host, models={"kimi-k2": pinned_a, "qwen3-8b": pinned_b})
+        # Act — hostname mismatch ensures all specs are filtered out
+        block = build_block(catalog, "http://example.lan", hostname="some-other-host")
+        # Assert — YAML null (not []) preserves register-proxy back-compat
+        assert "model_list: null" in block
+        assert "model_list: []" not in block
+
 
 # ---------------------------------------------------------------------------
 # build_full_config — complete proxy config dict (issue #40)
