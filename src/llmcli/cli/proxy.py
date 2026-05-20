@@ -106,7 +106,11 @@ def proxy(
     import llmcli.cli as _cli
 
     # 1. Load catalog
-    catalog = _cli.config.load()
+    try:
+        catalog = _cli.config.load()
+    except FileNotFoundError as exc:
+        err_console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1)
 
     # 2. Validate provider keys
     errors = _validate_provider_keys(catalog)
@@ -132,6 +136,10 @@ def proxy(
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
+        if port != 18091:
+            err_console.print(
+                f"[yellow]--port {port} ignored in --config-out (dry-run) mode[/yellow]"
+            )
         console.print(f"[green]Wrote proxy config to {target}[/green]")
         raise typer.Exit(0)
 
@@ -162,7 +170,11 @@ def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> li
             continue
         provider = PROVIDERS.get(spec.provider)
         if provider is None:
-            continue  # surfaced as ValueError by build_full_config later
+            errors.append(
+                f"Unknown provider '{spec.provider}' in model '{name}': "
+                f"valid providers are {sorted(PROVIDERS.keys())}."
+            )
+            continue
         if not os.environ.get(provider.key_env):
             errors.append(
                 f"Missing provider key for '{name}': set {provider.key_env} "
