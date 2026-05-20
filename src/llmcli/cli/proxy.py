@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import socket
 import subprocess
 from pathlib import Path
@@ -122,3 +123,31 @@ def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> li
                 "(in environment or ~/.litellm/.env)"
             )
     return errors
+
+
+def _spawn_litellm(config_path: Path, port: int, host: str) -> subprocess.Popen:
+    """Spawn the litellm proxy subprocess with inherited stdout/stderr.
+
+    Locates the binary via shutil.which. Missing → typer.echo to stderr
+    and typer.Exit(127). Inherits parent stdout/stderr (LiteLLM logs are
+    structured JSON; no Rich wrapping post-spawn).
+
+    Args:
+        config_path: Path to the generated proxy config YAML.
+        port: TCP port (e.g. 18091).
+        host: Bind host (e.g. "0.0.0.0").
+
+    Returns:
+        subprocess.Popen handle for caller to wait()/signal.
+    """
+    binary = shutil.which("litellm")
+    if binary is None:
+        err_console.print(
+            "[red]litellm binary not found on PATH.[/red] "
+            "Install with: uv tool install 'litellm[proxy]' "
+            "or `uv add 'litellm[proxy]'`"
+        )
+        raise typer.Exit(127)
+    return subprocess.Popen(  # noqa: S603
+        [binary, "--config", str(config_path), "--port", str(port), "--host", host]
+    )
