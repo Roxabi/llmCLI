@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
 import typer
+import yaml
 
 from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
+from llmcli.litellm_config import build_full_config
 from llmcli.providers import PROVIDERS
 
 
@@ -97,7 +101,40 @@ def proxy(
     config_out: Optional[Path] = typer.Option(None, "--config-out", help="Write generated YAML to PATH and exit (dry-run)."),
 ) -> None:
     """Run a managed LiteLLM proxy bound to :{port} from the llmCLI catalog."""
-    raise NotImplementedError  # body filled in T8 and T14
+    import llmcli.cli as _cli
+
+    # 1. Load catalog
+    catalog = _cli.config.load()
+
+    # 2. Validate provider keys
+    errors = _validate_provider_keys(catalog)
+    if errors:
+        for err in errors:
+            err_console.print(f"[red]{err}[/red]")
+        raise typer.Exit(1)
+
+    # 3. Build config dict + serialize to YAML
+    cfg = build_full_config(catalog, catalog.host.public_base_url)
+    yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+
+    # 4. Choose target path
+    if config_out is not None:
+        target = config_out
+    else:
+        target = Path.home() / ".local" / "state" / "llmcli" / "proxy.config.yaml"
+
+    # 5. Write with 0o700 dir mode, 0o600 file mode
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.write_text(yaml_text)
+    target.chmod(0o600)
+
+    # 6. If --config-out, dry-run exit
+    if config_out is not None:
+        console.print(f"[green]Wrote proxy config to {target}[/green]")
+        raise typer.Exit(0)
+
+    # 7. Full lifecycle (spawn+signals+wait) lands in T14
+    raise NotImplementedError("Full lifecycle wired in T14")
 
 
 def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> list[str]:
