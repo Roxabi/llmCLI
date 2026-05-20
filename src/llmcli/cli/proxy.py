@@ -133,8 +133,15 @@ def proxy(
         console.print(f"[green]Wrote proxy config to {target}[/green]")
         raise typer.Exit(0)
 
-    # 7. Full lifecycle (spawn+signals+wait) lands in T14
-    raise NotImplementedError("Full lifecycle wired in T14")
+    # 7. Spawn litellm, install signal handlers, wait, propagate exit code
+    child = _spawn_litellm(target, port, host)
+    _install_signal_handlers(child)
+    returncode = child.wait()
+    # POSIX convention: negative return = killed by signal N → exit 128+N
+    # Specifically, -9 (SIGKILL, e.g. OOM) → 137
+    if returncode < 0:
+        raise typer.Exit(128 + abs(returncode))
+    raise typer.Exit(returncode)
 
 
 def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> list[str]:
