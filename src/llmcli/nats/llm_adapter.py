@@ -65,6 +65,7 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
             heartbeat_interval=heartbeat_interval,
             drain_timeout=drain_timeout,
             inbox_prefix="_inbox.llmcli-llm",
+            wait_ready=False,  # worker semantics — see NatsAdapterBase docstring
         )
         self._model_name = model_name
         self._socket_path = socket_path or SOCKET_PATH
