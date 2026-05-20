@@ -30,6 +30,7 @@ Environment=LLMCLI_LITELLM_URL=http://localhost:4000/v1
 Exec=llm --model qwen3-8b
 HealthCmd=pgrep -f "llmcli nats-serve"
 HealthInterval=30s
+HealthStartPeriod=30s
 NoNewPrivileges=true
 DropCapability=all
 

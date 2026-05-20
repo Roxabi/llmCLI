@@ -43,9 +43,9 @@ install:
 install-quadlet:
 	@mkdir -p $(QUADLET_DIR)
 	@install -m 644 deploy/quadlet/llmcli.container $(QUADLET_DIR)/llmcli.container
-	@if [ ! -f $(QUADLET_ENV) ]; then \
-	  printf '# llmcli.env — chmod 600. Populate with provider keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' > $(QUADLET_ENV) ; \
-	  chmod 600 $(QUADLET_ENV) ; \
+	@if [ ! -f "$(QUADLET_ENV)" ]; then \
+	  install -m 600 /dev/null "$(QUADLET_ENV)" ; \
+	  printf '# llmcli.env — chmod 600. Populate with provider keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$(QUADLET_ENV)" ; \
 	  echo "Created stub $(QUADLET_ENV) — edit before starting." ; \
 	else \
 	  echo "Preserving existing $(QUADLET_ENV)." ; \
