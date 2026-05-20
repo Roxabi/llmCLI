@@ -229,7 +229,7 @@ Dashed = consumer wiring lands in Steps 6 / 7 / 8 (separate issues).
 |---|---|---|---|---|
 | U1 | `make install-quadlet` | operator runs | `install -m 644 deploy/quadlet/llmcli.container ~/.config/containers/systemd/` → stub-env-file (chmod 600) if absent → `systemctl --user daemon-reload` | idempotent; preserves existing env file |
 | U2 | `systemctl --user start llmcli` | operator runs (after U1 daemon-reload) | user-systemd → Quadlet generator → `podman run …` (pulls image if not cached) | exit 0 within ~5s; ~10-30s on first pull from GHCR |
-| U3 | `systemctl --user restart llmcli` | operator runs after edit | systemd sends SIGTERM → `llmcli proxy` (#40) drains up to 10s → SIGKILL after `TimeoutStopSec=15s` → re-spawn | drains via N1 internals |
+| U3 | `systemctl --user restart llmcli` | operator runs after edit | systemd sends SIGTERM → `llmcli proxy` (#40) drains up to 10s → SIGKILL after `TimeoutStopSec=20s` → re-spawn | drains via N1 internals |
 | U4 | `systemctl --user status llmcli` | operator runs | reports unit state + last 10 log lines; journal via `journalctl --user -u llmcli` | — |
 | U5 | `curl http://localhost:18091/health/liveliness` | operator runs | LiteLLM HTTP — returns `{"status": "ok"}` | sub-second when healthy |
 | U6 | `curl -H "Authorization: Bearer $K" http://localhost:18091/v1/models` | operator runs | proxy returns 200 with model list; without `Authorization` returns 401 | validates env-file → proxy → litellm wiring |
@@ -261,7 +261,7 @@ S1 .container declares Exec=proxy → loads image → entrypoint → S2 dispatch
 
 U1 install-quadlet → S1 + S5 + daemon-reload → N3 generator → llmcli.service + symlink
 U2 start → N3 service → podman run (reads S5 env, mounts S1's catalog ro, publishes :18091)
-U3 restart → SIGTERM in → 10s drain (#40) → TimeoutStopSec=15s → SIGKILL → re-spawn
+U3 restart → SIGTERM in → 10s drain (#40) → TimeoutStopSec=20s → SIGKILL → re-spawn
 U5 health → LiteLLM HTTP responds; HealthCmd uses pgrep on litellm process (curl absent from image)
 U7 M₁ reboot → user-linger → default.target → Quadlet unit auto-starts (WantedBy symlink from N3)
 N1 crash → Restart=on-failure → RestartSec=5s → re-spawn (StartLimitBurst=5 per 60s window)
