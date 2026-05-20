@@ -101,6 +101,7 @@ def build_block(catalog: Catalog, public_base_url: str, *, hostname: str | None 
             {"model_list": model_list}, default_flow_style=False, sort_keys=False
         )
     else:
+        # null (not []) preserves register-proxy backwards-compat sentinel form
         inner = yaml.safe_dump({"model_list": None}, default_flow_style=False)
     return f"{BLOCK_START}\n{inner}{BLOCK_END}\n"
 

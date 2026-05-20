@@ -17,6 +17,12 @@ from llmcli.config import Catalog
 from llmcli.litellm_config import build_full_config
 from llmcli.providers import PROVIDERS
 
+# Import style note: pure functions (build_full_config, PROVIDERS) are imported
+# directly because tests never patch them through the `llmcli.cli` namespace.
+# Patchable surface (config, build_block, write_block, reload_proxy) goes via
+# the lazy `_cli = llmcli.cli` indirection inside the command bodies — see the
+# patchable-surface docstring in `llmcli/cli/__init__.py`.
+
 
 # ---------------------------------------------------------------------------
 # register-proxy

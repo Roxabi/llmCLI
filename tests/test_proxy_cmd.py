@@ -262,7 +262,9 @@ class TestSignalForwarding:
 
         # Arrange
         child = MagicMock(spec=subprocess.Popen)
-        # Child never exits — poll always returns None
+        # poll() set to None as a safety net but never reached in this scenario:
+        # drain_timeout=0.0 makes the deadline already-past on first check, so the
+        # while-loop body never executes; kill() is called right after the loop exits.
         child.poll.return_value = None
 
         captured_handlers: dict = {}
@@ -273,7 +275,7 @@ class TestSignalForwarding:
         monkeypatch.setattr(proxy_mod.signal, "signal", fake_signal_signal)
         monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
 
-        # Act — very short timeout so the deadline passes immediately
+        # Act — drain_timeout=0.0 → deadline expires immediately, loop skipped
         _install_signal_handlers(child, drain_timeout=0.0)
         handler = captured_handlers[signal.SIGTERM]
         handler(signal.SIGTERM, None)
