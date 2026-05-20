@@ -301,7 +301,9 @@ class TestProbeVramFallback:
 class TestEngineStartReapsZombie:
     """B3: LlamaCppEngine.start() reaps the subprocess when it exits before /health."""
 
-    def test_start_raises_on_early_exit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_start_raises_on_early_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """start() raises RuntimeError (not hangs) when llama-server exits early."""
         # Create a fake GGUF so path resolution doesn't fail
         hub = tmp_path / "hub"

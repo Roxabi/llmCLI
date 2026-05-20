@@ -64,9 +64,7 @@ def patched_prod_catalog(prod_catalog):
 class TestVramGuardProdScenario:
     """End-to-end VRAM guard verification: 12 GiB model vs 10 GiB host budget."""
 
-    def test_serve_exits_nonzero_when_model_exceeds_prod_budget(
-        self, patched_prod_catalog
-    ) -> None:
+    def test_serve_exits_nonzero_when_model_exceeds_prod_budget(self, patched_prod_catalog) -> None:
         """serve exits non-zero when model VRAM exceeds prod host budget (SC-13)."""
         result = runner.invoke(app, ["serve", "--name", "qwen3-14b-q5"])
         assert result.exit_code != 0, (
@@ -86,28 +84,21 @@ class TestVramGuardProdScenario:
         """Error output contains the required VRAM amount (12 GiB) (SC-13)."""
         result = runner.invoke(app, ["serve", "--name", "qwen3-14b-q5"])
         combined = result.output + (result.stderr or "")
-        assert "12" in combined, (
-            f"Expected required VRAM (12) in output. Got: {combined!r}"
-        )
+        assert "12" in combined, f"Expected required VRAM (12) in output. Got: {combined!r}"
 
     def test_serve_vram_error_states_available_budget(self, patched_prod_catalog) -> None:
         """Error output contains the host VRAM budget (10 GiB) (SC-13)."""
         result = runner.invoke(app, ["serve", "--name", "qwen3-14b-q5"])
         combined = result.output + (result.stderr or "")
-        assert "10" in combined, (
-            f"Expected budget (10) in output. Got: {combined!r}"
-        )
+        assert "10" in combined, f"Expected budget (10) in output. Got: {combined!r}"
 
     def test_serve_vram_error_includes_remediation_hint(self, patched_prod_catalog) -> None:
         """Error output includes a remediation hint (smaller model / deployment docs) (SC-13)."""
         result = runner.invoke(app, ["serve", "--name", "qwen3-14b-q5"])
         combined = result.output + (result.stderr or "")
         assert any(
-            kw in combined.lower()
-            for kw in ("smaller", "budget", "deployment", "docs", "catalog")
-        ), (
-            f"Expected remediation hint in output. Got: {combined!r}"
-        )
+            kw in combined.lower() for kw in ("smaller", "budget", "deployment", "docs", "catalog")
+        ), f"Expected remediation hint in output. Got: {combined!r}"
 
     def test_serve_vram_error_does_not_start_daemon(self, patched_prod_catalog) -> None:
         """Daemon.serve is never called when VRAM guard rejects the model (SC-13)."""
@@ -116,13 +107,10 @@ class TestVramGuardProdScenario:
             runner.invoke(app, ["serve", "--name", "qwen3-14b-q5"])
         mock_daemon_instance.serve.assert_not_called()
 
-    def test_serve_default_model_also_blocked_by_vram_guard(
-        self, patched_prod_catalog
-    ) -> None:
+    def test_serve_default_model_also_blocked_by_vram_guard(self, patched_prod_catalog) -> None:
         """serve with no --name uses default_model and still applies VRAM guard (SC-13)."""
         # default_model = "qwen3-14b-q5" which is 12 GiB > 10 GiB budget
         result = runner.invoke(app, ["serve"])
         assert result.exit_code != 0, (
-            f"Expected non-zero exit for oversized default model. "
-            f"Output: {result.output!r}"
+            f"Expected non-zero exit for oversized default model. Output: {result.output!r}"
         )

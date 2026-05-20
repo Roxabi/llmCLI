@@ -30,12 +30,12 @@ Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp`
 | `roxabitower` (local, dev) | RTX 5070 Ti | 16 GB | on-demand | Qwen3.6-35B-A3B-TQ3_4S (12.4 GiB), 14B Q5, 32B quants |
 | `roxabituwer` (prod) | RTX 3080 | 10 GB | always-on | Qwen3-8B-Q4, Qwen3-4B, Gemma-3-4B |
 
-Per-host catalog at `~/.config/llmcli/llmcli.toml`. Local catalog holds heavy models; prod pins smaller always-on models and is the LiteLLM fallback.
+Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. Local catalog holds heavy models; prod pins smaller always-on models and is the LiteLLM fallback.
 
 ## Project Layout
 
 ```
-llmcli.example.toml       — copy to ~/.config/llmcli/llmcli.toml and customize
+llmcli.example.toml       — copy to ~/.roxabi/llmcli/llmcli.toml and customize
 src/llmcli/
   cli.py                  — Typer app: pull, serve, stop, status, swap, chat, list, register-proxy
   config.py               — TOML catalog loader (HostSettings + ModelSpec)

@@ -60,6 +60,9 @@ nats = [
     "roxabi-nats",
     "roxabi-contracts",
 ]
+proxy = [
+    "litellm[proxy]>=1.0",
+]
 
 [tool.uv.sources]
 roxabi-nats      = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }

@@ -1,6 +1,13 @@
-# llmCLI host config — copy to ~/.config/llmcli/llmcli.toml and edit.
-# Model definitions live in ~/.config/llmcli/models/<name>.toml (one file per model).
+# llmCLI host config — copy to ~/.roxabi/llmcli/llmcli.toml and edit.
+# Model definitions live in ~/.roxabi/llmcli/models/<name>.toml (one file per model).
 # See models/ in this repo for examples to copy and adapt.
+#
+# Cloud passthrough examples (engine="remote", no GPU required):
+#   models/kimi-k2.6.toml         — Kimi K2.6 via Fireworks AI (OpenAI protocol)
+#   models/claude-sonnet-4-6.toml — Claude Sonnet 4.6 via Anthropic API
+#
+# Per-machine filter: set machines=["hostname"] on any spec to restrict it to
+# specific hosts. Empty list (machines=[]) means all hosts — the default.
 
 [host]
 bind              = "0.0.0.0"

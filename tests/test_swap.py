@@ -98,13 +98,16 @@ def _make_engine_mock(start_return: EngineInstance) -> MagicMock:
     return engine
 
 
-def _make_instance(model_name: str, port: int, pid: int = 1000, started_at: float = 1.0) -> EngineInstance:
+def _make_instance(
+    model_name: str, port: int, pid: int = 1000, started_at: float = 1.0
+) -> EngineInstance:
     return EngineInstance(pid=pid, port=port, model_name=model_name, started_at=started_at)
 
 
 # ---------------------------------------------------------------------------
 # Helper: build a Daemon with catalog injected + engine factory patched
 # ---------------------------------------------------------------------------
+
 
 def _daemon_with_engines(catalog, engine_map: dict[str, MagicMock]) -> Daemon:
     """Return a Daemon whose _engine_for_spec() returns mock engines by spec.name."""
@@ -128,7 +131,10 @@ class TestDaemonCmdSwapNoEngine:
         # Arrange
         new_inst = _make_instance("model-b", port=8092, pid=2001)
         engine_b = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()},
+        )
         assert not daemon.instances  # no engine running
 
         # Act
@@ -143,7 +149,10 @@ class TestDaemonCmdSwapNoEngine:
         # Arrange
         new_inst = _make_instance("model-b", port=8092, pid=2001)
         engine_b = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()},
+        )
 
         # Act
         daemon._cmd_swap("model-b")
@@ -158,7 +167,10 @@ class TestDaemonCmdSwapNoEngine:
         # Arrange
         new_inst = _make_instance("model-b", port=8092, pid=2001)
         engine_b = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()},
+        )
 
         # Act
         daemon._cmd_swap("model-b")
@@ -171,7 +183,10 @@ class TestDaemonCmdSwapNoEngine:
         # Arrange
         new_inst = _make_instance("model-b", port=8092, pid=2001)
         engine_b = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()},
+        )
 
         # Act
         response = daemon._cmd_swap("model-b")
@@ -192,7 +207,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         call_order: list[str] = []
@@ -215,7 +232,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -232,7 +251,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -253,7 +274,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -272,7 +295,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -292,7 +317,9 @@ class TestDaemonCmdSwapWithRunningEngine:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -317,7 +344,10 @@ class TestDaemonCmdSwapSameModel:
         existing_inst = _make_instance("model-a", port=8091, pid=1001)
         engine_a = _make_engine_mock(existing_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()},
+        )
         daemon.instances["model-a"] = existing_inst
 
         # Act
@@ -337,14 +367,19 @@ class TestDaemonCmdSwapSameModel:
         existing_inst = _make_instance("model-a", port=8091, pid=1001)
         engine_a = _make_engine_mock(existing_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()},
+        )
         daemon.instances["model-a"] = existing_inst
 
         # Act
         response = daemon._cmd_swap("model-a")
 
         # Assert
-        assert response.startswith("OK"), f"Same-model fast-path must return OK line, got: {response!r}"
+        assert response.startswith("OK"), (
+            f"Same-model fast-path must return OK line, got: {response!r}"
+        )
 
 
 @pytest.mark.no_gpu
@@ -360,9 +395,7 @@ class TestDaemonCmdSwapUnknownModel:
         response = daemon._cmd_swap("model-does-not-exist")
 
         # Assert
-        assert response.startswith("ERR"), (
-            f"Unknown model must return ERR line, got: {response!r}"
-        )
+        assert response.startswith("ERR"), f"Unknown model must return ERR line, got: {response!r}"
 
     def test_swap_unknown_model_err_mentions_name(self, real_catalog: config.Catalog) -> None:
         """ERR response for unknown model includes the requested model name."""
@@ -377,13 +410,18 @@ class TestDaemonCmdSwapUnknownModel:
             f"ERR line must reference the unknown model name or 'unknown', got: {response!r}"
         )
 
-    def test_swap_unknown_model_leaves_running_engine_untouched(self, real_catalog: config.Catalog) -> None:
+    def test_swap_unknown_model_leaves_running_engine_untouched(
+        self, real_catalog: config.Catalog
+    ) -> None:
         """ERR on unknown model does not stop the currently running engine."""
         # Arrange
         existing_inst = _make_instance("model-a", port=8091, pid=1001)
         engine_a = _make_engine_mock(existing_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()},
+        )
         daemon.instances["model-a"] = existing_inst
 
         # Act
@@ -391,9 +429,7 @@ class TestDaemonCmdSwapUnknownModel:
 
         # Assert — current engine must not be touched
         engine_a.stop.assert_not_called()
-        assert "model-a" in daemon.instances, (
-            "Running engine must remain tracked after failed swap"
-        )
+        assert "model-a" in daemon.instances, "Running engine must remain tracked after failed swap"
 
 
 @pytest.mark.no_gpu
@@ -427,13 +463,18 @@ class TestDaemonCmdSwapVramGuard:
             f"ERR line must reference VRAM constraint, got: {response!r}"
         )
 
-    def test_swap_oversized_model_leaves_running_engine_untouched(self, real_catalog: config.Catalog) -> None:
+    def test_swap_oversized_model_leaves_running_engine_untouched(
+        self, real_catalog: config.Catalog
+    ) -> None:
         """VRAM-exceeded swap does not stop the currently running engine."""
         # Arrange
         existing_inst = _make_instance("model-a", port=8091, pid=1001)
         engine_a = _make_engine_mock(existing_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()},
+        )
         daemon.instances["model-a"] = existing_inst
 
         # Act
@@ -445,17 +486,22 @@ class TestDaemonCmdSwapVramGuard:
             "Running engine must remain tracked after VRAM-rejected swap"
         )
 
-    def test_swap_oversized_model_does_not_start_new_engine(self, real_catalog: config.Catalog) -> None:
+    def test_swap_oversized_model_does_not_start_new_engine(
+        self, real_catalog: config.Catalog
+    ) -> None:
         """VRAM-exceeded swap does not attempt to start the oversized engine."""
         # Arrange
         engine_oversized = MagicMock()
         engine_oversized.start.return_value = _make_instance("model-oversized", port=8093)
 
-        daemon = _daemon_with_engines(real_catalog, {
-            "model-a": MagicMock(),
-            "model-b": MagicMock(),
-            "model-oversized": engine_oversized,
-        })
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {
+                "model-a": MagicMock(),
+                "model-b": MagicMock(),
+                "model-oversized": engine_oversized,
+            },
+        )
 
         # Act
         daemon._cmd_swap("model-oversized")
@@ -476,18 +522,20 @@ class TestDaemonCmdSwapStartFailure:
         engine_b = MagicMock()
         engine_b.start.side_effect = RuntimeError("llama-server failed to start")
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
         response = daemon._cmd_swap("model-b")
 
         # Assert
-        assert response.startswith("ERR"), (
-            f"Failed start must return ERR line, got: {response!r}"
-        )
+        assert response.startswith("ERR"), f"Failed start must return ERR line, got: {response!r}"
 
-    def test_swap_start_failure_response_contains_error_info(self, real_catalog: config.Catalog) -> None:
+    def test_swap_start_failure_response_contains_error_info(
+        self, real_catalog: config.Catalog
+    ) -> None:
         """ERR line from start failure contains useful context (model or error hint)."""
         # Arrange
         old_inst = _make_instance("model-a", port=8091, pid=1001)
@@ -495,7 +543,9 @@ class TestDaemonCmdSwapStartFailure:
         engine_b = MagicMock()
         engine_b.start.side_effect = RuntimeError("llama-server failed to start")
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         # Act
@@ -519,7 +569,9 @@ class TestDaemonCmdSwapVramOrdering:
         engine_a = _make_engine_mock(old_inst)
         engine_b = _make_engine_mock(new_inst)
 
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog, {"model-a": engine_a, "model-b": engine_b, "model-oversized": MagicMock()}
+        )
         daemon.instances["model-a"] = old_inst
 
         manager = MagicMock()
@@ -554,7 +606,10 @@ class TestDaemonCmdSwapResponseFormat:
         # Arrange — the wire layer adds the newline; _cmd_swap must NOT include one
         new_inst = _make_instance("model-b", port=8092, pid=2002)
         engine_b = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": MagicMock(), "model-b": engine_b, "model-oversized": MagicMock()},
+        )
 
         # Act
         response = daemon._cmd_swap("model-b")
@@ -582,7 +637,10 @@ class TestDaemonCmdSwapResponseFormat:
         # Arrange
         new_inst = _make_instance("model-a", port=8091, pid=1001)
         engine_a = _make_engine_mock(new_inst)
-        daemon = _daemon_with_engines(real_catalog, {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()})
+        daemon = _daemon_with_engines(
+            real_catalog,
+            {"model-a": engine_a, "model-b": MagicMock(), "model-oversized": MagicMock()},
+        )
 
         # Act
         response = daemon._cmd_swap("model-a")
@@ -614,7 +672,9 @@ class TestCliSwapCommand:
     def test_swap_sends_swap_command_to_daemon(self, fake_catalog_patch) -> None:
         """llmcli swap <name> calls daemon_request with 'SWAP <name>' and timeout=300.0 (B1)."""
         # Arrange
-        with patch("llmcli.cli.daemon_request", return_value="OK model-b pid=2002 port=8092") as mock_req:
+        with patch(
+            "llmcli.cli.daemon_request", return_value="OK model-b pid=2002 port=8092"
+        ) as mock_req:
             # Act
             runner.invoke(app, ["swap", "model-b"])
 
@@ -712,7 +772,9 @@ class TestCliSwapCommand:
     def test_swap_sends_exact_model_name(self, fake_catalog_patch) -> None:
         """daemon_request receives the exact model name passed to llmcli swap."""
         # Arrange
-        with patch("llmcli.cli.daemon_request", return_value="OK model-a pid=1001 port=8091") as mock_req:
+        with patch(
+            "llmcli.cli.daemon_request", return_value="OK model-a pid=1001 port=8091"
+        ) as mock_req:
             # Act
             runner.invoke(app, ["swap", "model-a"])
 

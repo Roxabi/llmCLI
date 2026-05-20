@@ -1,5 +1,5 @@
 {
-  "apiKeyHelper": "cat ~/.config/llmcli/api_key",
+  "apiKeyHelper": "cat ~/.roxabi/llmcli/api_key",
   "env": {
     "ANTHROPIC_BASE_URL": "http://roxabituwer.lan:4000",
     "ANTHROPIC_MODEL": "qwen3-8b-q4",

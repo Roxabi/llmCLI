@@ -5,3 +5,4 @@ file     = "qwen3-14b-q5_k_m.gguf"
 port     = 8092
 vram_gib = 11
 flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
+machines = ["roxabitower"]

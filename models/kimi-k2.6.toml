@@ -1,0 +1,7 @@
+# Kimi K2.6 via Fireworks AI — cloud passthrough, no local GPU needed.
+# Available on all hosts (M1 cloud-only + M2 local+cloud).
+engine   = "remote"
+provider = "fireworks"
+model_id = "accounts/fireworks/routers/kimi-k2p6-turbo"
+protocol = "openai"
+machines = []  # empty = all hosts

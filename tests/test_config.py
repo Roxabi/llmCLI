@@ -15,12 +15,21 @@ from pathlib import Path
 
 import pytest
 
-from llmcli.config import Catalog, HostSettings, ModelSpec, _parse_model_spec, load, check_vram_budget
+from llmcli.config import (
+    Catalog,
+    HostSettings,
+    ModelSpec,
+    _parse_model_spec,
+    load,
+    check_vram_budget,
+)
+from llmcli.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _write_toml(tmp_path: Path, content: str) -> Path:
     p = tmp_path / "llmcli.toml"
@@ -61,6 +70,38 @@ OVERSIZED_TOML = """\
     vram_gib = 13.0
     flags    = ["-ngl", "99"]
 """
+
+
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+
+class TestModuleConstants:
+    def test_default_config_path_matches_roxabi_convention(self) -> None:
+        """DEFAULT_CONFIG_PATH resolves to ~/.roxabi/llmcli/llmcli.toml absent override.
+
+        Verified in a subprocess to avoid module-reload side-effects on other tests.
+        """
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; os.environ.pop('LLMCLI_CONFIG', None); "
+                    "import llmcli.config as cfg; from pathlib import Path; "
+                    "expected = Path.home() / '.roxabi' / 'llmcli' / 'llmcli.toml'; "
+                    "assert cfg.DEFAULT_CONFIG_PATH == expected, "
+                    "f'Got {cfg.DEFAULT_CONFIG_PATH!r}, expected {expected!r}'"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -129,16 +170,18 @@ class TestLoad:
         assert isinstance(catalog.host, HostSettings)
         # models/ dir is sibling to llmcli.example.toml; must have at least one model
         assert len(catalog.models) >= 1
+        valid_engines = {"llamacpp", "llamacpp_tq3", "vllm", "remote"}
         for name, spec in catalog.models.items():
             assert spec.name == name
-            assert spec.port > 0
-            assert spec.vram_gib > 0
-            assert spec.engine in ("llamacpp", "llamacpp_tq3")
+            assert spec.engine in valid_engines
+            if spec.engine != "remote":
+                assert spec.port > 0
+                assert spec.vram_gib > 0
 
     def test_load_models_dir_loaded(self, tmp_path: Path) -> None:
         """Models defined in models/*.toml are merged into the catalog."""
         # Arrange
-        toml_path = _write_toml(tmp_path, "[host]\nbind = \"0.0.0.0\"\n")
+        toml_path = _write_toml(tmp_path, '[host]\nbind = "0.0.0.0"\n')
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         (models_dir / "my-model.toml").write_text(
@@ -365,3 +408,191 @@ class TestFriendlyErrors:
         # Act / Assert
         with pytest.raises((TypeError, KeyError, ValueError)):
             load(toml_path)
+
+
+# ---------------------------------------------------------------------------
+# Remote engine specs (issue #36)
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteEngineSpec:
+    def test_remote_openai_protocol_loads(self, tmp_path: Path) -> None:
+        """A remote spec with provider=fireworks and protocol=openai loads successfully."""
+        # Arrange
+        toml_path = _write_toml(
+            tmp_path,
+            '[host]\nbind = "0.0.0.0"\n\n[models.kimi]\nengine = "remote"\n'
+            'provider = "fireworks"\nmodel_id = "accounts/fireworks/models/kimi"\nprotocol = "openai"\n',
+        )
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        spec = catalog.models["kimi"]
+        assert spec.engine == "remote"
+        assert spec.provider == "fireworks"
+        assert spec.model_id == "accounts/fireworks/models/kimi"
+        assert spec.protocol == "openai"
+
+    def test_remote_anthropic_protocol_loads(self, tmp_path: Path) -> None:
+        """A remote spec with provider=anthropic and protocol=anthropic loads successfully."""
+        # Arrange
+        toml_path = _write_toml(
+            tmp_path,
+            '[host]\nbind = "0.0.0.0"\n\n[models.claude]\nengine = "remote"\n'
+            'provider = "anthropic"\nmodel_id = "claude-sonnet-4-6"\nprotocol = "anthropic"\n',
+        )
+        # Act
+        catalog = load(toml_path)
+        # Assert
+        spec = catalog.models["claude"]
+        assert spec.engine == "remote"
+        assert spec.provider == "anthropic"
+        assert spec.model_id == "claude-sonnet-4-6"
+        assert spec.protocol == "anthropic"
+
+    def test_remote_unknown_provider_raises(self) -> None:
+        """engine='remote' with an unknown provider raises ValueError."""
+        # Arrange
+        raw = {
+            "engine": "remote",
+            "provider": "does-not-exist",
+            "model_id": "some/model",
+            "protocol": "openai",
+        }
+        # Act / Assert
+        with pytest.raises(ValueError, match="unknown provider"):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_with_repo_raises(self) -> None:
+        """engine='remote' mixed with local field 'repo' raises ValueError."""
+        # Arrange
+        raw = {
+            "engine": "remote",
+            "provider": "fireworks",
+            "model_id": "some/model",
+            "protocol": "openai",
+            "repo": "Org/Model-GGUF",
+        }
+        # Act / Assert
+        with pytest.raises(ValueError, match="local-engine fields"):
+            _parse_model_spec("test-model", raw)
+
+    def test_local_engine_with_provider_raises(self) -> None:
+        """engine='llamacpp' mixed with remote field 'provider' raises ValueError."""
+        # Arrange
+        raw = {
+            "engine": "llamacpp",
+            "repo": "Org/Model-GGUF",
+            "port": 8091,
+            "vram_gib": 6.0,
+            "provider": "fireworks",
+        }
+        # Act / Assert
+        with pytest.raises(ValueError, match="remote-engine fields"):
+            _parse_model_spec("test-model", raw)
+
+    def test_machines_parses_correctly(self) -> None:
+        """ModelSpec.machines parses a list of hostnames correctly."""
+        # Arrange
+        raw = {
+            "engine": "llamacpp",
+            "repo": "Org/Model-GGUF",
+            "port": 8091,
+            "vram_gib": 6.0,
+            "machines": ["roxabitower"],
+        }
+        # Act
+        spec = _parse_model_spec("test-model", raw)
+        # Assert
+        assert spec.machines == ["roxabitower"]
+
+    def test_all_known_providers_are_valid(self) -> None:
+        """Each key in PROVIDERS can be used as provider in a remote spec."""
+        # implicit: no ValueError raised — purpose is to confirm all PROVIDERS pass validation.
+        for provider_key in PROVIDERS:
+            # Anthropic requires protocol='anthropic'; all others use 'openai'.
+            protocol = "anthropic" if provider_key == "anthropic" else "openai"
+            raw = {
+                "engine": "remote",
+                "provider": provider_key,
+                "model_id": "some/model",
+                "protocol": protocol,
+            }
+            _parse_model_spec(f"test-{provider_key}", raw)
+
+    def test_unknown_provider_in_iteration_raises(self) -> None:
+        """A provider key NOT in PROVIDERS is rejected by _parse_model_spec."""
+        raw = {
+            "engine": "remote",
+            "provider": "not-a-real-provider",
+            "model_id": "some/model",
+            "protocol": "openai",
+        }
+        with pytest.raises(ValueError, match="unknown provider"):
+            _parse_model_spec("test-unknown", raw)
+
+    def test_machines_field_default_is_empty_list(self) -> None:
+        """ModelSpec.machines defaults to [] when not specified (direct construction)."""
+        # Arrange
+        raw = {
+            "engine": "remote",
+            "provider": "fireworks",
+            "model_id": "some/model",
+            "protocol": "openai",
+        }
+        # Act
+        spec = _parse_model_spec("test-model", raw)
+        # Assert
+        assert spec.machines == []
+
+    def test_machines_absent_from_toml_yields_empty_list(self, tmp_path: Path) -> None:
+        """ModelSpec.machines is [] when not present in TOML (load-path test)."""
+        toml_path = _write_toml(
+            tmp_path,
+            '[host]\nbind = "0.0.0.0"\n\n[models.kimi]\nengine = "remote"\n'
+            'provider = "fireworks"\nmodel_id = "accounts/fireworks/models/kimi"\nprotocol = "openai"\n',
+        )
+        catalog = load(toml_path)
+        assert catalog.models["kimi"].machines == []
+
+    def test_remote_with_extra_unknown_field_raises(self) -> None:
+        """engine='remote' with an unknown field raises TypeError from ModelSpec dataclass."""
+        raw = {
+            "engine": "remote",
+            "provider": "fireworks",
+            "model_id": "some/model",
+            "protocol": "openai",
+            "junk": "x",
+        }
+        with pytest.raises(TypeError):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_missing_provider_raises(self) -> None:
+        """engine='remote' without 'provider' raises ValueError matching 'missing required field'."""
+        raw = {"engine": "remote", "model_id": "m", "protocol": "openai"}
+        with pytest.raises(ValueError, match="missing required field 'provider'"):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_missing_model_id_raises(self) -> None:
+        """engine='remote' without 'model_id' raises ValueError matching 'missing required field'."""
+        raw = {"engine": "remote", "provider": "fireworks", "protocol": "openai"}
+        with pytest.raises(ValueError, match="missing required field 'model_id'"):
+            _parse_model_spec("test-model", raw)
+
+    def test_remote_invalid_protocol_raises(self) -> None:
+        """engine='remote' with unsupported protocol raises ValueError matching 'invalid protocol'."""
+        raw = {"engine": "remote", "provider": "fireworks", "model_id": "m", "protocol": "grpc"}
+        with pytest.raises(ValueError, match="invalid protocol"):
+            _parse_model_spec("test-model", raw)
+
+    def test_unknown_engine_raises(self) -> None:
+        """An unrecognised engine value raises ValueError matching 'unknown engine'."""
+        raw = {"engine": "deepspeed", "repo": "Org/M"}
+        with pytest.raises(ValueError, match="unknown engine"):
+            _parse_model_spec("test-model", raw)
+
+    def test_missing_engine_raises(self) -> None:
+        """A spec without 'engine' raises ValueError matching 'missing required field'."""
+        raw = {"repo": "Org/M"}
+        with pytest.raises(ValueError, match="missing required field 'engine'"):
+            _parse_model_spec("test-model", raw)
