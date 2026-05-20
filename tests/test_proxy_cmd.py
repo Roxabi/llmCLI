@@ -361,3 +361,131 @@ class TestConfigOutDryRun:
             f"Expected '{key_env}' in output/stderr but got: {combined_output!r}"
         )
         assert not out_path.exists(), "Output file must not be written on validation failure"
+
+
+# ---------------------------------------------------------------------------
+# TestExitCodePropagation
+# ---------------------------------------------------------------------------
+
+
+class TestExitCodePropagation:
+    """Integration tests for exit-code propagation through the proxy lifecycle."""
+
+    def _make_remote_catalog(self) -> "Catalog":
+        """Build a Catalog with a single remote model (fireworks) for lifecycle tests."""
+        return _make_catalog(
+            models={
+                "kimi-k2": dict(
+                    engine="remote",
+                    provider="fireworks",
+                    model_id="accounts/fireworks/models/kimi",
+                    protocol="openai",
+                    machines=[],
+                )
+            }
+        )
+
+    def test_exit_zero_propagates_as_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """proxy returns exit code 0 when litellm exits with code 0."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+        # Redirect Path.home() to tmp_path so state-dir writes go to a temp location
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        fake_child = MagicMock()
+        fake_child.wait.return_value = 0
+        fake_spawn = MagicMock(return_value=fake_child)
+
+        catalog = self._make_remote_catalog()
+        runner = CliRunner()
+
+        # Act
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
+            monkeypatch.setattr(
+                "llmcli.cli.proxy._install_signal_handlers",
+                lambda *a, **k: None,
+            )
+            result = runner.invoke(typer_app, ["proxy"])
+
+        # Assert
+        assert result.exit_code == 0, f"Expected 0; got {result.exit_code}; output: {result.output!r}"
+
+    def test_exit_forty_two_propagates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """proxy returns exit code 42 when litellm exits with code 42."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        fake_child = MagicMock()
+        fake_child.wait.return_value = 42
+        fake_spawn = MagicMock(return_value=fake_child)
+
+        catalog = self._make_remote_catalog()
+        runner = CliRunner()
+
+        # Act
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
+            monkeypatch.setattr(
+                "llmcli.cli.proxy._install_signal_handlers",
+                lambda *a, **k: None,
+            )
+            result = runner.invoke(typer_app, ["proxy"])
+
+        # Assert
+        assert result.exit_code == 42, f"Expected 42; got {result.exit_code}; output: {result.output!r}"
+
+    def test_negative_nine_maps_to_137(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """proxy returns exit code 137 when litellm is SIGKILL-ed (wait() returns -9)."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        fake_child = MagicMock()
+        # POSIX: negative return code means killed by signal abs(returncode)
+        # -9 = SIGKILL (e.g. OOM), expected propagated code = 128 + 9 = 137
+        fake_child.wait.return_value = -9
+        fake_spawn = MagicMock(return_value=fake_child)
+
+        catalog = self._make_remote_catalog()
+        runner = CliRunner()
+
+        # Act
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
+            monkeypatch.setattr(
+                "llmcli.cli.proxy._install_signal_handlers",
+                lambda *a, **k: None,
+            )
+            result = runner.invoke(typer_app, ["proxy"])
+
+        # Assert
+        assert result.exit_code == 137, f"Expected 137 (128+9); got {result.exit_code}; output: {result.output!r}"
