@@ -1,8 +1,14 @@
-"""Tests for llmcli.cli.proxy — _validate_provider_keys."""
+"""Tests for llmcli.cli.proxy — _validate_provider_keys and _spawn_litellm."""
 
 from __future__ import annotations
 
+from io import StringIO
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
+import typer
+from rich.console import Console
 
 from llmcli.config import Catalog, HostSettings, ModelSpec
 from llmcli.cli.proxy import _validate_provider_keys
@@ -100,3 +106,46 @@ class TestValidateProviderKeys:
         result = _validate_provider_keys(catalog, hostname="roxabitower")
         # Assert
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# TestSpawnLitellm
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnLitellm:
+    def test_happy_path_calls_popen_with_args(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Popen is called with the correct argument list when the binary is found."""
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _spawn_litellm
+
+        # Arrange
+        fake_popen = MagicMock()
+        monkeypatch.setattr(proxy_mod.shutil, "which", lambda name: "/usr/local/bin/litellm" if name == "litellm" else None)
+        monkeypatch.setattr(proxy_mod.subprocess, "Popen", fake_popen)
+
+        # Act
+        _spawn_litellm(Path("/tmp/cfg.yaml"), 18091, "0.0.0.0")
+
+        # Assert
+        fake_popen.assert_called_once_with(
+            ["/usr/local/bin/litellm", "--config", "/tmp/cfg.yaml", "--port", "18091", "--host", "0.0.0.0"]
+        )
+
+    def test_missing_binary_exits_127(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """typer.Exit(127) is raised and stderr contains the expected message when litellm is not on PATH."""
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _spawn_litellm
+
+        # Arrange
+        monkeypatch.setattr(proxy_mod.shutil, "which", lambda name: None)
+        stderr_buffer = StringIO()
+        fake_err_console = Console(file=stderr_buffer, highlight=False)
+        monkeypatch.setattr(proxy_mod, "err_console", fake_err_console)
+
+        # Act + Assert
+        with pytest.raises(typer.Exit) as exc_info:
+            _spawn_litellm(Path("/tmp/cfg.yaml"), 18091, "0.0.0.0")
+
+        assert exc_info.value.exit_code == 127
+        assert "litellm binary not found" in stderr_buffer.getvalue()
