@@ -648,12 +648,8 @@ class TestRegisterProxyCommand:
             patch("llmcli.cli.reload_proxy", create=True),
         ):
             mock_config_mod.load.return_value = mixed_catalog
-            mock_config_mod.check_vram_budget.side_effect = (
-                real_config.check_vram_budget
-            )
-            result = runner.invoke(
-                app, ["register-proxy", "--config", str(config_path)]
-            )
+            mock_config_mod.check_vram_budget.side_effect = real_config.check_vram_budget
+            result = runner.invoke(app, ["register-proxy", "--config", str(config_path)])
 
         assert result.exit_code == 0, f"Unexpected exit: {result.output}"
         assert config_path.exists(), "Config file was not created"

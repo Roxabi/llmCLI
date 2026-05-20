@@ -689,3 +689,173 @@ class TestBuildBlockHostnameFilter:
         parsed = yaml.safe_load(inner)
         model_list = parsed.get("model_list") if parsed else None
         assert not model_list
+
+    def test_build_block_empty_filter_yields_null(self) -> None:
+        """Empty filtered catalog → block contains 'model_list: null', NOT 'model_list: []'."""
+        # Arrange — catalog where ALL models have non-matching machines
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        pinned_a = ModelSpec(
+            name="kimi-k2",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/kimi",
+            protocol="openai",
+            machines=["other-host"],
+        )
+        pinned_b = ModelSpec(
+            name="qwen3-8b",
+            engine="llamacpp",
+            repo="Org/Qwen3-8B-GGUF",
+            file="qwen3-8b-q4_k_m.gguf",
+            port=8091,
+            vram_gib=5.5,
+            machines=["other-host"],
+        )
+        catalog = Catalog(host=host, models={"kimi-k2": pinned_a, "qwen3-8b": pinned_b})
+        # Act — hostname mismatch ensures all specs are filtered out
+        block = build_block(catalog, "http://example.lan", hostname="some-other-host")
+        # Assert — YAML null (not []) preserves register-proxy back-compat
+        assert "model_list: null" in block
+        assert "model_list: []" not in block
+
+
+# ---------------------------------------------------------------------------
+# build_full_config — complete proxy config dict (issue #40)
+# ---------------------------------------------------------------------------
+
+
+def _make_mixed_catalog(
+    remote_machines: list[str] | None = None,
+    local_machines: list[str] | None = None,
+) -> Catalog:
+    """Build a catalog with one remote (openai) model and one local (llamacpp) model."""
+    host = HostSettings(
+        bind="0.0.0.0",
+        public_base_url=PUBLIC_BASE_URL,
+        api_key_env="LLMCLI_API_KEY",
+    )
+    remote_spec = ModelSpec(
+        name="kimi-k2",
+        engine="remote",
+        provider="fireworks",
+        model_id="accounts/fireworks/models/kimi",
+        protocol="openai",
+        machines=remote_machines or [],
+    )
+    local_spec = ModelSpec(
+        name="qwen3-8b",
+        engine="llamacpp",
+        repo="Org/Qwen3-8B-GGUF",
+        file="qwen3-8b-q4_k_m.gguf",
+        port=8091,
+        vram_gib=5.5,
+        machines=local_machines or [],
+    )
+    return Catalog(host=host, models={"kimi-k2": remote_spec, "qwen3-8b": local_spec})
+
+
+from llmcli.litellm_config import build_full_config  # noqa: E402
+
+
+class TestBuildFullConfig:
+    def test_returns_dict_with_required_keys(self) -> None:
+        """Catalog with 1 remote + 1 local model → result has all 3 keys; litellm_settings correct."""
+        # Arrange
+        catalog = _make_mixed_catalog()
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert — all three top-level keys present
+        assert "general_settings" in result
+        assert "litellm_settings" in result
+        assert "model_list" in result
+        # litellm_settings is exactly {"drop_params": True}
+        assert result["litellm_settings"] == {"drop_params": True}
+        # model_list contains entries for both models
+        names = {entry["model_name"] for entry in result["model_list"]}
+        assert names == {"kimi-k2", "qwen3-8b"}
+
+    def test_machines_filter_excludes_non_matching(self) -> None:
+        """Model with machines=["other-host"] is excluded when hostname="this-host"."""
+        # Arrange — remote pinned to "other-host", local open
+        catalog = _make_mixed_catalog(remote_machines=["other-host"], local_machines=[])
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="this-host")
+        # Assert — only the open local model survives the filter
+        names = {entry["model_name"] for entry in result["model_list"]}
+        assert "kimi-k2" not in names
+        assert "qwen3-8b" in names
+
+    def test_master_key_from_api_key_env(self) -> None:
+        """general_settings.master_key == 'os.environ/<api_key_env>'."""
+        # Arrange
+        catalog = _make_mixed_catalog()
+        expected_key = f"os.environ/{catalog.host.api_key_env}"
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert
+        assert result["general_settings"]["master_key"] == expected_key
+
+    def test_empty_filter_yields_empty_list(self) -> None:
+        """All models filtered out → model_list is [] (not None, not absent)."""
+        # Arrange — both models pinned to "never-host"
+        catalog = _make_mixed_catalog(
+            remote_machines=["never-host"],
+            local_machines=["never-host"],
+        )
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="this-host")
+        # Assert — model_list is present AND is an empty list (not None)
+        assert "model_list" in result
+        assert result["model_list"] == []
+
+    def test_unknown_provider_raises_value_error(self) -> None:
+        """build_full_config raises ValueError for an engine='remote' spec with unknown provider."""
+        # Arrange: catalog with engine="remote", provider not in PROVIDERS
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url=PUBLIC_BASE_URL,
+            api_key_env="LLMCLI_API_KEY",
+        )
+        bad_spec = ModelSpec(
+            name="unknown-model",
+            engine="remote",
+            provider="not-a-real-provider",
+            model_id="some/model",
+            protocol="openai",
+            machines=[],
+        )
+        catalog = Catalog(host=host, models={"unknown-model": bad_spec})
+        # Act + Assert
+        with pytest.raises(ValueError, match="Unknown provider"):
+            build_full_config(catalog, PUBLIC_BASE_URL)
+
+    def test_anthropic_protocol_entry_has_no_api_base(self) -> None:
+        """Anthropic-protocol remote spec produces an entry without api_base, model prefixed anthropic/.
+
+        Mutation discipline: if the anthropic branch is removed (falling through to the openai
+        branch), api_base would be present and the model prefix would be 'openai/' rather than
+        'anthropic/'. Both assertions would fail, making this an iron-clad negative test.
+        """
+        # Arrange: catalog with engine="remote", protocol="anthropic", provider="anthropic"
+        catalog = _make_remote_catalog("anthropic")
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert: exactly one entry with a claude model name
+        claude_entries = [m for m in result["model_list"] if m["model_name"].startswith("claude")]
+        assert len(claude_entries) == 1, (
+            f"Expected 1 claude entry, got {len(claude_entries)}: "
+            f"{[m['model_name'] for m in result['model_list']]}"
+        )
+        entry = claude_entries[0]
+        # api_base must be absent — LiteLLM resolves anthropic natively
+        assert "api_base" not in entry["litellm_params"], (
+            f"api_base must not be set for anthropic protocol, got: {entry['litellm_params']}"
+        )
+        # model must be prefixed with "anthropic/"
+        assert entry["litellm_params"]["model"].startswith("anthropic/"), (
+            f"Expected model to start with 'anthropic/', got: {entry['litellm_params']['model']}"
+        )
