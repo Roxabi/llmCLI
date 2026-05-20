@@ -266,3 +266,98 @@ class TestSignalForwarding:
 
         assert exc_info.value.code == 130
         assert child.kill.called is True
+
+
+# ---------------------------------------------------------------------------
+# TestConfigOutDryRun
+# ---------------------------------------------------------------------------
+
+
+class TestConfigOutDryRun:
+    """Integration tests for the `proxy --config-out` dry-run path."""
+
+    def test_config_out_writes_yaml_and_exits_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """--config-out writes a valid YAML with expected top-level keys and exits 0."""
+        import yaml
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange — env vars required by _validate_provider_keys + catalog.host.api_key_env
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+
+        catalog = _make_catalog(
+            models={
+                "kimi-k2": dict(
+                    engine="remote",
+                    provider="fireworks",
+                    model_id="accounts/fireworks/models/kimi",
+                    protocol="openai",
+                    machines=[],
+                )
+            }
+        )
+        out_path = tmp_path / "proxy.yaml"
+
+        runner = CliRunner()
+
+        # Act — patch catalog loader so test is hermetic (no real TOML on disk needed)
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            result = runner.invoke(typer_app, ["proxy", "--config-out", str(out_path)])
+
+        # Assert
+        assert result.exit_code == 0, f"Unexpected exit code; output: {result.output!r}"
+        assert out_path.exists(), "Output file was not created"
+
+        cfg = yaml.safe_load(out_path.read_text())
+        assert "general_settings" in cfg
+        assert "litellm_settings" in cfg
+        assert "model_list" in cfg
+        assert cfg["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+
+    def test_config_out_missing_provider_env_exits_one_no_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """--config-out exits 1 with key_env name in output and does NOT write the file."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        # Arrange — master key present, provider key absent
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        key_env = PROVIDERS["fireworks"].key_env  # FIREWORKS_API_KEY
+        monkeypatch.delenv(key_env, raising=False)
+
+        catalog = _make_catalog(
+            models={
+                "kimi-k2": dict(
+                    engine="remote",
+                    provider="fireworks",
+                    model_id="accounts/fireworks/models/kimi",
+                    protocol="openai",
+                    machines=[],
+                )
+            }
+        )
+        out_path = tmp_path / "proxy.yaml"
+
+        runner = CliRunner()
+
+        # Act
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            result = runner.invoke(typer_app, ["proxy", "--config-out", str(out_path)])
+
+        # Assert
+        assert result.exit_code == 1, f"Expected exit code 1; output: {result.output!r}"
+        combined_output = result.output + result.stderr
+        assert key_env in combined_output, (
+            f"Expected '{key_env}' in output/stderr but got: {combined_output!r}"
+        )
+        assert not out_path.exists(), "Output file must not be written on validation failure"
