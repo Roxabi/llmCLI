@@ -149,3 +149,120 @@ class TestSpawnLitellm:
 
         assert exc_info.value.exit_code == 127
         assert "litellm binary not found" in stderr_buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# TestSignalForwarding
+# ---------------------------------------------------------------------------
+
+
+class TestSignalForwarding:
+    def test_sigterm_terminates_child_polls_then_returns_when_exited(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Handler terminates child and returns without kill when child exits within drain."""
+        import signal
+        import subprocess
+        import time as time_mod
+
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _install_signal_handlers
+
+        # Arrange
+        child = MagicMock(spec=subprocess.Popen)
+        # Simulate child exiting after two polls
+        child.poll.side_effect = [None, None, 0]
+
+        captured_handlers: dict = {}
+
+        def fake_signal_signal(signum, handler):
+            captured_handlers[signum] = handler
+
+        monkeypatch.setattr(proxy_mod.signal, "signal", fake_signal_signal)
+        monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
+
+        # Act — register handlers, then invoke captured SIGTERM handler
+        _install_signal_handlers(child, drain_timeout=0.5)
+        handler = captured_handlers[signal.SIGTERM]
+        handler(signal.SIGTERM, None)
+
+        # Assert
+        assert child.terminate.called is True
+        assert child.poll.call_count >= 1
+        assert child.kill.called is False
+
+    def test_drain_timeout_exceeded_kills_child(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Handler calls kill when child does not exit within drain_timeout."""
+        import signal
+        import subprocess
+
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _install_signal_handlers
+
+        # Arrange
+        child = MagicMock(spec=subprocess.Popen)
+        # Child never exits — poll always returns None
+        child.poll.return_value = None
+
+        captured_handlers: dict = {}
+
+        def fake_signal_signal(signum, handler):
+            captured_handlers[signum] = handler
+
+        monkeypatch.setattr(proxy_mod.signal, "signal", fake_signal_signal)
+        monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
+
+        # Act — very short timeout so the deadline passes immediately
+        _install_signal_handlers(child, drain_timeout=0.0)
+        handler = captured_handlers[signal.SIGTERM]
+        handler(signal.SIGTERM, None)
+
+        # Assert
+        assert child.terminate.called is True
+        assert child.kill.called is True
+
+    def test_double_sigint_during_drain_kills_and_exits_130(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Second SIGINT during active drain raises SystemExit(130) and kills child."""
+        import signal
+        import subprocess
+
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _install_signal_handlers
+
+        # Arrange
+        child = MagicMock(spec=subprocess.Popen)
+        # Child never exits so drain stays active
+        child.poll.return_value = None
+
+        captured_handlers: dict = {}
+
+        def fake_signal_signal(signum, handler):
+            captured_handlers[signum] = handler
+
+        monkeypatch.setattr(proxy_mod.signal, "signal", fake_signal_signal)
+        monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
+
+        # Act — zero timeout so first SIGINT drains immediately and finishes
+        # then second SIGINT hits the reentrant path
+        _install_signal_handlers(child, drain_timeout=0.0)
+        handler = captured_handlers[signal.SIGINT]
+
+        # First SIGINT: triggers drain (timeout=0 so kill is called, but
+        # drain_state["active"] is set before kill)
+        # We need drain_state to be active, so patch time.monotonic to force
+        # the deadline to be already past on first invocation too — the first
+        # call will set active=True, terminate, then exhaust the loop and kill.
+        # To isolate the reentrant path, call handler once to set drain_state
+        # active, then call again.
+        handler(signal.SIGINT, None)  # first — sets active, drain exhausts, kills
+        child.kill.reset_mock()       # reset so we can assert the reentrant kill
+
+        with pytest.raises(SystemExit) as exc_info:
+            handler(signal.SIGINT, None)  # second — reentrant path
+
+        assert exc_info.value.code == 130
+        assert child.kill.called is True
