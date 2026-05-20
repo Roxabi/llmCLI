@@ -87,14 +87,23 @@ class TestValidateProviderKeys:
         assert provider.key_env in result[0]
 
     def test_local_models_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Local engine models (e.g. llamacpp) are skipped regardless of environment state."""
-        # Arrange — ensure no stray provider keys that could mask a bug
-        for p in PROVIDERS.values():
-            monkeypatch.delenv(p.key_env, raising=False)
+        """Engine guard prevents local models from going through remote-key validation.
+
+        Mutation discipline: the local model uses a REAL valid provider string
+        ("fireworks") so the unknown-provider branch cannot catch it. The
+        fireworks key IS set in the environment, so a removed engine guard would
+        NOT cause a missing-key error — it would validate the local model against
+        fireworks, which is semantically wrong but invisible without the guard.
+        The test must distinguish "engine guard works" from "unknown-provider fallback works."
+        """
+        # Arrange: set fireworks key so removing the engine guard would not raise a
+        # missing-key error — the guard must be the only thing protecting local models.
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
         catalog = _make_catalog(
             models={
                 "qwen3-8b": dict(
                     engine="llamacpp",
+                    provider="fireworks",
                     repo="Org/Qwen3-8B-GGUF",
                     file="qwen3-8b-q4_k_m.gguf",
                     port=8091,
@@ -102,10 +111,51 @@ class TestValidateProviderKeys:
                 )
             }
         )
+
+        # Spy on PROVIDERS.get to confirm the engine guard short-circuits before
+        # PROVIDERS.get is called for this local model.
+        import llmcli.cli.proxy as proxy_mod
+
+        providers_mock = MagicMock(wraps=proxy_mod.PROVIDERS)
+        monkeypatch.setattr(proxy_mod, "PROVIDERS", providers_mock)
+
         # Act
-        result = _validate_provider_keys(catalog, hostname="roxabitower")
-        # Assert
-        assert result == []
+        errors = _validate_provider_keys(catalog, hostname="roxabitower")
+
+        # Assert: no errors (engine guard skipped the local model entirely)
+        assert errors == []
+        # Assert: PROVIDERS.get was never called — the engine guard short-circuited
+        providers_mock.get.assert_not_called()
+
+    def test_remote_model_pinned_to_other_host_is_not_validated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Machines filter excludes remote model on non-matching host — no key check.
+
+        Mutation discipline: if the machines filter is removed from _validate_provider_keys,
+        the remote fireworks model would be evaluated on "this-host" and the missing
+        FIREWORKS_API_KEY would produce an error. The test therefore fails when the filter
+        is deleted.
+        """
+        # Arrange: remote model pinned to "other-host", key NOT in env.
+        # If machines filter is removed, this remote model would generate a
+        # missing-key error on "this-host". If filter works, no error.
+        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+        catalog = _make_catalog(
+            models={
+                "kimi-k2": dict(
+                    engine="remote",
+                    provider="fireworks",
+                    model_id="accounts/fireworks/models/kimi",
+                    protocol="openai",
+                    machines=["other-host"],
+                )
+            }
+        )
+        # Act
+        errors = _validate_provider_keys(catalog, hostname="this-host")
+        # Assert: no errors — the machines filter excluded the model before key check
+        assert errors == []
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +378,8 @@ class TestConfigOutDryRun:
         assert "litellm_settings" in cfg
         assert "model_list" in cfg
         assert cfg["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+        # Assert file mode is 0o600 (security invariant — credentials path)
+        assert oct(out_path.stat().st_mode & 0o777) == oct(0o600)
 
     def test_config_out_missing_provider_env_exits_one_no_file(
         self,

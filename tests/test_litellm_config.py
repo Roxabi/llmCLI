@@ -811,3 +811,30 @@ class TestBuildFullConfig:
         # Assert — model_list is present AND is an empty list (not None)
         assert "model_list" in result
         assert result["model_list"] == []
+
+    def test_anthropic_protocol_entry_has_no_api_base(self) -> None:
+        """Anthropic-protocol remote spec produces an entry without api_base, model prefixed anthropic/.
+
+        Mutation discipline: if the anthropic branch is removed (falling through to the openai
+        branch), api_base would be present and the model prefix would be 'openai/' rather than
+        'anthropic/'. Both assertions would fail, making this an iron-clad negative test.
+        """
+        # Arrange: catalog with engine="remote", protocol="anthropic", provider="anthropic"
+        catalog = _make_remote_catalog("anthropic")
+        # Act
+        result = build_full_config(catalog, PUBLIC_BASE_URL, hostname="any-host")
+        # Assert: exactly one entry with a claude model name
+        claude_entries = [m for m in result["model_list"] if m["model_name"].startswith("claude")]
+        assert len(claude_entries) == 1, (
+            f"Expected 1 claude entry, got {len(claude_entries)}: "
+            f"{[m['model_name'] for m in result['model_list']]}"
+        )
+        entry = claude_entries[0]
+        # api_base must be absent — LiteLLM resolves anthropic natively
+        assert "api_base" not in entry["litellm_params"], (
+            f"api_base must not be set for anthropic protocol, got: {entry['litellm_params']}"
+        )
+        # model must be prefixed with "anthropic/"
+        assert entry["litellm_params"]["model"].startswith("anthropic/"), (
+            f"Expected model to start with 'anthropic/', got: {entry['litellm_params']['model']}"
+        )
