@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 from pathlib import Path
@@ -8,6 +9,8 @@ from typing import Optional
 import typer
 
 from llmcli.cli._app import app, console, err_console
+from llmcli.config import Catalog
+from llmcli.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -94,3 +97,28 @@ def proxy(
 ) -> None:
     """Run a managed LiteLLM proxy bound to :{port} from the llmCLI catalog."""
     raise NotImplementedError  # body filled in T8 and T14
+
+
+def _validate_provider_keys(catalog: Catalog, hostname: str | None = None) -> list[str]:
+    """Return list of missing-provider-key error messages; empty list = OK.
+
+    Skips local engines. For each engine="remote" spec on the effective host
+    (machines filter applied), looks up PROVIDERS[spec.provider].key_env and
+    checks os.environ; missing → append an actionable error string.
+    """
+    effective = hostname or socket.gethostname()
+    errors: list[str] = []
+    for name, spec in catalog.models.items():
+        if spec.engine != "remote":
+            continue
+        if spec.machines and effective not in spec.machines:
+            continue
+        provider = PROVIDERS.get(spec.provider)
+        if provider is None:
+            continue  # surfaced as ValueError by build_full_config later
+        if not os.environ.get(provider.key_env):
+            errors.append(
+                f"Missing provider key for '{name}': set {provider.key_env} "
+                "(in environment or ~/.litellm/.env)"
+            )
+    return errors
