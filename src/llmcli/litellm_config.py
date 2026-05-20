@@ -94,60 +94,14 @@ def build_block(catalog: Catalog, public_base_url: str, *, hostname: str | None 
     Returns:
         YAML string wrapped in llmCLI sentinel comments.
     """
-    effective_hostname = hostname if hostname is not None else socket.gethostname()
-    api_key_ref = f"os.environ/{catalog.host.api_key_env}"
-
-    model_list = []
-    for name, spec in catalog.models.items():
-        # Per-machine filter: skip if machines is set and hostname not in list
-        if spec.machines and effective_hostname not in spec.machines:
-            continue
-
-        if spec.engine == "remote":
-            provider_cfg = PROVIDERS.get(spec.provider)
-            if provider_cfg is None:
-                raise ValueError(
-                    f"Unknown provider '{spec.provider}' in spec '{name}'. "
-                    f"Valid providers: {sorted(PROVIDERS.keys())}."
-                )
-            provider = provider_cfg
-            if spec.protocol == "anthropic":
-                entry = {
-                    "model_name": name,
-                    "litellm_params": {
-                        "model": f"anthropic/{spec.model_id}",
-                        "api_key": f"os.environ/{provider.key_env}",
-                    },
-                }
-            else:
-                # protocol == "openai"
-                entry = {
-                    "model_name": name,
-                    "litellm_params": {
-                        "model": f"openai/{spec.model_id}",
-                        "api_base": provider.api_base,
-                        "api_key": f"os.environ/{provider.key_env}",
-                    },
-                }
-        else:
-            # Local engines: llamacpp, llamacpp_tq3, vllm
-            entry = {
-                "model_name": name,
-                "litellm_params": {
-                    "model": f"openai/{name}",
-                    "api_base": f"{public_base_url}:{spec.port}/v1",
-                    "api_key": api_key_ref,
-                },
-            }
-        model_list.append(entry)
-
+    cfg = build_full_config(catalog, public_base_url, hostname=hostname)
+    model_list = cfg["model_list"]
     if model_list:
         inner = yaml.safe_dump(
             {"model_list": model_list}, default_flow_style=False, sort_keys=False
         )
     else:
         inner = yaml.safe_dump({"model_list": None}, default_flow_style=False)
-
     return f"{BLOCK_START}\n{inner}{BLOCK_END}\n"
 
 
