@@ -1,0 +1,605 @@
+---
+title: "Plan: feat(deploy) — package `llmcli proxy` as Podman Quadlet (M₁ + M₂)"
+issue: 44
+spec: artifacts/specs/44-llmcli-quadlet-spec.mdx
+complexity: 4/10
+tier: F-lite
+generated: 2026-05-20
+---
+
+## Summary
+
+Add `[proxy]` extra to `pyproject.toml` so the existing fleet image gains `litellm`, rename the worker entrypoint script and teach it a `proxy` MODE branch, ship `deploy/quadlet/llmcli.container` + `make install-quadlet`, and document the dual-host lifecycle. Single-domain F-lite — devops owns 5 code touches, doc-writer owns 2 doc touches, ops verification (M₂ + M₁) closes the SC ledger.
+
+## Architecture
+
+### Build → deploy → runtime pipeline
+
+```mermaid
+flowchart TD
+    subgraph repo[Repo source]
+      PYP[pyproject.toml<br/>+ proxy extra]
+      LOCK[uv.lock<br/>refreshed]
+      DOCK[Dockerfile.llm<br/>--extra proxy]
+      ENT[deploy/entrypoint.sh<br/>llm | proxy dispatch]
+      QUAD[deploy/quadlet/llmcli.container]
+      MAKE[Makefile<br/>install-quadlet]
+      DEPLOY[docs/guides/deployment.md]
+      README[README.md]
+    end
+    subgraph ci[GitHub Actions]
+      PUB[publish.yml]
+    end
+    subgraph ghcr[GHCR]
+      IMG[ghcr.io/roxabi/llmcli:staging<br/>now contains litellm]
+    end
+    subgraph host[Host: M₁ or M₂]
+      ENVFILE[~/.config/containers/systemd/llmcli.env<br/>chmod 600]
+      QUNIT[~/.config/containers/systemd/llmcli.container]
+      CAT[~/.roxabi/llmcli/]
+    end
+    subgraph systemd[user-systemd + podman]
+      GEN[Quadlet generator]
+      SVC[llmcli.service]
+      CONT[llmcli container :18091]
+    end
+
+    PYP --> LOCK
+    PYP --> DOCK
+    LOCK --> DOCK
+    ENT --> DOCK
+    DOCK --> PUB
+    PUB --> IMG
+    QUAD --> MAKE
+    MAKE --> QUNIT
+    MAKE --> ENVFILE
+    QUNIT --> GEN
+    GEN --> SVC
+    SVC --> CONT
+    IMG -.->|pull / autoupdate| CONT
+    ENVFILE -.->|EnvironmentFile=| CONT
+    CAT -.->|ro mount| CONT
+    DEPLOY -.->|operator docs| host
+    README -.->|repo index| repo
+
+    style PYP fill:#ffe5e5
+    style DOCK fill:#ffe5e5
+    style ENT fill:#ffe5e5
+    style QUAD fill:#ffe5e5
+    style CONT fill:#e5f5ff
+```
+
+### File × function map
+
+```mermaid
+flowchart LR
+    subgraph py[pyproject.toml]
+      OPT[optional-dependencies.proxy<br/>= litellm>=1.0]
+    end
+    subgraph lock[uv.lock]
+      RESOLVED[resolved litellm + deps]
+    end
+    subgraph dock[Dockerfile.llm]
+      SYNC1[uv sync --no-install-project<br/>--extra nats --extra proxy]
+      SYNC2[uv sync --extra nats --extra proxy]
+      COPY[COPY deploy/entrypoint.sh<br/>/entrypoint.sh]
+    end
+    subgraph ent[deploy/entrypoint.sh]
+      CASE_LLM[case llm) → exec llmcli nats-serve llm]
+      CASE_PROXY[case proxy) → exec llmcli proxy]
+      CASE_DEFAULT[default → echo Unknown ; exit 1]
+    end
+    subgraph quad[deploy/quadlet/llmcli.container]
+      UNITSEC[[Unit]<br/>StartLimitIntervalSec=60<br/>StartLimitBurst=5]
+      CONTSEC[[Container]<br/>Image + Volume + Env + Exec=proxy + Health]
+      SVCSEC[[Service]<br/>Restart=on-failure<br/>RestartForceExitStatus=1 127<br/>TimeoutStopSec=20s]
+      INSTSEC[[Install]<br/>WantedBy=default.target]
+    end
+    subgraph mk[Makefile]
+      TARGET[install-quadlet:<br/>cp .container + stub env + daemon-reload]
+    end
+    subgraph docs[docs/guides/deployment.md]
+      SECTION[## Running llmcli proxy as a Quadlet]
+    end
+    subgraph rd[README.md]
+      ROW[repo table row]
+    end
+
+    OPT --> RESOLVED
+    RESOLVED --> SYNC1
+    RESOLVED --> SYNC2
+    CASE_PROXY -.via Exec=proxy.-> CONTSEC
+    CASE_LLM -.unchanged.-> WORKER[llmcli-nats-worker.container<br/>Exec=llm --model qwen3-8b]
+    COPY --> CASE_LLM
+    COPY --> CASE_PROXY
+    COPY --> CASE_DEFAULT
+    TARGET --> CONTSEC
+    SECTION -.references.-> TARGET
+    SECTION -.references.-> CONTSEC
+    ROW -.references.-> TARGET
+
+    style CASE_PROXY fill:#e5f5ff
+    style WORKER fill:#f5f5e5
+```
+
+## Agents
+
+| Agent instance | Task count | Files |
+|---|---|---|
+| `devops-A` | 5 code + 1 smoke | `pyproject.toml`, `uv.lock`, `Dockerfile.llm`, `deploy/entrypoint.sh` (renamed), `deploy/quadlet/llmcli.container`, `Makefile` |
+| `doc-writer-A` | 2 docs | `docs/guides/deployment.md`, `README.md` |
+| `operator` | 1 ops smoke | M₁ remote install + verify (no file edit) |
+
+Skipped agents:
+- `tester` — no Python unit tests added; smokes are bash `curl`/`systemctl` commands embedded in deployment doc + SC verifies
+- `architect` — spec pinned all directives; no new module/pattern
+- `security-auditor` — env-file/UserNS/DropCapability pattern already in fleet (worker Quadlet)
+
+## Wave Structure
+
+4 waves, max 2 ∥ agents. Elapsed estimate ~25–35 min (sequential ~40–55 min).
+
+| Wave | Trigger | Agents | Tasks |
+|---|---|---|---|
+| 1 | start | 1 | devops-A: T1 (pyproject + uv lock — blocks rest) |
+| 2 | T1 done | 1 | devops-A: T2→T3→T4→T5 (chained same session) |
+| 3 | T2–T5 done | 2 ∥ | doc-writer-A: T6→T7 · devops-A: T8 (M₂ local build + smoke) |
+| 4 | merge + CI rebuild | 1 | operator: T9 (M₁ install + smoke) |
+
+### Budget
+
+| Task | Items | Class | Est. ops | Split? |
+|---|---|---|---|---|
+| T1 pyproject + uv lock | 1 | bounded | 3 | — |
+| T2 Dockerfile.llm edits | 1 | trivial | 2 | — |
+| T3 Entrypoint rename + dispatch | 1 | bounded | 2 | — |
+| T4 llmcli.container | 1 | judgmental | 4 | — |
+| T5 Makefile target | 1 | bounded | 2 | — |
+| T6 deployment.md section | 1 | judgmental | 5 | — |
+| T7 README row | 1 | trivial | 1 | — |
+| T8 M₂ smoke (5 SCs) | 5 | bounded | 4 | — |
+| T9 M₁ smoke (3 SCs) | 3 | bounded | 5 | — |
+
+**Total estimated ops: ~28** — well under 50; no split required.
+
+## Consistency Report
+
+| SC | Trace | Task |
+|---|---|---|
+| SC-1 | `pyproject.toml` `[proxy]` extra + `uv.lock` refreshed | T1 |
+| SC-2 | `Dockerfile.llm` `--extra nats --extra proxy` (both sync lines) | T2 |
+| SC-3 | `deploy/entrypoint.sh` dispatch with `proxy` case + default `exit 1` | T3 |
+| SC-4 | `deploy/entrypoint-nats.sh` removed + Dockerfile COPY path updated | T2 + T3 |
+| SC-5 | `deploy/quadlet/llmcli.container` matches data-model multiset (incl. `RestartForceExitStatus=1 127`, `TimeoutStopSec=20s`) | T4 |
+| SC-6 | `make install-quadlet` idempotent + `daemon-reload` | T5 |
+| SC-7 | Local build + `litellm --version` | T8 |
+| SC-8 | `is-active llmcli` within 30s on M₂ | T8 |
+| SC-9 | `curl :18091/health/liveliness` → 200 | T8 |
+| SC-10 | Authenticated `/v1/models` round-trip + 401 negative | T8 |
+| SC-11 | Catalog mount readable from inside container | T8 |
+| SC-12 | Deployment doc section (build flow + env template + failure modes + reset-failed) | T6 |
+| SC-13 | README repo-table mention | T7 |
+| SC-14 | M₁ image present + linger + active | T9 |
+| SC-15 | Reboot-equivalent autostart (real reboot OR `user@.service` simulation) | T9 |
+| SC-16 | Induced crash → automatic restart | T9 |
+
+**Coverage:** 16/16 SCs traced. 0 untraced tasks. 0 uncovered SCs.
+
+## Micro-Tasks
+
+### Slice V1 — Build pipeline + Quadlet + dev host (M₂) + docs
+
+#### T1 — Add `[proxy]` optional-dependency + refresh `uv.lock`
+
+- **Files:** `pyproject.toml`, `uv.lock`
+- **Agent:** devops-A
+- **Phase:** GREEN
+- **Difficulty:** 1
+- **Parallel-safe:** N (blocks T2)
+- **Spec trace:** SC-1
+
+**Skeleton:**
+
+```toml
+# pyproject.toml — under [project.optional-dependencies]
+proxy = ["litellm>=1.0"]
+```
+
+Then refresh lock:
+
+```bash
+uv lock
+```
+
+**Verify:**
+
+```bash
+grep -A1 '\[project.optional-dependencies\]' pyproject.toml | grep -q 'proxy =' && \
+  grep -q '^name = "litellm"' uv.lock && echo OK
+```
+
+**Expected:** `OK`.
+
+---
+
+#### T2 — Add `--extra proxy` to `Dockerfile.llm` + update entrypoint COPY path
+
+- **Files:** `Dockerfile.llm`
+- **Agent:** devops-A
+- **Phase:** GREEN
+- **Difficulty:** 1
+- **Parallel-safe:** N (depends T1; T3 must precede COPY change)
+- **Spec trace:** SC-2, SC-4 (Dockerfile half)
+
+**Skeleton:**
+
+```dockerfile
+RUN uv sync --frozen --no-dev --no-install-project --extra nats --extra proxy
+# ... later ...
+RUN uv sync --frozen --no-dev --extra nats --extra proxy
+# ... later ...
+COPY deploy/entrypoint.sh /entrypoint.sh
+```
+
+**Verify:**
+
+```bash
+grep -c -- '--extra nats --extra proxy' Dockerfile.llm    # expect: 2
+grep -q 'COPY deploy/entrypoint.sh /entrypoint.sh' Dockerfile.llm && echo OK
+```
+
+**Expected:** `2` then `OK`.
+
+---
+
+#### T3 — Rename `entrypoint-nats.sh` → `entrypoint.sh` + add `proxy` MODE branch
+
+- **Files:** `deploy/entrypoint.sh` (new), `deploy/entrypoint-nats.sh` (deleted)
+- **Agent:** devops-A
+- **Phase:** GREEN
+- **Difficulty:** 2
+- **Parallel-safe:** N (depends T1; T2 must reference new path)
+- **Spec trace:** SC-3, SC-4 (rename half)
+
+**Skeleton (`deploy/entrypoint.sh`):**
+
+```bash
+#!/bin/bash
+set -e
+MODE="${1:-llm}"
+shift || true
+case "$MODE" in
+    llm)
+        exec llmcli nats-serve llm "$@"
+        ;;
+    proxy)
+        exec llmcli proxy "$@"
+        ;;
+    *)
+        echo "Unknown mode: $MODE" >&2
+        exit 1
+        ;;
+esac
+```
+
+Use `git mv deploy/entrypoint-nats.sh deploy/entrypoint.sh` to preserve history, then edit.
+
+**Verify:**
+
+```bash
+test -f deploy/entrypoint.sh && test ! -f deploy/entrypoint-nats.sh && \
+  grep -q 'exec llmcli proxy' deploy/entrypoint.sh && \
+  grep -q 'exec llmcli nats-serve llm' deploy/entrypoint.sh && \
+  grep -q 'Unknown mode' deploy/entrypoint.sh && \
+  test -x deploy/entrypoint.sh && echo OK
+```
+
+**Expected:** `OK`.
+
+---
+
+#### T4 — Write `deploy/quadlet/llmcli.container`
+
+- **Files:** `deploy/quadlet/llmcli.container` (new)
+- **Agent:** devops-A
+- **Phase:** GREEN
+- **Difficulty:** 3
+- **Parallel-safe:** Y (independent of T2/T3 once T1 ready)
+- **Spec trace:** SC-5
+- **Ref pattern:** `deploy/quadlet/llmcli-nats-worker.container`
+
+**Skeleton:**
+
+```ini
+[Unit]
+Description=llmCLI LiteLLM proxy (:18091)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Container]
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli
+PublishPort=18091:18091
+Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
+EnvironmentFile=%h/.config/containers/systemd/llmcli.env
+Environment=LLMCLI_PROXY_PORT=18091
+Environment=LLMCLI_PROXY_HOST=0.0.0.0
+UserNS=keep-id:uid=1502,gid=1502
+Exec=proxy
+HealthCmd=pgrep -f litellm
+HealthInterval=30s
+HealthStartPeriod=15s
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20s
+RestartForceExitStatus=1 127
+
+[Install]
+WantedBy=default.target
+```
+
+**Verify:**
+
+```bash
+diff -u <(grep -E '^(Image|Label|ContainerName|PublishPort|Volume|EnvironmentFile|Environment|UserNS|Exec|HealthCmd|HealthInterval|HealthStartPeriod|NoNewPrivileges|DropCapability|Restart|RestartSec|TimeoutStopSec|RestartForceExitStatus|StartLimitIntervalSec|StartLimitBurst|Description|WantedBy)=' deploy/quadlet/llmcli.container | sort) <(cat <<'EOF' | sort
+Description=llmCLI LiteLLM proxy (:18091)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli
+PublishPort=18091:18091
+Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
+EnvironmentFile=%h/.config/containers/systemd/llmcli.env
+Environment=LLMCLI_PROXY_PORT=18091
+Environment=LLMCLI_PROXY_HOST=0.0.0.0
+UserNS=keep-id:uid=1502,gid=1502
+Exec=proxy
+HealthCmd=pgrep -f litellm
+HealthInterval=30s
+HealthStartPeriod=15s
+NoNewPrivileges=true
+DropCapability=all
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20s
+RestartForceExitStatus=1 127
+WantedBy=default.target
+EOF
+) && echo OK
+```
+
+**Expected:** `OK` (empty diff).
+
+---
+
+#### T5 — Add `install-quadlet` Makefile target (idempotent)
+
+- **Files:** `Makefile`
+- **Agent:** devops-A
+- **Phase:** GREEN
+- **Difficulty:** 2
+- **Parallel-safe:** Y (depends T4 only)
+- **Spec trace:** SC-6
+
+**Skeleton:**
+
+```makefile
+QUADLET_DIR := $(HOME)/.config/containers/systemd
+QUADLET_ENV := $(QUADLET_DIR)/llmcli.env
+
+.PHONY: install-quadlet
+install-quadlet:
+	@mkdir -p $(QUADLET_DIR)
+	@install -m 644 deploy/quadlet/llmcli.container $(QUADLET_DIR)/llmcli.container
+	@if [ ! -f $(QUADLET_ENV) ]; then \
+	  printf '# llmcli.env — chmod 600. Populate with provider keys.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' > $(QUADLET_ENV) ; \
+	  chmod 600 $(QUADLET_ENV) ; \
+	  echo "Created stub $(QUADLET_ENV) — edit before starting." ; \
+	else \
+	  echo "Preserving existing $(QUADLET_ENV)." ; \
+	fi
+	@systemctl --user daemon-reload
+	@echo "Installed. Next: systemctl --user start llmcli"
+```
+
+**Verify:**
+
+```bash
+echo "LLMCLI_API_KEY=SENTINEL_$$" > /tmp/sentinel-env
+cp /tmp/sentinel-env "$HOME/.config/containers/systemd/llmcli.env" 2>/dev/null || true
+make install-quadlet > /tmp/installq.log 2>&1
+grep -q SENTINEL "$HOME/.config/containers/systemd/llmcli.env" && \
+  test -f "$HOME/.config/containers/systemd/llmcli.container" && \
+  echo OK
+```
+
+**Expected:** `OK`.
+
+---
+
+#### T6 — Add "Running `llmcli proxy` as a Quadlet" section to `docs/guides/deployment.md`
+
+- **Files:** `docs/guides/deployment.md`
+- **Agent:** doc-writer-A
+- **Phase:** GREEN
+- **Difficulty:** 3
+- **Parallel-safe:** Y (with T7 and T8)
+- **Spec trace:** SC-12
+
+**Sections to include:**
+1. Pre-merge local-build flow (`podman build` override of `:staging` tag)
+2. Post-merge registry-pull behavior (`Label=io.containers.autoupdate=registry`)
+3. Env-file template (full list: `LLMCLI_API_KEY`, `FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NVIDIA_API_KEY`)
+4. `systemctl --user` lifecycle commands (`start`, `restart`, `stop`, `status`, `journalctl --user -u llmcli`)
+5. Failure-mode table mirroring the spec's Expected Behavior section
+6. `reset-failed` note for `StartLimitBurst` exhaustion
+
+**Verify:**
+
+```bash
+grep -q "Running .llmcli proxy. as a Quadlet" docs/guides/deployment.md && \
+  grep -q "FIREWORKS_API_KEY" docs/guides/deployment.md && \
+  grep -q "systemctl --user reset-failed" docs/guides/deployment.md && \
+  grep -q "podman build -t ghcr.io/roxabi/llmcli:staging" docs/guides/deployment.md && \
+  echo OK
+```
+
+**Expected:** `OK`.
+
+---
+
+#### T7 — Add Quadlet row to `README.md` repo table
+
+- **Files:** `README.md`
+- **Agent:** doc-writer-A
+- **Phase:** GREEN
+- **Difficulty:** 1
+- **Parallel-safe:** Y (with T6, T8)
+- **Spec trace:** SC-13
+
+**Skeleton:** add a line to the existing supervisor/deployment table or top-level features list noting `llmcli.container` Quadlet + `make install-quadlet`.
+
+**Verify:**
+
+```bash
+grep -qi 'Quadlet' README.md && grep -q 'install-quadlet' README.md && echo OK
+```
+
+**Expected:** `OK`.
+
+---
+
+#### T8 — M₂ pre-merge smoke (local build + install + health + auth)
+
+- **Files:** none (ops verification)
+- **Agent:** devops-A (operator role on M₂)
+- **Phase:** VERIFY
+- **Difficulty:** 3
+- **Parallel-safe:** N (depends T1–T5)
+- **Spec trace:** SC-7, SC-8, SC-9, SC-10, SC-11
+
+**Steps (on `roxabitower` working tree):**
+
+```bash
+# SC-7
+podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .
+podman run --rm --entrypoint="" ghcr.io/roxabi/llmcli:staging /app/.venv/bin/litellm --version
+
+# Install + start
+make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env   # populate keys
+systemctl --user start llmcli
+
+# SC-8
+timeout 30 bash -c 'until systemctl --user is-active llmcli; do sleep 1; done'
+
+# SC-9
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:18091/health/liveliness
+
+# SC-10
+KEY=$(grep ^LLMCLI_API_KEY ~/.config/containers/systemd/llmcli.env | cut -d= -f2)
+curl -s -o /dev/null -w "%{http_code}\n" -H "Authorization: Bearer $KEY" http://localhost:18091/v1/models
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:18091/v1/models
+
+# SC-11
+podman exec llmcli test -r /home/llmcli/.roxabi/llmcli/llmcli.toml && echo OK
+```
+
+**Expected:** `litellm --version` prints non-empty; `is-active` returns `active`; SC-9 returns `200`; SC-10 first curl `200` (auth) then `401` (no header); SC-11 prints `OK`.
+
+---
+
+### Slice V2 — Prod host (M₁) + autostart + crash smoke
+
+#### T9 — M₁ install + linger check + autostart simulation + crash recovery
+
+- **Files:** none (ops verification on `roxabituwer`)
+- **Agent:** operator
+- **Phase:** VERIFY
+- **Difficulty:** 3
+- **Parallel-safe:** N (depends T8 + merge + CI image rebuild OR local build on M₁)
+- **Spec trace:** SC-14, SC-15, SC-16
+
+**Steps:**
+
+```bash
+# Either pull post-CI-rebuild or build locally on M₁
+podman pull ghcr.io/roxabi/llmcli:staging || \
+  (cd ~/projects/llmCLI && podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .)
+
+cd ~/projects/llmCLI && make install-quadlet
+$EDITOR ~/.config/containers/systemd/llmcli.env
+systemctl --user start llmcli
+
+# SC-14
+loginctl show-user mickael | grep Linger=yes
+systemctl --user is-active llmcli
+
+# SC-15 — path (b) simulation (preferred for SC-binary closure without waiting for reboot)
+sudo systemctl stop user@$(id -u mickael).service
+sleep 5
+sudo systemctl start user@$(id -u mickael).service
+timeout 30 bash -c 'until systemctl --user is-active llmcli; do sleep 1; done'
+
+# SC-16
+podman kill llmcli
+sleep 12
+systemctl --user is-active llmcli   # expect active
+systemctl --user status llmcli      # expect restart count incremented
+```
+
+**Expected:** linger `yes`; `is-active` returns `active` after both interventions; restart count > 0.
+
+## Task Seeding Blueprint
+
+<!-- Used by /implement to seed TaskCreate calls on session start.
+     Format: T{n} | agent-instance | blockedBy | subject
+     blockedBy refs T-numbers within this list (not session task IDs). -->
+
+### Wave 1 — no deps, 1 agent
+
+| Task | Agent instance | blockedBy | Subject |
+|---|---|---|---|
+| T1 | devops-A | — | Add `[proxy]` extra to pyproject + refresh uv.lock |
+
+### Wave 2 — after T1, 1 agent (chained same session)
+
+| Task | Agent instance | blockedBy | Subject |
+|---|---|---|---|
+| T2 | devops-A | T1, T3 | Dockerfile.llm: `--extra nats --extra proxy` + COPY new entrypoint path |
+| T3 | devops-A | T1 | Rename `entrypoint-nats.sh` → `entrypoint.sh` + add `proxy` MODE branch |
+| T4 | devops-A | T1 | Write `deploy/quadlet/llmcli.container` per data-model multiset |
+| T5 | devops-A | T4 | Add `install-quadlet` Makefile target (idempotent + daemon-reload) |
+
+### Wave 3 — after T2–T5, 2 agents ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|---|---|---|---|
+| T6 | doc-writer-A | T4, T5 | Add Quadlet section to `docs/guides/deployment.md` |
+| T7 | doc-writer-A | T6 | Add Quadlet row to `README.md` repo table |
+| T8 | devops-A | T2, T3, T4, T5 | M₂ pre-merge smoke (SC-7..SC-11) |
+
+### Wave 4 — after T8 + CI image rebuild (post-merge)
+
+| Task | Agent instance | blockedBy | Subject |
+|---|---|---|---|
+| T9 | operator | T8 | M₁ install + linger + autostart simulation + crash recovery |
+
+## Task IDs
+
+<!-- Generated by /plan. Used by /implement to resume tasks on session restart. -->
+- T1: 65 — Add `[proxy]` extra to pyproject.toml + refresh uv.lock
+- T2: 66 — Dockerfile.llm — `--extra nats --extra proxy` + COPY new entrypoint path
+- T3: 67 — Rename `entrypoint-nats.sh` → `entrypoint.sh` + add `proxy` MODE branch
+- T4: 68 — Write `deploy/quadlet/llmcli.container`
+- T5: 69 — Makefile — `install-quadlet` target (idempotent, daemon-reload)
+- T6: 70 — Add "Running `llmcli proxy` as a Quadlet" section to deployment.md
+- T7: 71 — README.md — add Quadlet row to repo table
+- T8: 72 — M₂ pre-merge smoke (local build + install + health + auth + catalog)
+- T9: 73 — M₁ install + linger + autostart simulation + crash recovery
