@@ -859,3 +859,66 @@ class TestBuildFullConfig:
         assert entry["litellm_params"]["model"].startswith("anthropic/"), (
             f"Expected model to start with 'anthropic/', got: {entry['litellm_params']['model']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# T8 — build_model_list + build_full_config shape + SC-14 hash invariance
+# ---------------------------------------------------------------------------
+
+
+class TestBuildModelList:
+    def test_build_model_list_matches_build_full_config(self) -> None:
+        """build_model_list(cat, base_url) == build_full_config(cat, base_url)['model_list']."""
+        from llmcli.litellm_config import build_model_list  # lazy
+
+        # Arrange — catalog with one remote model
+        catalog = _make_catalog(
+            models={
+                "qwen3-8b": dict(
+                    engine="llamacpp",
+                    repo="Org/Qwen3-8B-GGUF",
+                    file="qwen3-8b-q4_k_m.gguf",
+                    port=8091,
+                    vram_gib=5.5,
+                )
+            }
+        )
+        # Act
+        model_list = build_model_list(catalog, PUBLIC_BASE_URL)
+        full_cfg = build_full_config(catalog, PUBLIC_BASE_URL)
+        # Assert
+        assert model_list == full_cfg["model_list"]
+
+    def test_build_full_config_shape_unchanged(self, empty_catalog: Catalog) -> None:
+        """build_full_config(empty_catalog, base_url) returns dict with exact top-level keys."""
+        # Act
+        result = build_full_config(empty_catalog, PUBLIC_BASE_URL)
+        # Assert — exact top-level key set
+        assert set(result.keys()) == {"general_settings", "litellm_settings", "model_list"}
+        assert result["general_settings"] == {"master_key": "os.environ/LLMCLI_API_KEY"}
+        assert result["litellm_settings"] == {"drop_params": True}
+
+    def test_default_proxy_base_constant_shape(self) -> None:
+        """_DEFAULT_PROXY_BASE from llmcli.litellm_config has expected structure."""
+        from llmcli.litellm_config import _DEFAULT_PROXY_BASE  # lazy
+
+        # Assert — general_settings with master_key and litellm_settings.drop_params
+        assert "general_settings" in _DEFAULT_PROXY_BASE
+        assert _DEFAULT_PROXY_BASE["general_settings"]["master_key"] == "os.environ/LLMCLI_API_KEY"
+        assert _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"] is True
+
+    def test_proxy_base_yaml_never_mutated(self, tmp_path: Path) -> None:
+        """load_proxy_base does not modify the source YAML file (SC-14 hash invariance)."""
+        import hashlib
+        from llmcli.litellm_config import load_proxy_base  # lazy
+
+        # Arrange
+        yaml_path = tmp_path / "proxy_base.yaml"
+        content = "general_settings:\n  master_key: os.environ/X\n"
+        yaml_path.write_text(content)
+        hash_before = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
+        # Act
+        load_proxy_base(yaml_path)
+        # Assert
+        hash_after = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
+        assert hash_before == hash_after

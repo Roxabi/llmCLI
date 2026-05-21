@@ -1,0 +1,34 @@
+# llmCLI proxy — hand-curated LiteLLM transport config.
+#
+# Copy to ~/.roxabi/llmcli/proxy-base.yaml (chmod 600), then edit.
+# `llmcli proxy` loads this file at startup, overlays catalog-derived
+# `model_list` on top, and spawns LiteLLM against the merged result.
+#
+# NEVER modified by llmCLI tooling — this file is yours alone.
+#
+# Secrets MUST use os.environ/FOO indirection. Literal secrets here are NOT
+# validated and will be copied verbatim into the merged config on disk (the
+# file IS chmod 600, but env indirection is still the recommended pattern).
+general_settings:
+  master_key: os.environ/LLMCLI_API_KEY
+
+  # Fireworks /v1/messages → forward as-is to Fireworks Anthropic-compatible
+  # endpoint. Used by Claude Code aliases (ccfg/ccfk) that speak Anthropic
+  # protocol and route to Fireworks via this proxy.
+  pass_through_endpoints:
+    - path: "/fw-anthropic"
+      target: "https://api.fireworks.ai/inference"
+      include_subpath: true
+      forward_headers: false
+      headers:
+        # secrets MUST use os.environ/FOO — literal values leak verbatim to the merged config on disk.
+        Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
+
+litellm_settings:
+  # Drop unsupported provider-specific kwargs instead of erroring.
+  drop_params: true
+
+  # Auto-translate Anthropic /v1/messages → OpenAI /v1/chat/completions for
+  # any model_list entry that has chat-completions support. Lets Claude Code
+  # talk to any catalog model without provider-side Anthropic support.
+  use_chat_completions_url_for_anthropic_messages: true

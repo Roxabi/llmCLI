@@ -596,3 +596,33 @@ class TestRemoteEngineSpec:
         raw = {"repo": "Org/M"}
         with pytest.raises(ValueError, match="missing required field 'engine'"):
             _parse_model_spec("test-model", raw)
+
+
+# ---------------------------------------------------------------------------
+# T1 (V1 slice) — HostSettings.port field
+# ---------------------------------------------------------------------------
+
+
+class TestHostSettingsPort:
+    def test_host_settings_port_default(self) -> None:
+        """HostSettings.port defaults to None when not provided (None means 'absent from TOML')."""
+        # Arrange / Act
+        hs = HostSettings()
+        # Assert
+        assert hs.port is None
+
+    def test_host_settings_port_from_toml(self, tmp_path: Path) -> None:
+        """[host].port in TOML is parsed onto HostSettings.port."""
+        # Arrange — minimal catalog with [host].port set
+        cfg = tmp_path / "llmcli.toml"
+        cfg.write_text(
+            "[host]\n"
+            'bind = "0.0.0.0"\n'
+            'public_base_url = "http://x.lan"\n'
+            'api_key_env = "K"\n'
+            "port = 19999\n"
+        )
+        # Act
+        catalog = load(cfg)
+        # Assert
+        assert catalog.host.port == 19999

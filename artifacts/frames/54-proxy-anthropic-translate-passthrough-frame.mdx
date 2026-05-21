@@ -1,0 +1,101 @@
+---
+title: "feat(proxy): layer hand-curated LiteLLM base over catalog model_list"
+issue: 54
+status: approved
+tier: F-lite
+date: 2026-05-20
+---
+
+## Problem
+
+The Quadlet `llmcli proxy` (`:18091`) generates its YAML config from the catalog alone (`build_full_config` in `src/llmcli/litellm_config.py:79-83` emits only `master_key`, `drop_params`, `model_list`). It bypasses the hand-curated half that the supervisor `:4000` proxy uses via `~/.litellm/config.yaml`:
+
+- `litellm_settings.use_chat_completions_url_for_anthropic_messages: true` (Anthropic → OpenAI auto-translate)
+- `general_settings.pass_through_endpoints` (Fireworks Anthropic pass-through at `/fw-anthropic`)
+
+Verified 2026-05-20 on M₂:
+
+| Endpoint | Result |
+|---|---|
+| `:18091 /v1/messages` (Anthropic, kimi-k2.6) | HTTP 403 (FW rejects, no Anthropic→OpenAI translate) |
+| `:18091 /v1/chat/completions` (OpenAI, kimi-k2.6) | HTTP 200 ✓ |
+| `:4000 /v1/messages` (Anthropic, deepseek-v4-pro) | HTTP 200 ✓ |
+
+Migrating Claude Code aliases (`ccd`, `ccfk`, `ccfg`, `cnfg`, `cnfk`) from `:4000` → `:18091` therefore breaks the Anthropic protocol path. This in turn blocks retiring `:4000` (#51) and prevents `~/.bash_aliases` migration (#52).
+
+Secondary: the proxy port (`18091`) is hardcoded across `cli/proxy.py` default, the Quadlet `PublishPort=` line, and consumer URLs. The catalog `[host]` section is the natural home for it but doesn't carry it today.
+
+## Who
+
+- **Primary:** Mickael (Claude Code user on M₁ + M₂). Aliases `ccd`, `ccfk`, `ccfg`, `cnfg`, `cnfk` route through `:4000` today; need the Quadlet proxy as a drop-in replacement.
+- **Secondary:** lyra agents (already route via `LLMCLI_API_KEY` over the catalog proxy URL; unaffected functionally but cleaner topology once `:4000` is removed).
+
+## Constraints
+
+- Backwards compat: hosts without a `proxy-base.yaml` file must still get a sensible default config (the current minimal shape from `build_full_config`).
+- LiteLLM API stability: rely on documented YAML config, no monkey-patching. Upgrades to LiteLLM should require only a `vim ~/.roxabi/llmcli/proxy-base.yaml` edit, not llmCLI code changes.
+- Container security: `proxy-base.yaml` is bind-mounted RO into the Quadlet (same pattern as the existing catalog mount).
+- F-lite tier: ~5-6 files, single domain (backend Python).
+- Env-var indirection for secrets: pass-through `Authorization: Bearer os.environ/FOO` (no inline secrets in the YAML).
+
+## Out of Scope
+
+- Modeling LiteLLM transport features in the catalog TOML schema (`[litellm]`, `[[pass_through]]`) — rejected in favor of the YAML-base layering approach.
+- Mutating `proxy-base.yaml` from llmCLI tooling — file is purely user-owned (no sentinels, no managed block).
+- Retiring `register-proxy` and the `~/.litellm/config.yaml` sentinel mechanism — they remain for backwards-compat with the legacy `:4000` supervisor program; their removal is a separate cleanup once `:4000` retires (#51).
+- Modifying `~/.bash_aliases` semantics beyond `:4000` → catalog-port swap and `deepseek-ai/deepseek-v4-pro` → `deepseek-v4-pro` model-name swap (#52).
+- Retiring `:4000` itself — covered by #51, gated on this PR landing + post-merge ops.
+
+## Approach (high-level)
+
+```
+~/.roxabi/llmcli/
+├── llmcli.toml          # catalog: [host] (now with port), models/
+├── models/
+│   ├── kimi-k2.6.toml
+│   └── deepseek-v4-pro.toml
+└── proxy-base.yaml      # NEW — hand-curated LiteLLM transport config
+                          # (general_settings, litellm_settings,
+                          #  pass_through_endpoints). User edits directly.
+                          # Never mutated by llmCLI.
+```
+
+`llmcli proxy` startup:
+
+1. Load `~/.roxabi/llmcli/proxy-base.yaml` if present (else use built-in default with `master_key` + `drop_params`).
+2. Load catalog.
+3. Build `model_list` from catalog (existing logic, moved out of `build_full_config`).
+4. Merge: deep-merge base YAML + computed `model_list` → write to `~/.local/state/llmcli/proxy.config.yaml`.
+5. Spawn `litellm --config <merged>` on `[host].port` (default 18091).
+
+Quadlet bind-mount picks up `proxy-base.yaml` automatically (same path as existing catalog mount).
+
+## Premise Validity
+
+**Success in 6 months:** All active Claude Code aliases (`ccd`, `ccfk`, `ccfg`, `cnfg`, `cnfk`) route through the Quadlet proxy on the host-configured port. The hand-curated `:4000` supervisor LiteLLM is stopped and removed from lyra supervisor config. `~/.roxabi/llmcli/proxy-base.yaml` holds the LiteLLM transport config on both M₁ and M₂; `register-proxy` is no longer in active use (kept for legacy path only).
+
+**Failure in 6 months (falsifiable):** Any one of:
+1. `:4000` still active in lyra supervisor 30 days post-merge.
+2. ≥1 alias in `~/.bash_aliases` still references `:4000`.
+3. A LiteLLM transport feature (new pass-through, new `litellm_settings` key) required an llmCLI code change in those 30 days — proves the schema-translation worry was unfounded and we picked the wrong layer.
+4. Users had to add sentinels or special markers to `proxy-base.yaml` for tooling to work — proves the "pure file, no mutation" promise leaked.
+
+**Simplest alternative:** Bind-mount the existing `~/.litellm/config.yaml` (host path) into the Quadlet RO; have `llmcli proxy` skip its config generator and spawn `litellm --config <bind-mounted>`.
+
+**Why not simplest:**
+1. Couples the Quadlet runtime to a host file path (`~/.litellm/`) that conceptually belongs to the legacy lyra-supervisor world we are retiring.
+2. M₁ has no `~/.litellm/`; we'd have to create one with hand-curated content — duplicating what `proxy-base.yaml` would do but in a less natural location.
+3. The `register-proxy` sentinel-managed model_list block is harder to reason about than "two files, one merge"; the latter is the cleaner long-term shape.
+
+## Complexity
+
+**Tier: F-lite** — Clear scope, single domain (backend Python), ~5-6 files.
+
+Signals observed:
+- New file (`proxy-base.yaml`) format is plain LiteLLM YAML — no new schema work.
+- `HostSettings` adds `port: int = 18091` — 1 field, default preserves current behavior.
+- `cli/proxy.py` reorders: load base + load catalog + deep-merge + spawn (existing spawn/signal logic untouched).
+- `build_full_config` either drops to a builder for `model_list` only OR becomes a fallback (no base file present) returning the current minimal shape — preserves backwards-compat.
+- Tests: snapshot the merged YAML across {no base, base-only, base + model_list, port-override}.
+- Example: ship `llmcli.example.toml` with `port` in `[host]` and a `proxy-base.yaml` template alongside.
+- Docs: `docs/deploy/deployment.md` — explain the two-file model and the migration recipe.
