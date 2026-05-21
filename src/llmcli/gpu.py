@@ -167,7 +167,12 @@ class VRAMMonitor:
         self._init_failed = False
 
     def __enter__(self) -> Self:
-        if self._handle is not None:
+        # Re-entry is sticky in both directions: already-opened short-circuits
+        # so we don't double-init (and orphan the previous handle), and a prior
+        # init failure short-circuits too — GPU/driver availability does not
+        # change at runtime, so retrying nvmlInit() on every open() is wasteful
+        # noise.
+        if self._handle is not None or self._init_failed:
             return self
         try:
             import pynvml  # type: ignore[import-untyped]

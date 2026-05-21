@@ -163,6 +163,11 @@ class TestVRAMMonitor:
             finally:
                 vm.__exit__(None, None, None)
 
+        # On the failure path, __exit__ must short-circuit on `_handle is None`
+        # and NEVER call nvmlShutdown — otherwise the shutdown would itself
+        # throw against an uninitialised library.
+        pynvml_mock.nvmlShutdown.assert_not_called()
+
     def test_sample_with_handle_returns_free_used_mb(self) -> None:
         # 8 GiB free / 4 GiB used → 8192 MiB / 4096 MiB on the wire.
         pynvml_mock = self._make_pynvml_mock(free_bytes=8 * 1024**3, used_bytes=4 * 1024**3)
@@ -225,5 +230,23 @@ class TestVRAMMonitor:
             try:
                 pynvml_mock.nvmlInit.assert_called_once()
                 pynvml_mock.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+            finally:
+                vm.close()
+
+    def test_failed_init_is_sticky_does_not_retry(self) -> None:
+        # nvml/driver availability does not change at runtime; a failed init
+        # must stick so we don't burn cycles re-attempting nvmlInit() on every
+        # open() call. Without the `_init_failed` branch in the re-entry guard
+        # this assertion would fail (nvmlInit called twice).
+        pynvml_mock = MagicMock()
+        pynvml_mock.nvmlInit.side_effect = Exception("no GPU")
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.open()
+            vm.open()
+            try:
+                assert vm._init_failed is True
+                pynvml_mock.nvmlInit.assert_called_once()
             finally:
                 vm.close()

@@ -528,10 +528,18 @@ class TestFormatErr:
     def test_msg_control_chars_are_collapsed(self) -> None:
         # A raw-byte client could embed \r/\b to rewrite log lines; the wire
         # sanitizer collapses C0 control bytes (minus \t) before forwarding.
-        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\rCMD\b\x1b[31m")
-        assert "\r" not in result and "\b" not in result and "\x1b" not in result, (
-            f"control chars leaked into wire frame: {result!r}"
-        )
+        # Boundary chars (NUL = range start, DEL = explicitly appended) are
+        # included so a refactor that drops either boundary fails this test.
+        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\x00\rCMD\b\x1b[31m\x7f")
+        for ctrl in ("\x00", "\r", "\b", "\x1b", "\x7f"):
+            assert ctrl not in result, f"control char {ctrl!r} leaked into wire frame: {result!r}"
+
+    def test_msg_tab_is_preserved(self) -> None:
+        # `_WIRE_CTRL_RE` is documented as "C0 minus tab" — tab is intentionally
+        # excluded from the strip set. Pinning preservation guards against an
+        # accidental widening of the regex range (e.g. to `[\x00-\x1f\x7f]`).
+        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\tCMD")
+        assert "\t" in result, f"tab must be preserved in wire frame: {result!r}"
 
 
 # ---------------------------------------------------------------------------
