@@ -37,6 +37,7 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
     "no_gpu: mark test as not requiring GPU hardware (safe to run without CUDA)",
     "gpu: tests that require a live GPU (skipped in CI)",
+    "nats: tests requiring a live NATS broker (skipped without service container or local nats:4222)",
 ]
 
 [dependency-groups]

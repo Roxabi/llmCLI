@@ -324,6 +324,36 @@ your supervisor env (e.g. in `~/projects/llmCLI/.env`) to pin the old path expli
 | Variable | Description |
 |---|---|
 | `LLMCLI_CONFIG` | Path to llmcli.toml. Defaults to `~/.roxabi/llmcli/llmcli.toml`. Useful as a migration escape hatch or for multi-tenant catalogs. |
+| `LLMCLI_LIFECYCLE_VIA_NATS` | See [NATS lifecycle control plane](#nats-lifecycle-control-plane-flag) below. |
+| `LLMCLI_NATS_SKIP_CREDS` | Set to `1` (or `true`) to allow anonymous NATS connect when `~/.config/llmcli/nkeys/operator.creds` is absent. Default behaviour is fail-closed: CLI exits with an error rather than connecting without identity. Intended for CI and pre-Slice-0 dev only — production must rely on creds. |
+
+---
+
+## NATS lifecycle control plane flag
+
+`LLMCLI_LIFECYCLE_VIA_NATS=1` switches all five lifecycle commands (`swap`, `stop`, `status`, `list`, `reload-catalog`) from the AF_UNIX daemon socket path to the NATS broadcast subjects (`lyra.llm.lifecycle.<op>`).
+
+**Set in:** `~/.roxabi/llmcli/worker.env` (read by the `llmcli-nats-worker` Quadlet via `EnvironmentFile=`).
+
+**Lifecycle of this flag:**
+
+| Phase | State | Notes |
+|---|---|---|
+| PR-1 (issue #34, Slices 0-5) | opt-in — set `=1` to enable | Validation window; AF_UNIX path still reachable via `=0` |
+| Slice 6 cutover PR | removed | `daemon.py` deleted; flag has no effect; NATS path is the only path |
+
+**Rollback (E1) — during PR-1 validation window only:**
+
+If NATS is unreachable or the NATS path misbehaves, revert to the AF_UNIX daemon socket by setting the flag to `0` and restarting the worker:
+
+```bash
+sed -i 's/LLMCLI_LIFECYCLE_VIA_NATS=1/LLMCLI_LIFECYCLE_VIA_NATS=0/' ~/.roxabi/llmcli/worker.env
+systemctl --user restart llmcli-nats-worker
+```
+
+The CLI then uses the `daemon_request` path (AF_UNIX socket). No other changes are required.
+
+After Slice 6 merges, no rollback path remains — the cutover is permanent.
 
 ---
 

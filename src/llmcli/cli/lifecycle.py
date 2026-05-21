@@ -1,6 +1,14 @@
+"""CLI lifecycle commands: serve, stop, status.
+
+list and reload-catalog live in lifecycle_extra.py (split for 300-line cap).
+Feature-flag helper and NATS request helper: _lifecycle_nats.py.
+"""
+
 from __future__ import annotations
 
+import asyncio
 import json
+import socket
 from typing import Optional
 
 import typer
@@ -8,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from llmcli.cli._app import app, console, err_console
+from llmcli.cli._lifecycle_nats import _use_nats_lifecycle, lifecycle_nats_request
 
 
 # ---------------------------------------------------------------------------
@@ -58,32 +67,103 @@ def serve(
 
 
 # ---------------------------------------------------------------------------
-# stop
+# stop (T24)
 # ---------------------------------------------------------------------------
 
 
 @app.command()
-def stop() -> None:
+def stop(
+    host: Optional[str] = typer.Option(
+        None,
+        "--host",
+        help="Target hostname; default = local hostname",
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
+) -> None:
     """Stop the daemon and any running engine."""
     import llmcli.cli as _cli
 
+    if _use_nats_lifecycle():
+        from roxabi_contracts.llm.subjects import SUBJECTS
+
+        resp = asyncio.run(
+            lifecycle_nats_request(
+                SUBJECTS.lifecycle_stop,
+                "stop",
+                host or socket.gethostname(),
+                timeout,
+            )
+        )
+        if not resp.ok:
+            we = resp.worker_error
+            if we:
+                err_console.print(f"[red]{we.code}: {we.message}[/red]")
+            else:
+                err_console.print(f"[red]stop failed: {resp.error}[/red]")
+            raise typer.Exit(code=1)
+        console.print("OK stopped")
+        return
+
+    # AF_UNIX daemon path (E1 rollback path).
     try:
-        resp = _cli.daemon_request("SHUTDOWN")
-        console.print(f"Daemon: {resp}")
+        resp_str = _cli.daemon_request("SHUTDOWN")
+        console.print(f"Daemon: {resp_str}")
     except Exception as exc:
         console.print(f"[yellow]Daemon not running or unreachable: {exc}[/yellow]")
 
 
 # ---------------------------------------------------------------------------
-# status
+# status (T23)
 # ---------------------------------------------------------------------------
 
 
 @app.command()
-def status() -> None:
+def status(
+    host: Optional[str] = typer.Option(
+        None,
+        "--host",
+        help="Target hostname; default = local hostname",
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
+) -> None:
     """Show engine status, ports, VRAM, uptime."""
     import llmcli.cli as _cli
 
+    if _use_nats_lifecycle():
+        from roxabi_contracts.llm.subjects import SUBJECTS
+
+        resp = asyncio.run(
+            lifecycle_nats_request(
+                SUBJECTS.lifecycle_status,
+                "status",
+                host or socket.gethostname(),
+                timeout,
+            )
+        )
+        if not resp.ok:
+            we = resp.worker_error
+            if we:
+                err_console.print(f"[red]{we.code}: {we.message}[/red]")
+            else:
+                err_console.print(f"[red]status failed: {resp.error}[/red]")
+            raise typer.Exit(code=1)
+        data = resp.data or {}
+        if not data.get("model"):
+            console.print("No engines running.")
+            return
+        table = Table(title="Running engines")
+        table.add_column("model")
+        table.add_column("port")
+        table.add_column("vram_used_mb")
+        table.add_row(
+            str(data.get("model", "?")),
+            str(data.get("port", "?")),
+            str(data.get("vram_used_mb", 0)),
+        )
+        console.print(table)
+        return
+
+    # AF_UNIX daemon path (E1 rollback path).
     try:
         raw = _cli.daemon_request("STATUS")
     except Exception as exc:

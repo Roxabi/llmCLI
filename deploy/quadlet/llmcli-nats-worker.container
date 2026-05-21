@@ -1,4 +1,7 @@
 [Unit]
+# NOTE: Exec=llm → deploy/entrypoint.sh resolves MODE=llm → `exec llmcli nats-serve llm "$@"`.
+# HealthCmd=pgrep -f "llmcli nats-serve" matches the resolved process name.
+# No realignment change needed (paper-only mismatch). Verified 2026-05-21 per #34 spec.
 Description=llmCLI NATS worker (canonical lyra.llm.generate.request)
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -11,10 +14,6 @@ ContainerName=llmcli-nats-worker
 Network=host
 Volume=%h/.cache/huggingface:/home/llmcli/.cache/huggingface
 Environment=HF_HOME=/home/llmcli/.cache/huggingface
-# Optional: bind-mount host daemon socket to enable SWAP/STATUS pre-check on startup.
-# Requires llmcli daemon running on the worker host at ~/.local/state/llmcli/llmcli.sock.
-# Without this, _ensure_model auto-skips (daemon-optional mode) — safe for pure remote-worker.
-# Volume=%h/.local/state/llmcli/llmcli.sock:/home/llmcli/.local/state/llmcli/llmcli.sock
 Secret=llmcli-nats-nkey,type=mount,target=/home/llmcli/.config/llmcli/nkeys/seed.seed,mode=0400,uid=1502,gid=1502
 Secret=llmcli-litellm-key,type=env,target=LLMCLI_LITELLM_API_KEY
 AddDevice=nvidia.com/gpu=all

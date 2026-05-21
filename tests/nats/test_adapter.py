@@ -265,6 +265,33 @@ async def test_reject_when_full_emits_worker_internal_retryable(
 
 
 @pytest.mark.asyncio
+async def test_handle_during_drain_emits_worker_capacity_retryable(
+    adapter, fake_msg_factory, make_request_payload
+):
+    """AC-5: generation during _draining → worker.capacity retryable, no fallthrough.
+
+    Regression for the missing drain-guard in handle(): without the guard a
+    generation arriving mid-swap would acquire the semaphore and extend the
+    drain window indefinitely.
+    """
+    adapter._draining.set()
+
+    payload = make_request_payload(stream=False)
+    msg = fake_msg_factory(payload)
+
+    await adapter.handle(msg, payload)
+
+    # One publish (the reject), no fallthrough to _run_generation
+    assert adapter._nc.publish.await_count == 1
+    body = _decode_publish(adapter._nc.publish.await_args_list[0])
+    assert body["ok"] is False
+    assert body["worker_error"]["code"] == "worker.capacity"
+    assert body["worker_error"]["retryable"] is True
+    # Semaphore must NOT have been touched — its full capacity stays available
+    assert not adapter._sem.locked()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "initial_monitor",
     [None, "with_monitor"],
