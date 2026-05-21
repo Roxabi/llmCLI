@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 from roxabi_nats.adapter_base import NatsAdapterBase
 
+from llmcli.config import load as load_catalog
 from llmcli.daemon import SOCKET_PATH, daemon_request
 from llmcli.gpu import VRAMMonitor
 from llmcli.nats._generation import GenerationMixin
@@ -92,6 +93,10 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
     # ------------------------------------------------------------------
 
     async def run(self, nats_url: str, stop: asyncio.Event | None = None) -> None:
+        # B1: load catalog into _catalog so lifecycle handlers can dereference it.
+        # Without this, _do_swap/_do_list/_do_stop crash with AttributeError on first
+        # use until a reload-catalog op arrives.
+        self._catalog = load_catalog()
         await asyncio.get_running_loop().run_in_executor(self._executor, self._ensure_model)
         self._vram_monitor = VRAMMonitor()
         self._vram_monitor.open()
@@ -175,6 +180,17 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
     async def handle(self, msg, payload: dict) -> None:
         if getattr(msg, "subject", None) in LIFECYCLE_SUBJECTS:
             await self.handle_lifecycle(msg, payload)
+            return
+        # B5 / AC-5: reject new generations while a swap drain is in flight so the
+        # drain window can't be extended indefinitely by incoming requests.
+        if self._draining.is_set():
+            await self._err(
+                msg,
+                payload,
+                self._make_worker_error(
+                    "worker.capacity", "drain in progress", retryable=True
+                ),
+            )
             return
         # Generation path (preserves MRO chain — S5)
         request_id = str(payload.get("request_id", ""))

@@ -64,22 +64,21 @@ async def test_drain_in_flight_completes_then_swap():
     """
 
     class TestAdapter(LifecycleMixin):
-        """Minimal adapter stub wired just enough to exercise _do_swap drain path."""
+        """Minimal adapter stub wired just enough to exercise _do_swap drain path.
+
+        Exercises production _wait_sem_idle (no override) — _max_concurrent=2
+        tells the production loop the target slot count.
+        """
 
         def __init__(self):
             self.__init_lifecycle__()
-            self._sem = asyncio.Semaphore(2)
+            self._max_concurrent = 2
+            self._sem = asyncio.Semaphore(self._max_concurrent)
             self._drain_timeout = 5.0
             self._instances: dict = {}
             self._catalog = MagicMock()
             self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp")}
             self._catalog.host = MagicMock()
-
-        async def _wait_sem_idle(self) -> None:
-            """Wait until all semaphore slots are free."""
-            target = self._sem._value  # original capacity
-            while self._sem._value < target:
-                await asyncio.sleep(0)
 
         def _engine_for_spec(self, spec):
             engine = MagicMock()
@@ -137,16 +136,13 @@ async def test_drain_timeout_force_cuts():
     class TestAdapter(LifecycleMixin):
         def __init__(self):
             self.__init_lifecycle__()
-            self._sem = asyncio.Semaphore(2)
+            self._max_concurrent = 2
+            self._sem = asyncio.Semaphore(self._max_concurrent)
             self._drain_timeout = 0.01  # force timeout
             self._instances: dict = {}
             self._catalog = MagicMock()
             self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp")}
             self._catalog.host = MagicMock()
-
-        async def _wait_sem_idle(self) -> None:
-            # Never completes — simulates permanently stuck generation
-            await asyncio.sleep(9999)
 
         def _engine_for_spec(self, spec):
             engine = MagicMock()
