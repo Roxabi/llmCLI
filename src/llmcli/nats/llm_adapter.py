@@ -88,7 +88,7 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
     async def run(self, nats_url: str, stop: asyncio.Event | None = None) -> None:
         await asyncio.get_running_loop().run_in_executor(self._executor, self._ensure_model)
         self._vram_monitor = VRAMMonitor()
-        self._vram_monitor.__enter__()
+        self._vram_monitor.open()
         await super().run(nats_url, stop)
 
     def _ensure_model(self) -> None:
@@ -149,7 +149,7 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
     async def _shutdown(self) -> None:
         try:
             if self._vram_monitor is not None:
-                self._vram_monitor.__exit__(None, None, None)
+                self._vram_monitor.close()
                 self._vram_monitor = None
             await self._client.aclose()
         finally:
