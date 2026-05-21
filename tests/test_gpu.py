@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from llmcli.gpu import VRAMSampler
+from llmcli.gpu import VRAMMonitor, VRAMSampler
 
 
 # ---------------------------------------------------------------------------
@@ -101,3 +101,129 @@ class TestVRAMSampler:
 
         # Assert
         assert peak is None
+
+
+# ---------------------------------------------------------------------------
+# VRAMMonitor
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_gpu
+class TestVRAMMonitor:
+    """``VRAMMonitor`` is a long-lived nvml context manager with cached handle.
+
+    Distinct from ``VRAMSampler``: no background thread, no peak tracking,
+    one-shot ``sample() -> (free_mb, used_mb)`` reads with init/shutdown
+    bound to the context-manager lifetime. Used by the NATS adapter for
+    heartbeat payloads (#53).
+    """
+
+    @staticmethod
+    def _make_pynvml_mock(
+        free_bytes: int = 8 * 1024**3, used_bytes: int = 4 * 1024**3
+    ) -> MagicMock:
+        mem_mock = MagicMock()
+        mem_mock.free = free_bytes
+        mem_mock.used = used_bytes
+
+        handle_mock = MagicMock(name="nvml-handle")
+
+        pynvml_mock = MagicMock()
+        pynvml_mock.nvmlInit.return_value = None
+        pynvml_mock.nvmlDeviceGetHandleByIndex.return_value = handle_mock
+        pynvml_mock.nvmlDeviceGetMemoryInfo.return_value = mem_mock
+        pynvml_mock.nvmlShutdown.return_value = None
+        return pynvml_mock
+
+    def test_enter_with_pynvml_initialises_handle(self) -> None:
+        pynvml_mock = self._make_pynvml_mock()
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.__enter__()
+            try:
+                assert vm._handle is not None
+                assert vm._init_failed is False
+                pynvml_mock.nvmlInit.assert_called_once()
+                pynvml_mock.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+            finally:
+                vm.__exit__(None, None, None)
+
+    def test_enter_without_pynvml_sets_init_failed_flag(self) -> None:
+        pynvml_mock = MagicMock()
+        pynvml_mock.nvmlInit.side_effect = Exception("no GPU")
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.__enter__()
+            try:
+                # Init failed → handle stays None and the failure is sticky.
+                assert vm._handle is None
+                assert vm._init_failed is True
+            finally:
+                vm.__exit__(None, None, None)
+
+    def test_sample_with_handle_returns_free_used_mb(self) -> None:
+        # 8 GiB free / 4 GiB used → 8192 MiB / 4096 MiB on the wire.
+        pynvml_mock = self._make_pynvml_mock(free_bytes=8 * 1024**3, used_bytes=4 * 1024**3)
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            with VRAMMonitor() as vm:
+                free_mb, used_mb = vm.sample()
+
+        assert free_mb == pytest.approx(8192.0, rel=1e-3)
+        assert used_mb == pytest.approx(4096.0, rel=1e-3)
+
+    def test_sample_without_handle_returns_zero_zero(self) -> None:
+        # nvml init failed → handle is None → sample is the no-op `(0.0, 0.0)`
+        # contract callers rely on to keep heartbeat payloads emitting.
+        pynvml_mock = MagicMock()
+        pynvml_mock.nvmlInit.side_effect = Exception("no GPU")
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            with VRAMMonitor() as vm:
+                free_mb, used_mb = vm.sample()
+
+        assert (free_mb, used_mb) == (0.0, 0.0)
+
+    def test_exit_is_idempotent(self) -> None:
+        pynvml_mock = self._make_pynvml_mock()
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.__enter__()
+            vm.__exit__(None, None, None)
+            # Second __exit__ must not call nvmlShutdown again or raise.
+            vm.__exit__(None, None, None)
+
+        assert vm._handle is None
+        # Exactly one shutdown — the second __exit__ short-circuited on `_handle is None`.
+        pynvml_mock.nvmlShutdown.assert_called_once()
+
+    def test_open_close_delegate_to_context_manager(self) -> None:
+        pynvml_mock = self._make_pynvml_mock()
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.open()
+            assert vm._handle is not None
+            vm.close()
+            assert vm._handle is None
+
+        pynvml_mock.nvmlInit.assert_called_once()
+        pynvml_mock.nvmlShutdown.assert_called_once()
+
+    def test_reentry_guard_does_not_double_init(self) -> None:
+        # Second open() must short-circuit so we never orphan the previous
+        # handle by calling nvmlInit() again without a matching nvmlShutdown().
+        pynvml_mock = self._make_pynvml_mock()
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.open()
+            vm.open()
+            try:
+                pynvml_mock.nvmlInit.assert_called_once()
+                pynvml_mock.nvmlDeviceGetHandleByIndex.assert_called_once_with(0)
+            finally:
+                vm.close()
