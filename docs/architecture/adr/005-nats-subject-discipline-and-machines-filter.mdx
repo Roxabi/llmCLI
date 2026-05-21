@@ -1,0 +1,127 @@
+---
+title: "ADR-005: NATS subject discipline and machines filter for catalog-driven workers"
+description: One model = one subject, machines filter is the routing source of truth, queue groups are opt-in for intentional duplication. Prevents duplicate inference and cross-host VRAM contamination by construction.
+---
+
+## Status
+
+Proposed
+
+## Context
+
+Once two `llmcli-nats-worker` instances exist (M₁ as cloud gateway, M₂ as local GPU
+worker), the "two subscribers on one bus" question becomes load-bearing:
+
+1. **Duplicate inference.** Plain NATS pub/sub fan-out delivers every message to
+   every subscriber. If both M₁ and M₂ subscribe to `inference.kimi-k2.6`, a single
+   user request runs the model twice — wasted Fireworks tokens, divergent
+   responses, no idempotency guarantee.
+2. **Cross-host VRAM contamination.** M₁ reserves its RTX 3080 for voiceCLI
+   (STT/TTS), 24/7. If a misconfigured worker on M₁ subscribes to a *local-engine*
+   subject (e.g. `inference.qwen3-8b`), it would try to load weights into RAM and
+   either OOM the host or evict the speech models.
+3. **Catalog desync.** Today every `models/*.toml` declares `machines = []`
+   ("all hosts"). With two workers up, both would see every model, both would
+   subscribe to every subject — the worst case of #1 and #2 combined.
+
+The fear is real. The fix is not "add queue groups everywhere" — that papers
+over the routing question with load-balancing. The fix is to make overlap
+**impossible by construction** through subject and catalog discipline, and
+reserve queue groups for the narrow case of intentional redundancy.
+
+## Decision
+
+Three rules, applied in order:
+
+### Rule 1 — Subject = `inference.<model_id>` (exact, never wildcards)
+
+Each worker's subscription set is computed at boot from the catalog *after*
+applying the `machines` filter:
+
+```
+subscribe_set := { f"inference.{m.id}" for m in catalog.models if hostname in m.machines }
+```
+
+Wildcards (`inference.>`, `inference.*`) are forbidden in subscribe code paths.
+A worker advertises exactly the subjects it can serve — no more, no less.
+
+### Rule 2 — `machines = […]` field is the single source of truth for routing
+
+Every `~/.roxabi/llmcli/models/<name>.toml` carries a `machines` list:
+
+| Value | Meaning | Example |
+|---|---|---|
+| `["roxabituwer"]` | M₁ only — cloud passthroughs | `kimi-k2.6`, `deepseek-v4-pro` |
+| `["roxabitower"]` | M₂ only — local GPU models | `qwen3-8b`, future local entries |
+| `[]` | All hosts — **discouraged for engine=local**, fine for engine=remote when redundancy is intentional | (case-by-case) |
+
+Catalog loader filters models whose `machines` list excludes the current
+hostname. The filtered set drives *both* HTTP `/v1/models` and NATS
+`subscribe_set`. There is no second mechanism — no env override, no per-worker
+config flag, no runtime opt-in.
+
+### Rule 3 — Queue groups only for intentional duplication
+
+NATS queue groups (`queue="<group>"` on subscribe) load-balance between members.
+They are the right tool when two or more workers *intentionally* serve the same
+model (e.g. for resilience or throughput). They are the *wrong* tool when two
+workers accidentally subscribe to the same subject — that means rule 1 or 2 was
+violated.
+
+Convention: when a model is declared on multiple machines on purpose, the
+catalog entry adds `queue_group = "<model_id>"`. Workers subscribing to that
+model use the queue group; NATS picks exactly one subscriber per request.
+Without `queue_group`, plain subscribe is used and overlap is treated as a
+configuration error (worker should refuse to start or emit a loud warning).
+
+## Consequences
+
+### Positive
+
+- **Deterministic routing.** A request for `kimi-k2.6` always hits M₁'s worker.
+  A request for `qwen3-8b` always hits M₂'s worker. No coin-flips.
+- **VRAM safety on M₁.** The catalog filter makes "M₁ loads a local model" a
+  type error, not a runtime hope. Voice models keep their VRAM.
+- **No queue-group sprawl.** Queue groups stay rare and explicit, signaling
+  intentional multi-host coverage instead of accidental overlap.
+- **`/v1/models` ↔ NATS subscribe parity.** Both surfaces are driven from the
+  same filtered catalog — what HTTP advertises is exactly what NATS serves.
+
+### Negative
+
+- **Catalog churn required before NATS rollout.** Every current `models/*.toml`
+  has `machines = []`. Each entry must be edited to name the host(s) it belongs
+  to before the second worker comes online.
+- **No fail-over by default.** With strict `machines = ["roxabituwer"]`, if M₁
+  is down, `kimi-k2.6` is unavailable — there is no automatic fall-through to
+  another host. Resilience requires an explicit redundant entry + queue group.
+- **Forbids `inference.>` debugging tricks.** Operators can't subscribe to a
+  catch-all subject from a sidecar without intentionally violating rule 1.
+  Debug paths must use a separate non-`inference.*` subject namespace.
+
+### Neutral
+
+- **Compatible with ADR-004.** ADR-004 collapses lifecycle + inference into one
+  NATS-native worker; this ADR specifies the discipline that worker follows when
+  computing its own subscribe set from its host's filtered catalog view.
+- **Hermes/HTTP unaffected.** HTTP consumers (Hermes, Claude Code aliases) reach
+  the proxy on `roxabituwer:18091` or `roxabitower:18091` directly. The proxy's
+  HTTP `model_list` is filtered by the same `machines` field, so the rules
+  remain consistent across both transports.
+
+## Open questions
+
+- **Cross-host dispatch within the proxy?** Should `roxabituwer:18091` forward
+  HTTP requests for `qwen3-8b` to `roxabitower:18091`, or 404? Today: 404 by
+  construction (M₁'s `model_list` excludes M₂-only models). Future: could
+  introduce an explicit gateway entry with NATS dispatch. Deferred until a
+  consumer actually demands single-URL access.
+- **Heartbeat subject namespace.** Lifecycle heartbeats (ADR-004) should not
+  live under `inference.*`. Suggested: `lifecycle.<machine>.<event>`. Specified
+  separately when ADR-004 lands its implementation.
+
+## References
+
+- ADR-004 — Lifecycle control plane: NATS over AF_UNIX (motivates the worker)
+- GitHub issue #34 — fold lifecycle control plane into NATS worker
+- GitHub issue #36 — feat(catalog): support cloud-passthrough engines + per-machine filter
