@@ -39,6 +39,17 @@ async def lifecycle_nats_request(
     nc = NATS()
     creds_path = Path("~/.config/llmcli/nkeys/operator.creds").expanduser()
     nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
+    # Fail-closed: missing creds connects anonymously against permissive brokers.
+    # CI / pre-Slice-0 dev set LLMCLI_NATS_SKIP_CREDS=1 to opt in explicitly.
+    if not creds_path.exists() and os.environ.get(
+        "LLMCLI_NATS_SKIP_CREDS", ""
+    ).lower() not in ("1", "true"):
+        err_console.print(
+            f"[red]NATS operator credentials not found at {creds_path}. "
+            f"Run lyra-acl genkeys (Slice 0) or export "
+            f"LLMCLI_NATS_SKIP_CREDS=1 to allow anonymous connect (dev/CI only).[/red]"
+        )
+        raise typer.Exit(code=1)
     await nc.connect(
         nats_url,
         user_credentials=str(creds_path) if creds_path.exists() else None,

@@ -335,3 +335,31 @@ class TestSwapNatsFlag:
         assert nats_client.published_subject is None, (
             "nc.request must NOT be called for unknown model (catalog pre-validation)"
         )
+
+    def test_missing_creds_without_skip_exits_before_nats(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """B7: fail-closed when operator.creds is missing and SKIP env var is unset.
+
+        Anonymous-by-default would let a misconfigured client publish lifecycle ops
+        against a permissive broker without identity. Force an explicit opt-in.
+        """
+        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+        # Override the conftest autouse: this test exercises the fail-closed path.
+        monkeypatch.delenv("LLMCLI_NATS_SKIP_CREDS", raising=False)
+        # Point HOME at an empty tmp path so the default ~/.config/llmcli/nkeys/...
+        # resolves to a non-existent file.
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
+
+        with _nats_class_patch(nats_client):
+            result = runner.invoke(app, ["swap", "qwen3-8b"])
+
+        assert result.exit_code != 0, (
+            f"Missing creds + skip unset must exit non-zero, got {result.exit_code}"
+        )
+        assert nats_client.published_subject is None, (
+            "nc.request must NOT be called when creds are missing without explicit opt-in"
+        )

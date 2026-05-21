@@ -325,6 +325,7 @@ your supervisor env (e.g. in `~/projects/llmCLI/.env`) to pin the old path expli
 |---|---|
 | `LLMCLI_CONFIG` | Path to llmcli.toml. Defaults to `~/.roxabi/llmcli/llmcli.toml`. Useful as a migration escape hatch or for multi-tenant catalogs. |
 | `LLMCLI_LIFECYCLE_VIA_NATS` | See [NATS lifecycle control plane](#nats-lifecycle-control-plane-flag) below. |
+| `LLMCLI_NATS_SKIP_CREDS` | Set to `1` (or `true`) to allow anonymous NATS connect when `~/.config/llmcli/nkeys/operator.creds` is absent. Default behaviour is fail-closed: CLI exits with an error rather than connecting without identity. Intended for CI and pre-Slice-0 dev only — production must rely on creds. |
 
 ---
 

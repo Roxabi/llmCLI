@@ -33,6 +33,9 @@ jobs:
         run: uv run --extra nats pytest -m nats
         env:
           NATS_URL: nats://localhost:4222
+          # CI broker is unauthenticated nats:2.11-alpine; opt out of the
+          # fail-closed creds check (lyra-acl genkeys hasn't run here).
+          LLMCLI_NATS_SKIP_CREDS: "1"
 
   secrets:
     name: Secret scan

@@ -67,7 +67,7 @@ llmcli register-proxy                    # refresh llmCLI block in ~/.litellm/co
 
 The 5 lifecycle commands (`swap`, `stop`, `status`, `list`, `reload-catalog`) accept `--host <hostname>` to target a remote GPU host. Omitting `--host` defaults to the local hostname.
 
-**Pre-cutover transition (PR-1 window):** set `LLMCLI_LIFECYCLE_VIA_NATS=1` to route lifecycle commands through NATS (requires operator nkey at `~/.config/llmcli/nkeys/operator.creds`). Without the flag (default), commands use the AF_UNIX socket path. The Slice 6 cutover PR flips the default and removes the flag.
+**Pre-cutover transition (PR-1 window):** set `LLMCLI_LIFECYCLE_VIA_NATS=1` to route lifecycle commands through NATS (requires operator nkey at `~/.config/llmcli/nkeys/operator.creds`; CI/dev opt out with `LLMCLI_NATS_SKIP_CREDS=1`). Without the flag (default), commands use the AF_UNIX socket path. The Slice 6 cutover PR flips the default and removes the flag.
 
 ## Supervisor
 
