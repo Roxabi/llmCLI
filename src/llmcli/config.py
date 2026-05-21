@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .gpu import kv_overhead_gib, probe_free_vram_gib
-from .providers import PROVIDERS
+from .support.providers import PROVIDERS
 
 logger = logging.getLogger(__name__)
 

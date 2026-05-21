@@ -18,7 +18,7 @@ from llmcli.cli._app import app, console, err_console  # noqa: F401
 # runtime, so the mock injected here is what they see.
 from llmcli import config  # noqa: F401
 from llmcli.daemon import Daemon, daemon_request  # noqa: F401
-from llmcli.litellm_config import build_block, reload_proxy, write_block  # noqa: F401
+from llmcli.support.litellm_config import build_block, reload_proxy, write_block  # noqa: F401
 
 try:
     from huggingface_hub import hf_hub_download  # noqa: F401

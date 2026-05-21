@@ -20,8 +20,8 @@ import yaml
 from unittest.mock import patch
 
 from llmcli.config import Catalog, HostSettings, ModelSpec
-from llmcli.litellm_config import BLOCK_END, BLOCK_START, build_block, write_block
-from llmcli.providers import PROVIDERS
+from llmcli.support.litellm_config import BLOCK_END, BLOCK_START, build_block, write_block
+from llmcli.support.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +651,7 @@ class TestBuildBlockHostnameFilter:
         real_hostname = "definitely-not-this-host-12345"
         catalog = _make_remote_catalog("openai", machines=[real_hostname])
         # Act — no hostname kwarg → falls through to socket.gethostname()
-        with patch("llmcli.litellm_config.socket.gethostname", return_value="some-other-host"):
+        with patch("llmcli.support.litellm_config.socket.gethostname", return_value="some-other-host"):
             result = build_block(catalog, PUBLIC_BASE_URL)
         inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
         parsed = yaml.safe_load(inner)
@@ -664,7 +664,7 @@ class TestBuildBlockHostnameFilter:
         # Arrange — catalog pinned to "matching-host"
         catalog = _make_remote_catalog("openai", machines=["matching-host"])
         # Act — no hostname kwarg → falls through to socket.gethostname() (mocked to match)
-        with patch("llmcli.litellm_config.socket.gethostname", return_value="matching-host"):
+        with patch("llmcli.support.litellm_config.socket.gethostname", return_value="matching-host"):
             result = build_block(catalog, PUBLIC_BASE_URL)
         inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
         parsed = yaml.safe_load(inner)
@@ -758,7 +758,7 @@ def _make_mixed_catalog(
     return Catalog(host=host, models={"kimi-k2": remote_spec, "qwen3-8b": local_spec})
 
 
-from llmcli.litellm_config import build_full_config  # noqa: E402
+from llmcli.support.litellm_config import build_full_config  # noqa: E402
 
 
 class TestBuildFullConfig:
@@ -869,7 +869,7 @@ class TestBuildFullConfig:
 class TestBuildModelList:
     def test_build_model_list_matches_build_full_config(self) -> None:
         """build_model_list(cat, base_url) == build_full_config(cat, base_url)['model_list']."""
-        from llmcli.litellm_config import build_model_list  # lazy
+        from llmcli.support.litellm_config import build_model_list  # lazy
 
         # Arrange — catalog with one remote model
         catalog = _make_catalog(
@@ -899,8 +899,8 @@ class TestBuildModelList:
         assert result["litellm_settings"] == {"drop_params": True}
 
     def test_default_proxy_base_constant_shape(self) -> None:
-        """_DEFAULT_PROXY_BASE from llmcli.litellm_config has expected structure."""
-        from llmcli.litellm_config import _DEFAULT_PROXY_BASE  # lazy
+        """_DEFAULT_PROXY_BASE from llmcli.support.litellm_config has expected structure."""
+        from llmcli.support.litellm_config import _DEFAULT_PROXY_BASE  # lazy
 
         # Assert — general_settings with master_key and litellm_settings.drop_params
         assert "general_settings" in _DEFAULT_PROXY_BASE
@@ -910,7 +910,7 @@ class TestBuildModelList:
     def test_proxy_base_yaml_never_mutated(self, tmp_path: Path) -> None:
         """load_proxy_base does not modify the source YAML file (SC-14 hash invariance)."""
         import hashlib
-        from llmcli.litellm_config import load_proxy_base  # lazy
+        from llmcli.support.litellm_config import load_proxy_base  # lazy
 
         # Arrange
         yaml_path = tmp_path / "proxy_base.yaml"
