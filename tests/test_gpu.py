@@ -218,6 +218,29 @@ class TestVRAMMonitor:
         pynvml_mock.nvmlInit.assert_called_once()
         pynvml_mock.nvmlShutdown.assert_called_once()
 
+    def test_double_open_logs_warning_and_does_not_double_init(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # `__enter__` is idempotent (valid nested-`with` semantics), but the
+        # explicit `open()` API treats double-call as caller misuse and surfaces
+        # it via a WARNING log so adapter lifecycle bugs do not vanish silently
+        # as never-released handles.
+        pynvml_mock = self._make_pynvml_mock()
+
+        with patch.dict("sys.modules", {"pynvml": pynvml_mock}):
+            vm = VRAMMonitor()
+            vm.open()
+            with caplog.at_level("WARNING", logger="llmcli.gpu"):
+                vm.open()
+            vm.close()
+
+        # No double-init at the nvml layer (guard still holds).
+        pynvml_mock.nvmlInit.assert_called_once()
+        # Warning visible to operators.
+        assert any(
+            "VRAMMonitor.open() called while already open" in rec.message for rec in caplog.records
+        ), f"expected double-open warning, got: {[r.message for r in caplog.records]!r}"
+
     def test_reentry_guard_does_not_double_init(self) -> None:
         # Second open() must short-circuit so we never orphan the previous
         # handle by calling nvmlInit() again without a matching nvmlShutdown().

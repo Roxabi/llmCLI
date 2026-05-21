@@ -48,9 +48,12 @@ class _WireErr(StrEnum):
 
 
 # Control chars that break log hygiene on a single-line wire frame —
-# C0 minus tab (\t = 0x09) plus DEL (0x7f). \n is also stripped here as
-# defense-in-depth even though _recv_line already splits on it.
-_WIRE_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+# C0 (0x00-0x1f, minus tab 0x09), DEL (0x7f), AND C1 (0x80-0x9f). C1 is
+# critical: a raw-byte client can encode CSI (U+009B = ESC+[ equivalent
+# for C1-enabled terminals like xterm) as valid UTF-8 (0xC2 0x9B) which
+# `buf.decode(errors="replace")` accepts cleanly, and then rewrite the
+# operator's terminal log line if the C0-only filter let it through.
+_WIRE_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]")
 
 
 def _sanitize_wire_msg(msg: str, *, max_len: int = DEFAULT_MAX_LEN) -> str:
@@ -260,14 +263,24 @@ class Daemon:
     # Wire protocol
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _recv_line(conn: socket.socket) -> str:
+    # Hard cap on a single wire frame — bounds peak memory before any regex
+    # work runs on the payload. Matches the recv chunk size; legitimate
+    # commands (STATUS, SWAP <name>, SHUTDOWN) fit comfortably below this.
+    _RECV_LINE_MAX_BYTES = 4096
+
+    @classmethod
+    def _recv_line(cls, conn: socket.socket) -> str:
         buf = b""
         while b"\n" not in buf:
             chunk = conn.recv(4096)
             if not chunk:
                 break
             buf += chunk
+            if len(buf) >= cls._RECV_LINE_MAX_BYTES:
+                # Truncate at the transport layer so downstream regex/scrub
+                # never sees a payload larger than the protocol expects.
+                buf = buf[: cls._RECV_LINE_MAX_BYTES]
+                break
         return buf.decode(errors="replace").split("\n")[0]
 
     @staticmethod

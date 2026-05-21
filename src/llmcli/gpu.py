@@ -194,7 +194,20 @@ class VRAMMonitor:
             self._handle = None
 
     def open(self) -> Self:
-        """Explicit lifecycle counterpart to ``__enter__`` for non-``with`` callers."""
+        """Explicit lifecycle counterpart to ``__enter__`` for non-``with`` callers.
+
+        Double-call is absorbed silently by ``__enter__``'s re-entry guard
+        (idempotent context-manager semantics, valid for nested ``with``),
+        but on the explicit-API path a second ``open()`` without a matching
+        ``close()`` is unambiguously caller misuse — log a warning so
+        adapter lifecycle bugs surface in operator logs rather than as
+        latent never-released-handle leaks.
+        """
+        if self._handle is not None:
+            logger.warning(
+                "VRAMMonitor.open() called while already open — call ignored. "
+                "Caller likely missed a matching close()."
+            )
         return self.__enter__()
 
     def close(self) -> None:
