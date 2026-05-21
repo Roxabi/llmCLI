@@ -74,7 +74,7 @@ Run `llmcli proxy` under user-systemd via a Podman Quadlet on `:18091`:
 
 ```bash
 make install-quadlet
-$EDITOR ~/.config/containers/systemd/llmcli.env
+$EDITOR ~/.roxabi/llmcli/env/proxy.env
 systemctl --user start llmcli
 ```
 
