@@ -6,11 +6,9 @@ import subprocess
 import time
 from pathlib import Path
 
-import httpx
-
 from ..config import ModelSpec
 from ..engine import EngineInstance
-from ._common import _wait_ready
+from ._common import _wait_ready, default_health
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -116,11 +114,7 @@ class LlamaCppEngine:
 
     def health(self, instance: EngineInstance) -> bool:
         """Return True iff the llama-server /health endpoint responds 2xx."""
-        try:
-            resp = httpx.get(f"{instance.base_url}/health", timeout=2.0)
-            return resp.status_code < 300
-        except Exception:  # noqa: BLE001
-            return False
+        return default_health(instance.base_url)
 
     def stop(self, instance: EngineInstance) -> None:
         """Send SIGTERM; escalate to SIGKILL if the process does not exit.

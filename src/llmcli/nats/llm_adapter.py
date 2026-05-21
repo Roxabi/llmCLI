@@ -24,6 +24,7 @@ import httpx
 from roxabi_nats.adapter_base import NatsAdapterBase
 
 from llmcli.daemon import SOCKET_PATH, daemon_request
+from llmcli.gpu import VRAMMonitor
 from llmcli.nats._generation import GenerationMixin
 from roxabi_contracts.llm import SUBJECTS
 
@@ -73,8 +74,7 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
         self._reject_when_full = reject_when_full
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._loaded_model: str | None = None
-        self._nvml_handle: object | None = None
-        self._nvml_init_failed = False
+        self._vram_monitor: VRAMMonitor | None = None
         self._client = httpx.AsyncClient(
             base_url=litellm_url,
             headers={"Authorization": f"Bearer {litellm_key}"},
@@ -87,6 +87,8 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
 
     async def run(self, nats_url: str, stop: asyncio.Event | None = None) -> None:
         await asyncio.get_running_loop().run_in_executor(self._executor, self._ensure_model)
+        self._vram_monitor = VRAMMonitor()
+        self._vram_monitor.__enter__()
         await super().run(nats_url, stop)
 
     def _ensure_model(self) -> None:
@@ -129,42 +131,16 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
     def _extra_subjects(self) -> list[str]:
         return []
 
-    def _get_nvml_handle(self) -> object | None:
-        """Lazy-init nvml device handle; cached for heartbeat reuse."""
-        if self._nvml_init_failed:
-            return None
-        if self._nvml_handle is not None:
-            return self._nvml_handle
-        try:
-            import pynvml  # type: ignore[import-untyped]
-
-            pynvml.nvmlInit()
-            self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-            return self._nvml_handle
-        except Exception:  # noqa: BLE001
-            self._nvml_init_failed = True
-            return None
-
     def heartbeat_payload(self) -> dict:
         payload = super().heartbeat_payload()
         payload["model_loaded"] = self._loaded_model
         payload["active_requests"] = self._active_requests()
 
-        from llmcli.gpu import probe_free_vram_gib
-
-        free_gib = probe_free_vram_gib()
-        payload["vram_free_mb"] = int(free_gib * 1024)
-        handle = self._get_nvml_handle()
-        if handle is not None:
-            try:
-                import pynvml  # type: ignore[import-untyped]
-
-                total_mb = pynvml.nvmlDeviceGetMemoryInfo(handle).total // (1024 * 1024)
-                payload["vram_used_mb"] = max(0, int(total_mb) - payload["vram_free_mb"])
-            except Exception:  # noqa: BLE001
-                payload["vram_used_mb"] = 0
-        else:
-            payload["vram_used_mb"] = 0
+        free_mb, used_mb = (
+            self._vram_monitor.sample() if self._vram_monitor is not None else (0.0, 0.0)
+        )
+        payload["vram_free_mb"] = int(free_mb)
+        payload["vram_used_mb"] = int(used_mb)
         return payload
 
     def _active_requests(self) -> int:
@@ -172,14 +148,9 @@ class LlmNatsAdapter(GenerationMixin, NatsAdapterBase):
 
     async def _shutdown(self) -> None:
         try:
-            if self._nvml_handle is not None:
-                try:
-                    import pynvml  # type: ignore[import-untyped]
-
-                    pynvml.nvmlShutdown()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._nvml_handle = None
+            if self._vram_monitor is not None:
+                self._vram_monitor.__exit__(None, None, None)
+                self._vram_monitor = None
             await self._client.aclose()
         finally:
             await super()._shutdown()

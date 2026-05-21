@@ -6,6 +6,7 @@ import logging
 import re
 import subprocess
 import threading
+from typing import Self
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,65 @@ class VRAMSampler:
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+class VRAMMonitor:
+    """Long-lived nvml context manager with cached device handle.
+
+    Use VRAMSampler for one-shot bench peaks. Use VRAMMonitor when you
+    need repeated (free, used) samples without re-initializing nvml each
+    time — e.g. NATS heartbeat payloads.
+
+    Usage::
+
+        with VRAMMonitor() as vm:
+            free_mb, used_mb = vm.sample()
+            # ... many more samples over the lifetime ...
+
+    Or for long-lived objects::
+
+        vm = VRAMMonitor()
+        vm.__enter__()
+        free_mb, used_mb = vm.sample()
+        vm.__exit__(None, None, None)
+    """
+
+    def __init__(self, device_index: int = 0) -> None:
+        self._index = device_index
+        self._handle: object | None = None
+        self._init_failed = False
+
+    def __enter__(self) -> Self:
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            pynvml.nvmlInit()
+            self._handle = pynvml.nvmlDeviceGetHandleByIndex(self._index)
+        except Exception:  # noqa: BLE001
+            self._init_failed = True
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._handle is not None:
+            try:
+                import pynvml  # type: ignore[import-untyped]
+
+                pynvml.nvmlShutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self._handle = None
+
+    def sample(self) -> tuple[float, float]:
+        """Return (free_mb, used_mb). (0.0, 0.0) when nvml unavailable."""
+        if self._handle is None:
+            return (0.0, 0.0)
+        try:
+            import pynvml  # type: ignore[import-untyped]
+
+            mem = pynvml.nvmlDeviceGetMemoryInfo(self._handle)
+            return (mem.free / (1024**2), mem.used / (1024**2))
+        except Exception:  # noqa: BLE001
+            return (0.0, 0.0)
 
 
 _QUANT_BITS: dict[str, float] = {

@@ -9,8 +9,8 @@ from typing import Any
 
 import yaml
 
-from .config import Catalog
-from .providers import PROVIDERS
+from llmcli.config import Catalog
+from llmcli.support.providers import PROVIDERS
 
 log = logging.getLogger(__name__)
 

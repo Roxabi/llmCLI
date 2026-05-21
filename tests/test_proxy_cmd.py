@@ -13,7 +13,7 @@ from rich.console import Console
 
 from llmcli.config import Catalog, HostSettings, ModelSpec
 from llmcli.cli.proxy import _validate_provider_keys
-from llmcli.providers import PROVIDERS
+from llmcli.support.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -644,7 +644,7 @@ class TestLoadProxyBase:
     def test_load_proxy_base_absent(self, tmp_path: Path) -> None:
         """Missing file → returns _DEFAULT_PROXY_BASE unchanged."""
         # Arrange
-        from llmcli.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
+        from llmcli.support.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
 
         absent = tmp_path / "nonexistent.yaml"
         # Act
@@ -655,7 +655,7 @@ class TestLoadProxyBase:
     def test_load_proxy_base_empty(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
         """Empty file → emits warning log and returns _DEFAULT_PROXY_BASE."""
         import logging
-        from llmcli.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
+        from llmcli.support.litellm_config import load_proxy_base, _DEFAULT_PROXY_BASE  # lazy
 
         empty_file = tmp_path / "proxy_base.yaml"
         empty_file.write_text("")
@@ -668,7 +668,7 @@ class TestLoadProxyBase:
 
     def test_load_proxy_base_valid(self, tmp_path: Path) -> None:
         """Valid YAML file → returns parsed dict."""
-        from llmcli.litellm_config import load_proxy_base  # lazy
+        from llmcli.support.litellm_config import load_proxy_base  # lazy
 
         content = "general_settings:\n  master_key: os.environ/K\n"
         yaml_file = tmp_path / "proxy_base.yaml"
@@ -680,7 +680,7 @@ class TestLoadProxyBase:
 
     def test_load_proxy_base_syntax_error(self, tmp_path: Path) -> None:
         """Malformed YAML → raises yaml.YAMLError."""
-        from llmcli.litellm_config import load_proxy_base  # lazy
+        from llmcli.support.litellm_config import load_proxy_base  # lazy
 
         bad_file = tmp_path / "proxy_base.yaml"
         bad_file.write_text("key: : : :\n")
@@ -690,7 +690,7 @@ class TestLoadProxyBase:
 
     def test_load_proxy_base_python_tag(self, tmp_path: Path) -> None:
         """Unsafe python tag → raises yaml.YAMLError (ConstructorError is a subclass)."""
-        from llmcli.litellm_config import load_proxy_base  # lazy
+        from llmcli.support.litellm_config import load_proxy_base  # lazy
 
         unsafe_file = tmp_path / "proxy_base.yaml"
         unsafe_file.write_text("foo: !!python/object:os.system []\n")
@@ -700,7 +700,7 @@ class TestLoadProxyBase:
 
     def test_load_proxy_base_non_dict(self, tmp_path: Path) -> None:
         """Non-mapping YAML (int, list, scalar) raises yaml.YAMLError, not silent passthrough."""
-        from llmcli.litellm_config import load_proxy_base  # lazy
+        from llmcli.support.litellm_config import load_proxy_base  # lazy
 
         non_dict_file = tmp_path / "non_dict.yaml"
         non_dict_file.write_text("42\n")  # valid YAML, but it's an int
@@ -716,7 +716,7 @@ class TestLoadProxyBase:
 class TestMergeProxyConfig:
     def test_merge_backfills_missing_general(self) -> None:
         """Base without general_settings → result has default master_key."""
-        from llmcli.litellm_config import merge_proxy_config  # lazy
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
 
         base = {"litellm_settings": {"drop_params": True}}
         computed = []
@@ -727,7 +727,7 @@ class TestMergeProxyConfig:
 
     def test_merge_backfills_missing_litellm(self) -> None:
         """Base without litellm_settings → result has drop_params True."""
-        from llmcli.litellm_config import merge_proxy_config  # lazy
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
 
         base = {"general_settings": {"master_key": "os.environ/X"}}
         computed = []
@@ -738,7 +738,7 @@ class TestMergeProxyConfig:
 
     def test_merge_preserves_pass_through(self) -> None:
         """pass_through_endpoints and use_chat_completions_url_for_anthropic_messages survive merge."""
-        from llmcli.litellm_config import merge_proxy_config  # lazy
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
 
         base = {
             "general_settings": {
@@ -761,7 +761,7 @@ class TestMergeProxyConfig:
 
     def test_merge_overwrites_stray_model_list(self) -> None:
         """Base model_list is replaced by computed model_list."""
-        from llmcli.litellm_config import merge_proxy_config  # lazy
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
 
         base = {"model_list": [{"model_name": "STALE"}]}
         computed = [{"model_name": "FRESH"}]
@@ -772,7 +772,7 @@ class TestMergeProxyConfig:
 
     def test_merge_forward_compat_passthrough(self) -> None:
         """Unknown top-level keys (router_settings, environment_variables) survive unmodified."""
-        from llmcli.litellm_config import merge_proxy_config  # lazy
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
 
         base = {
             "router_settings": {"timeout": 600},
@@ -930,9 +930,7 @@ class TestProxyEnvPortMalformed:
         runner = CliRunner()
         with patch("llmcli.cli.config") as mock_config:
             mock_config.load.return_value = self._EMPTY_CATALOG
-            result = runner.invoke(
-                typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")]
-            )
+            result = runner.invoke(typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")])
 
         # Assert
         assert result.exit_code == 1, (

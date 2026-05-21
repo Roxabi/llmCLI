@@ -7,8 +7,12 @@ Commands (all newline-terminated):
   STATUS            → OK model=<name> port=<p> uptime=<secs>
   SWAP <name>       → OK swapped to <name>   (swap logic implemented in T5.2)
   SHUTDOWN          → OK shutting down
-  <unknown>         → ERR unknown command: <token>
-  <empty>           → ERR empty command
+  <unknown>         → ERR.UNKNOWN_CMD <token>
+  <empty>           → ERR.EMPTY empty command
+
+Error frame shape: ``ERR.<CODE> <message>``
+Consumers dispatch on the code token (after ``ERR.``) rather than substring-matching
+the message.  See ``_WireErr`` for the full code enum.
 """
 
 from __future__ import annotations
@@ -16,10 +20,41 @@ from __future__ import annotations
 import os
 import socket
 import time
+from enum import StrEnum
 from pathlib import Path
+
+from roxabi_nats.errors import sanitize_for_wire
 
 from .config import ModelSpec, check_vram_budget
 from .engine import Engine, EngineInstance
+
+
+class _WireErr(StrEnum):
+    """Typed error codes for AF_UNIX wire frames.
+
+    Frame shape: ``ERR.<CODE> <message>``. Consumers can dispatch on the code
+    token (after ``.``) instead of substring-matching the message.
+    """
+
+    EMPTY = "EMPTY"
+    UNKNOWN_CMD = "UNKNOWN_CMD"
+    MISSING_ARG = "MISSING_ARG"
+    UNKNOWN_MODEL = "UNKNOWN_MODEL"
+    VRAM_BUDGET = "VRAM_BUDGET"
+    SWAP_FAILED = "SWAP_FAILED"
+    INTERNAL = "INTERNAL"
+
+
+def _format_err(code: _WireErr, msg: str = "", *, exc: BaseException | None = None) -> str:
+    """Format an ERR frame with typed code and sanitized message.
+
+    When ``exc`` is provided, the message is ``sanitize_for_wire(exc)`` —
+    truncated to 200 chars and stripped of credentials in embedded URLs.
+    """
+    if exc is not None:
+        msg = sanitize_for_wire(exc)
+    return f"ERR.{code.value} {msg}".rstrip()
+
 
 SOCKET_PATH = Path(
     os.environ.get("LLMCLI_SOCKET", Path.home() / ".local" / "state" / "llmcli" / "llmcli.sock")
@@ -102,7 +137,7 @@ class Daemon:
             return stop
         except Exception:
             try:
-                self._send_line(conn, "ERR internal error")
+                self._send_line(conn, _format_err(_WireErr.INTERNAL, "internal error"))
             except Exception:
                 pass
             return False
@@ -118,7 +153,7 @@ class Daemon:
         line = raw.strip()
 
         if not line:
-            return "ERR empty command", False
+            return _format_err(_WireErr.EMPTY, "empty command"), False
 
         parts = line.split(None, 1)
         cmd = parts[0].upper()
@@ -133,7 +168,7 @@ class Daemon:
         if cmd == "SHUTDOWN":
             return "OK shutting down", True
 
-        return f"ERR unknown command: {cmd}", False
+        return _format_err(_WireErr.UNKNOWN_CMD, cmd), False
 
     # ------------------------------------------------------------------
     # Command implementations
@@ -150,41 +185,25 @@ class Daemon:
         return f"OK model={instance.model_name} port={instance.port} uptime={uptime}"
 
     def _engine_for_spec(self, spec: ModelSpec) -> Engine:
-        """Dispatch on spec.engine, returning the appropriate engine instance.
-
-        Unknown engine values raise ValueError — no silent fallback to a wrong engine.
-        """
-        from .engines.llamacpp import LlamaCppEngine
-        from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
-        from .engines.vllm import VLLMEngine
-
-        _ENGINE_REGISTRY: dict[str, type] = {
-            "llamacpp": LlamaCppEngine,
-            "llamacpp_tq3": LlamaCppTQ3Engine,
-            "vllm": VLLMEngine,
-        }
+        """Dispatch on spec.engine. Delegates to engines.get_engine after a remote-guard."""
         if spec.engine == "remote":
             raise ValueError(
                 f"Model '{spec.name}' uses engine='remote' — cloud-passthrough models are "
                 f"managed by LiteLLM, not the local daemon. Use 'llmcli register-proxy' to "
                 f"expose this model via the proxy."
             )
-        engine_cls = _ENGINE_REGISTRY.get(spec.engine)
-        if engine_cls is None:
-            raise ValueError(
-                f"Unknown engine '{spec.engine}' for model '{spec.name}'. "
-                f"Valid engines: {sorted(_ENGINE_REGISTRY)}"
-            )
-        return engine_cls()
+        from llmcli.engines import get_engine
+
+        return get_engine(spec)
 
     def _cmd_swap(self, arg: str) -> str:
         name = arg.strip()
         if not name:
-            return "ERR swap requires model name"
+            return _format_err(_WireErr.MISSING_ARG, "swap requires model name")
 
         # Unknown model guard
         if self.catalog is None or name not in self.catalog.models:
-            return f"ERR unknown model: {name}"
+            return _format_err(_WireErr.UNKNOWN_MODEL, name)
 
         spec = self.catalog.models[name]
 
@@ -194,7 +213,7 @@ class Daemon:
             try:
                 check_vram_budget(spec, self.catalog.host)
             except ValueError as exc:
-                return f"ERR vram budget exceeded: {exc}"
+                return _format_err(_WireErr.VRAM_BUDGET, exc=exc)
 
         # Same-model fast-path — no stop/start needed
         if name in self.instances:
@@ -212,7 +231,7 @@ class Daemon:
         try:
             new_inst = engine.start(spec)
         except Exception as exc:
-            return f"ERR swap failed: {exc}"
+            return _format_err(_WireErr.SWAP_FAILED, exc=exc)
 
         self.instances[name] = new_inst
         return f"OK swapped to {name}"

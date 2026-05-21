@@ -612,7 +612,7 @@ class TestRegisterProxyCommand:
         """
         from llmcli import config as real_config
         from llmcli.config import Catalog, HostSettings, ModelSpec
-        from llmcli.litellm_config import BLOCK_START, BLOCK_END
+        from llmcli.support.litellm_config import BLOCK_START, BLOCK_END
 
         import yaml
 

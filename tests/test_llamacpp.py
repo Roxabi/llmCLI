@@ -451,7 +451,7 @@ class TestHealthProbe:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("llmcli.engines.llamacpp.httpx.get", return_value=mock_response) as mock_get:
+        with patch("llmcli.engines._common.httpx.get", return_value=mock_response) as mock_get:
             result = engine.health(fake_instance)
 
         assert result is True, f"health() must return True on HTTP 200, got {result!r}"
@@ -469,7 +469,7 @@ class TestHealthProbe:
         mock_response = MagicMock()
         mock_response.status_code = 503
 
-        with patch("llmcli.engines.llamacpp.httpx.get", return_value=mock_response):
+        with patch("llmcli.engines._common.httpx.get", return_value=mock_response):
             result = engine.health(fake_instance)
 
         assert result is False, f"health() must return False on HTTP 503, got {result!r}"
@@ -482,7 +482,7 @@ class TestHealthProbe:
     ) -> None:
         """health() must return False (not raise) when the server is unreachable."""
         with patch(
-            "llmcli.engines.llamacpp.httpx.get",
+            "llmcli.engines._common.httpx.get",
             side_effect=Exception("Connection refused"),
         ):
             result = engine.health(fake_instance)
@@ -499,7 +499,7 @@ class TestHealthProbe:
         mock_response = MagicMock()
         mock_response.status_code = 200
 
-        with patch("llmcli.engines.llamacpp.httpx.get", return_value=mock_response) as mock_get:
+        with patch("llmcli.engines._common.httpx.get", return_value=mock_response) as mock_get:
             engine.health(fake_instance)
 
         call_url: str = mock_get.call_args[0][0]

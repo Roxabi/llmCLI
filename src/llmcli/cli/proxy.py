@@ -14,8 +14,8 @@ import yaml
 
 from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
-from llmcli.litellm_config import build_model_list, load_proxy_base, merge_proxy_config
-from llmcli.providers import PROVIDERS
+from llmcli.support.litellm_config import build_model_list, load_proxy_base, merge_proxy_config
+from llmcli.support.providers import PROVIDERS
 
 # ---------------------------------------------------------------------------
 # register-proxy
