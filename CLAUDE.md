@@ -3,7 +3,7 @@
 
 # llmCLI
 
-Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp` (vanilla) and `turbo-tan/llama.cpp-tq3` (TurboQuant fork, required for TQ3_4S mixed-quant models). Consumed by **lyra** (LiteLLM library) and **claude-code** (via the shared LiteLLM proxy at `:4000`).
+Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp` (vanilla) and `turbo-tan/llama.cpp-tq3` (TurboQuant fork, required for TQ3_4S mixed-quant models). Consumed by **lyra** (LiteLLM library) and **claude-code** (via the shared LiteLLM proxy at `:18091`).
 
 ## Tech Stack
 
@@ -45,10 +45,13 @@ src/llmcli/
   engines/
     llamacpp.py           — vanilla llama.cpp engine
     llamacpp_tq3.py       — TurboQuant fork engine (TQ3_4S)
-supervisor/
-  conf.d/llmcli_serve.conf  — single program, catalog-driven hot-swap
-  scripts/run_serve.sh    — wrapper that sources .env before exec llmcli serve
-Makefile                  — register, llm (start|reload|stop|status|logs|errlogs), install, lint, test
+deploy/
+  quadlet/llmcli.container            — LiteLLM proxy Quadlet (:18091)
+  quadlet/llmcli-nats-worker.container — NATS worker Quadlet (llm-worker hosts)
+  Dockerfile.llm                      — container image build
+  quadlet.toml                        — deployment manifest (components, host_roles, secrets)
+  install.sh                          — idempotent install script
+Makefile                  — install, install-quadlet, lint, test
 ```
 
 ## CLI Commands
@@ -69,21 +72,25 @@ The 5 lifecycle commands (`swap`, `stop`, `status`, `list`, `reload-catalog`) ac
 
 **Pre-cutover transition (PR-1 window):** set `LLMCLI_LIFECYCLE_VIA_NATS=1` to route lifecycle commands through NATS (requires operator nkey at `~/.config/llmcli/nkeys/operator.creds`; CI/dev opt out with `LLMCLI_NATS_SKIP_CREDS=1`). Without the flag (default), commands use the AF_UNIX socket path. The Slice 6 cutover PR flips the default and removes the flag.
 
-## Supervisor
+## Container Deployment
 
-Single program `llmcli_serve` registered into the lyra hub supervisor (`~/projects/lyra/deploy/supervisor/`) via `make register`:
+Quadlet (Podman + systemd `--user`) is the production deployment model. Two services:
 
-- **Local** (`roxabitower`): `autostart=false` — start on-demand with `make llm`
-- **Prod** (`roxabituwer`): `autostart=true` — picked up by `lyra.service` linger
+| Service | Unit | Host role | Port |
+|---|---|---|---|
+| LiteLLM proxy | `llmcli.container` | any | 18091 |
+| NATS worker | `llmcli-nats-worker.container` | `llm-worker` | — (host network) |
 
 ```bash
-make register            # one-time: link conf + create log dir + supervisorctl reread
-make llm                 # start serving default model on :8091
-make llm reload          # restart the serve program
-make llm status          # supervisor status
-make llm logs            # tail stdout
-make llm errlogs         # tail stderr
+./deploy/install.sh              # one-time: install units + create env stubs
+$EDITOR ~/.roxabi/llmcli/env/proxy.env   # fill in API keys
+systemctl --user start llmcli            # start proxy
+systemctl --user start llmcli-nats-worker  # start worker (llm-worker hosts only)
+systemctl --user status llmcli           # status
+journalctl --user -u llmcli -f          # logs
 ```
+
+See `docs/QUADLET-DEPLOYMENT.md` for the full runbook (secret rotation, diagnostics, drop-ins).
 
 ## Consumers
 
@@ -104,7 +111,7 @@ Per-agent routing via `ModelConfig.base_url`. LiteLLM's native fallback list han
 
 ### claude-code (ccl / ccp aliases)
 
-`~/.claude/settings.json.local` points `ANTHROPIC_BASE_URL` at the LiteLLM proxy (`:4000`), which forwards OpenAI-format requests to `llama-server`. Aliases `ccl` / `ccp` / `cccl` / `cccp` select local vs prod and normal vs fast model.
+`~/.claude/settings.json.local` points `ANTHROPIC_BASE_URL` at the LiteLLM proxy (`:18091`), which forwards OpenAI-format requests to `llama-server`. Aliases `ccl` / `ccp` / `cccl` / `cccp` select local vs prod and normal vs fast model.
 
 ## LiteLLM Proxy Integration (Option A — sibling service)
 

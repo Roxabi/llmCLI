@@ -11,14 +11,14 @@ Pass criteria gate the merge window; failure aborts the bundle.
       neither `lyra.llm.request` (legacy) nor `lyra.llm.health.*` (legacy)
       remain in the file.
 - [ ] `lyra-nats.service` running on M₁ (`systemctl status lyra-nats`).
-- [ ] LiteLLM proxy running on M₁ port `:4000` with `qwen3-8b` mapped to the
+- [ ] LiteLLM proxy running on M₁ port `:18091` with `qwen3-8b` mapped to the
       local llama-server route. Verify:
       ```bash
       curl -sS -H "Authorization: Bearer $LLMCLI_LITELLM_API_KEY" \
-        http://localhost:4000/v1/models | jq '.data[].id' | grep qwen3-8b
+        http://localhost:18091/v1/models | jq '.data[].id' | grep qwen3-8b
       ```
 - [ ] llmCLI worker container ready: `podman secret ls` shows
-      `llmcli-nats-nkey` and `llmcli-litellm-key`.
+      `llmcli-nats-worker` and `llmcli-litellm-key`.
 - [ ] llama-server on `:8091` already serving `qwen3-8b` (`llmcli serve qwen3-8b`).
 
 ## Bring up the worker
@@ -37,7 +37,7 @@ journalctl -u llmcli-nats-worker -n 50 --no-pager
 ```
 
 Look for log lines:
-- `Starting LLM NATS adapter: model=qwen3-8b max_concurrent=… litellm_url=http://litellm:4000/v1`
+- `Starting LLM NATS adapter: model=qwen3-8b max_concurrent=… litellm_url=http://localhost:18091/v1`
 - `llm_adapter: model=qwen3-8b ready` (from `_ensure_model`)
 
 ## Smoke 1 — non-streaming

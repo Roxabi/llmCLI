@@ -22,7 +22,7 @@ DropCapability=all
 
 [Service]
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 TimeoutStopSec=20s
 # RestartForceExitStatus: skip restart on provider-key (1) and litellm-missing (127) errors
 RestartForceExitStatus=1 127
