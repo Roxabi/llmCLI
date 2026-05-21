@@ -7,19 +7,77 @@ Commands (all newline-terminated):
   STATUS            → OK model=<name> port=<p> uptime=<secs>
   SWAP <name>       → OK swapped to <name>   (swap logic implemented in T5.2)
   SHUTDOWN          → OK shutting down
-  <unknown>         → ERR unknown command: <token>
-  <empty>           → ERR empty command
+  <unknown>         → ERR.UNKNOWN_CMD <token>
+  <empty>           → ERR.EMPTY empty command
+
+Error frame shape: ``ERR.<CODE> <message>``
+Consumers dispatch on the code token (after ``ERR.``) rather than substring-matching
+the message.  See ``_WireErr`` for the full code enum.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import socket
 import time
+from enum import StrEnum
 from pathlib import Path
+
+from roxabi_contracts.errors import scrub_credentials, truncate_with_marker
+from roxabi_nats.errors import DEFAULT_MAX_LEN, sanitize_for_wire
 
 from .config import ModelSpec, check_vram_budget
 from .engine import Engine, EngineInstance
+
+
+class _WireErr(StrEnum):
+    """Typed error codes for AF_UNIX wire frames.
+
+    Frame shape: ``ERR.<CODE> <message>``. Consumers can dispatch on the code
+    token (after ``.``) instead of substring-matching the message.
+    """
+
+    EMPTY = "EMPTY"
+    UNKNOWN_CMD = "UNKNOWN_CMD"
+    MISSING_ARG = "MISSING_ARG"
+    UNKNOWN_MODEL = "UNKNOWN_MODEL"
+    VRAM_BUDGET = "VRAM_BUDGET"
+    SWAP_FAILED = "SWAP_FAILED"
+    INTERNAL = "INTERNAL"
+
+
+# Control chars that break log hygiene on a single-line wire frame —
+# C0 (0x00-0x1f, minus tab 0x09), DEL (0x7f), AND C1 (0x80-0x9f). C1 is
+# critical: a raw-byte client can encode CSI (U+009B = ESC+[ equivalent
+# for C1-enabled terminals like xterm) as valid UTF-8 (0xC2 0x9B) which
+# `buf.decode(errors="replace")` accepts cleanly, and then rewrite the
+# operator's terminal log line if the C0-only filter let it through.
+_WIRE_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]")
+
+
+def _sanitize_wire_msg(msg: str, *, max_len: int = DEFAULT_MAX_LEN) -> str:
+    """String counterpart to ``sanitize_for_wire(exc)`` for raw client-supplied tokens.
+
+    Mirrors the same primitives (``scrub_credentials`` + ``truncate_with_marker``)
+    and additionally collapses single-line-breaking control characters so a
+    raw-byte client cannot smuggle ``\\r``/``\\b`` log-rewriting bytes through
+    UNKNOWN_CMD/UNKNOWN_MODEL frames where ``msg`` is the verbatim client token.
+    """
+    return truncate_with_marker(scrub_credentials(_WIRE_CTRL_RE.sub(" ", msg)), max_len)
+
+
+def _format_err(code: _WireErr, msg: str = "", *, exc: BaseException | None = None) -> str:
+    """Format an ERR frame with typed code and sanitized message.
+
+    Both the ``exc`` path (``sanitize_for_wire(exc)``) and the ``msg`` path
+    (``_sanitize_wire_msg``) apply the same credential-scrub + length-cap so
+    raw client-supplied tokens cannot smuggle ``\\r``/``\\n``-stuffed log
+    hygiene attacks or unbounded payloads through the wire.
+    """
+    payload = sanitize_for_wire(exc) if exc is not None else _sanitize_wire_msg(msg)
+    return f"ERR.{code.value} {payload}".rstrip()
+
 
 SOCKET_PATH = Path(
     os.environ.get("LLMCLI_SOCKET", Path.home() / ".local" / "state" / "llmcli" / "llmcli.sock")
@@ -102,7 +160,7 @@ class Daemon:
             return stop
         except Exception:
             try:
-                self._send_line(conn, "ERR internal error")
+                self._send_line(conn, _format_err(_WireErr.INTERNAL, "internal error"))
             except Exception:
                 pass
             return False
@@ -118,7 +176,7 @@ class Daemon:
         line = raw.strip()
 
         if not line:
-            return "ERR empty command", False
+            return _format_err(_WireErr.EMPTY, "empty command"), False
 
         parts = line.split(None, 1)
         cmd = parts[0].upper()
@@ -133,7 +191,7 @@ class Daemon:
         if cmd == "SHUTDOWN":
             return "OK shutting down", True
 
-        return f"ERR unknown command: {cmd}", False
+        return _format_err(_WireErr.UNKNOWN_CMD, cmd), False
 
     # ------------------------------------------------------------------
     # Command implementations
@@ -150,41 +208,25 @@ class Daemon:
         return f"OK model={instance.model_name} port={instance.port} uptime={uptime}"
 
     def _engine_for_spec(self, spec: ModelSpec) -> Engine:
-        """Dispatch on spec.engine, returning the appropriate engine instance.
-
-        Unknown engine values raise ValueError — no silent fallback to a wrong engine.
-        """
-        from .engines.llamacpp import LlamaCppEngine
-        from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
-        from .engines.vllm import VLLMEngine
-
-        _ENGINE_REGISTRY: dict[str, type] = {
-            "llamacpp": LlamaCppEngine,
-            "llamacpp_tq3": LlamaCppTQ3Engine,
-            "vllm": VLLMEngine,
-        }
+        """Dispatch on spec.engine. Delegates to engines.get_engine after a remote-guard."""
         if spec.engine == "remote":
             raise ValueError(
                 f"Model '{spec.name}' uses engine='remote' — cloud-passthrough models are "
                 f"managed by LiteLLM, not the local daemon. Use 'llmcli register-proxy' to "
                 f"expose this model via the proxy."
             )
-        engine_cls = _ENGINE_REGISTRY.get(spec.engine)
-        if engine_cls is None:
-            raise ValueError(
-                f"Unknown engine '{spec.engine}' for model '{spec.name}'. "
-                f"Valid engines: {sorted(_ENGINE_REGISTRY)}"
-            )
-        return engine_cls()
+        from llmcli.engines import get_engine
+
+        return get_engine(spec)
 
     def _cmd_swap(self, arg: str) -> str:
         name = arg.strip()
         if not name:
-            return "ERR swap requires model name"
+            return _format_err(_WireErr.MISSING_ARG, "swap requires model name")
 
         # Unknown model guard
         if self.catalog is None or name not in self.catalog.models:
-            return f"ERR unknown model: {name}"
+            return _format_err(_WireErr.UNKNOWN_MODEL, name)
 
         spec = self.catalog.models[name]
 
@@ -194,7 +236,7 @@ class Daemon:
             try:
                 check_vram_budget(spec, self.catalog.host)
             except ValueError as exc:
-                return f"ERR vram budget exceeded: {exc}"
+                return _format_err(_WireErr.VRAM_BUDGET, exc=exc)
 
         # Same-model fast-path — no stop/start needed
         if name in self.instances:
@@ -212,7 +254,7 @@ class Daemon:
         try:
             new_inst = engine.start(spec)
         except Exception as exc:
-            return f"ERR swap failed: {exc}"
+            return _format_err(_WireErr.SWAP_FAILED, exc=exc)
 
         self.instances[name] = new_inst
         return f"OK swapped to {name}"
@@ -221,14 +263,24 @@ class Daemon:
     # Wire protocol
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _recv_line(conn: socket.socket) -> str:
+    # Hard cap on a single wire frame — bounds peak memory before any regex
+    # work runs on the payload. Matches the recv chunk size; legitimate
+    # commands (STATUS, SWAP <name>, SHUTDOWN) fit comfortably below this.
+    _RECV_LINE_MAX_BYTES = 4096
+
+    @classmethod
+    def _recv_line(cls, conn: socket.socket) -> str:
         buf = b""
         while b"\n" not in buf:
             chunk = conn.recv(4096)
             if not chunk:
                 break
             buf += chunk
+            if len(buf) >= cls._RECV_LINE_MAX_BYTES:
+                # Truncate at the transport layer so downstream regex/scrub
+                # never sees a payload larger than the protocol expects.
+                buf = buf[: cls._RECV_LINE_MAX_BYTES]
+                break
         return buf.decode(errors="replace").split("\n")[0]
 
     @staticmethod

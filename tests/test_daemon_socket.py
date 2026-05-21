@@ -17,6 +17,7 @@ All tests use tmp_path for socket path — no hardcoded /tmp.
 
 from __future__ import annotations
 
+import re
 import socket
 import threading
 import time
@@ -24,7 +25,12 @@ from pathlib import Path
 
 import pytest
 
-from llmcli.daemon import Daemon
+from roxabi_nats.errors import sanitize_for_wire
+
+from llmcli.daemon import Daemon, _format_err, _sanitize_wire_msg, _WireErr
+
+
+_WIRE_ERR_CODE_RE = re.compile(r"^ERR\.[A-Z_]+(?: |$)")
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +405,7 @@ class TestUnknownCommand:
     """Unrecognised commands must return an ERR line."""
 
     def test_unknown_command_returns_err_line(self, tmp_path: Path) -> None:
-        """An unrecognised command returns `ERR unknown command: <X>`."""
+        """An unrecognised command returns `ERR.UNKNOWN_CMD <token>`."""
         # Arrange
         sock_path = tmp_path / "llmcli.sock"
         daemon = Daemon(socket_path=sock_path)
@@ -414,16 +420,17 @@ class TestUnknownCommand:
         finally:
             conn.close()
 
-        # Assert
-        assert response.startswith("ERR"), (
-            f"Unknown command must return ERR line, got: {response!r}"
+        # Assert — typed code form `ERR.UNKNOWN_CMD …`, not bare `ERR …`
+        assert _WIRE_ERR_CODE_RE.match(response), (
+            f"Unknown command must return typed ERR.<CODE> line, got: {response!r}"
         )
-        assert "FROBNICATE" in response or "unknown" in response.lower(), (
-            f"ERR line must reference the unknown command, got: {response!r}"
+        assert response.startswith("ERR.UNKNOWN_CMD"), (
+            f"Unknown command must dispatch on UNKNOWN_CMD code, got: {response!r}"
         )
+        assert "FROBNICATE" in response, f"ERR line must echo the unknown token, got: {response!r}"
 
     def test_unknown_command_format(self, tmp_path: Path) -> None:
-        """ERR line must follow format: `ERR unknown command: <X>`."""
+        """ERR line follows typed format AND echoes the unknown token verbatim."""
         # Arrange
         sock_path = tmp_path / "llmcli.sock"
         daemon = Daemon(socket_path=sock_path)
@@ -438,13 +445,20 @@ class TestUnknownCommand:
         finally:
             conn.close()
 
-        # Assert
-        assert response.lower().startswith("err"), (
-            f"ERR line must begin with 'ERR', got: {response!r}"
+        # Assert — regression to bare `ERR …` (pre-#57 shape) would fail this.
+        assert _WIRE_ERR_CODE_RE.match(response), (
+            f"ERR line must match ^ERR\\.[A-Z_]+, got: {response!r}"
+        )
+        # Distinct from `test_unknown_command_returns_err_line` which uses
+        # FROBNICATE — pin that the response echoes the *uppercased* token
+        # (dispatch case-folds `cmd.upper()`), so we can detect both a regression
+        # to bare `ERR …` and a regression that drops the token from the frame.
+        assert "BADCMD" in response, (
+            f"ERR line must echo the upper-cased unknown token, got: {response!r}"
         )
 
     def test_empty_command_returns_err(self, tmp_path: Path) -> None:
-        """An empty line (bare newline) is an unknown command and returns ERR."""
+        """An empty line (bare newline) returns `ERR.EMPTY …`."""
         # Arrange
         sock_path = tmp_path / "llmcli.sock"
         daemon = Daemon(socket_path=sock_path)
@@ -459,8 +473,137 @@ class TestUnknownCommand:
         finally:
             conn.close()
 
-        # Assert
-        assert response.startswith("ERR"), f"Empty command must return ERR line, got: {response!r}"
+        # Assert — typed code form so the consumer can dispatch on EMPTY.
+        assert _WIRE_ERR_CODE_RE.match(response), (
+            f"Empty command must return typed ERR.<CODE> line, got: {response!r}"
+        )
+        assert response.startswith("ERR.EMPTY"), (
+            f"Empty command must dispatch on EMPTY code, got: {response!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. _format_err / _WireErr — unit (no socket)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_gpu
+class TestFormatErr:
+    """Direct unit tests for the wire-frame formatter.
+
+    The socket-level tests above exercise this function indirectly; stubbing
+    ``sanitize_for_wire`` away (or regressing to bare ``ERR …``) would not
+    fail them, so these unit cases pin the shape + sanitization contract.
+    """
+
+    def test_empty_msg_yields_code_only(self) -> None:
+        # No trailing space — the format string rstrips after interpolation.
+        assert _format_err(_WireErr.EMPTY) == "ERR.EMPTY"
+
+    def test_benign_msg_passes_sanitization_unchanged(self) -> None:
+        # The msg path always runs the full sanitization pipeline; a benign
+        # input (no credentials, no ctrl chars, under DEFAULT_MAX_LEN) passes
+        # through unchanged. "Unchanged" describes the observed output, not a
+        # bypass — the pipeline still executes.
+        assert _format_err(_WireErr.UNKNOWN_MODEL, "qwen3-8b") == "ERR.UNKNOWN_MODEL qwen3-8b"
+
+    def test_exc_credential_url_is_scrubbed(self) -> None:
+        # TruffleHog's generic credential-URL detector pattern-matches any
+        # `scheme://user:pass@host`; build the fixture from parts so the raw
+        # string never appears verbatim in the source. The scrubber still
+        # sees the assembled URL and applies its userinfo replacement.
+        url = "nats" + "://" + "alice:s3cret" + "@" + "nats.local/jet"  # trufflehog:ignore
+        exc = Exception(f"swap failed: {url}")
+        result = _format_err(_WireErr.SWAP_FAILED, exc=exc)
+        assert result.startswith("ERR.SWAP_FAILED ")
+        assert "alice:s3cret" not in result, f"credentials leaked into wire frame: {result!r}"
+        assert "***" in result, f"expected scrub marker in result: {result!r}"
+
+    def test_oversized_exc_is_truncated(self) -> None:
+        # DEFAULT_MAX_LEN is 200; payload truncated with marker beyond that bound.
+        long_msg = "x" * 500
+        result = _format_err(_WireErr.INTERNAL, exc=Exception(long_msg))
+        # `ERR.INTERNAL ` prefix is 13 chars; the truncated tail must not exceed 200.
+        payload = result.removeprefix("ERR.INTERNAL ")
+        assert len(payload) <= 200, f"payload exceeded max_len: {len(payload)} chars"
+        assert payload.endswith("…"), f"expected truncation marker, got: {payload[-5:]!r}"
+
+    def test_msg_credential_url_is_scrubbed(self) -> None:
+        # Defensive: a raw token passed as `msg` (e.g. user-supplied SWAP arg)
+        # gets the same scrub treatment as `exc`. See note in
+        # ``test_exc_credential_url_is_scrubbed`` for why we assemble the URL
+        # at runtime rather than embedding the verbatim form.
+        url = "nats" + "://" + "u:p" + "@" + "nats/jet"  # trufflehog:ignore
+        result = _format_err(_WireErr.UNKNOWN_MODEL, url)
+        assert "u:p" not in result, f"msg credentials leaked: {result!r}"
+        assert "***" in result, f"expected scrub marker in result: {result!r}"
+
+    def test_msg_control_chars_are_collapsed(self) -> None:
+        # A raw-byte client could embed \r/\b to rewrite log lines; the wire
+        # sanitizer collapses C0 control bytes (minus \t) before forwarding.
+        # Boundary chars (NUL = range start, DEL = explicitly appended) are
+        # included so a refactor that drops either boundary fails this test.
+        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\x00\rCMD\b\x1b[31m\x7f")
+        for ctrl in ("\x00", "\r", "\b", "\x1b", "\x7f"):
+            assert ctrl not in result, f"control char {ctrl!r} leaked into wire frame: {result!r}"
+
+    def test_msg_tab_is_preserved(self) -> None:
+        # `_WIRE_CTRL_RE` is documented as "C0 minus tab" — tab is intentionally
+        # excluded from the strip set. Pinning preservation guards against an
+        # accidental widening of the regex range (e.g. to `[\x00-\x1f\x7f]`).
+        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\tCMD")
+        assert "\t" in result, f"tab must be preserved in wire frame: {result!r}"
+
+    def test_msg_c1_control_chars_are_collapsed(self) -> None:
+        # C1 range (U+0080–U+009F) encodes cleanly via UTF-8 — `\xc2\x9b` is
+        # the byte sequence for U+009B (CSI), functionally equivalent to ESC+[
+        # on a C1-enabled terminal (xterm default). The regex now covers the
+        # full range; verify CSI (mid-range) AND the two boundaries are stripped.
+        result = _format_err(_WireErr.UNKNOWN_CMD, "BAD\x80\x9b2J\x9fEND")
+        for ctrl in ("\x80", "\x9b", "\x9f"):
+            assert ctrl not in result, (
+                f"C1 control char {ctrl!r} leaked into wire frame: {result!r}"
+            )
+
+    def test_recv_line_caps_oversized_input_at_max_bytes(self) -> None:
+        # `_recv_line` must bound peak memory at the transport layer so the
+        # downstream regex (`scrub_credentials`) never sees a payload larger
+        # than the protocol expects. A malicious local client could otherwise
+        # force ~400MB peak allocation with a 100MB no-newline token.
+        class _FakeSock:
+            def __init__(self, payload: bytes) -> None:
+                self._payload = payload
+                self._pos = 0
+
+            def recv(self, n: int) -> bytes:
+                chunk = self._payload[self._pos : self._pos + n]
+                self._pos += len(chunk)
+                return chunk
+
+        # 64 KiB of `A` with no newline — well beyond the 4096 cap.
+        big = b"A" * 65536
+        result = Daemon._recv_line(_FakeSock(big))  # type: ignore[arg-type]
+        assert len(result) <= Daemon._RECV_LINE_MAX_BYTES, (
+            f"_recv_line returned {len(result)} bytes, max is {Daemon._RECV_LINE_MAX_BYTES}"
+        )
+
+    def test_sanitize_wire_msg_mirrors_sanitize_for_wire_contract(self) -> None:
+        # Contract-mirror: both paths share the credential-scrub + truncate
+        # primitives. If upstream `sanitize_for_wire` drifts (new normalization
+        # step, different scrub regex, different max_len), this test fails and
+        # surfaces the parallel-path drift instead of letting it silently diverge.
+        # NB: ctrl-strip is intentionally a `_sanitize_wire_msg`-only step
+        # (exception strings are system-generated; raw tokens are user-controlled),
+        # so the fixture deliberately contains neither ctrl chars nor a credential
+        # URL that would benefit from scrub — leaving only the truncation contract
+        # under test.
+        long_token = "x" * 500
+        msg_path = _sanitize_wire_msg(long_token)
+        exc_path = sanitize_for_wire(Exception(long_token))
+        assert msg_path == exc_path, (
+            f"Contract drift between _sanitize_wire_msg and sanitize_for_wire: "
+            f"msg={msg_path!r} exc={exc_path!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
