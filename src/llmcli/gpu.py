@@ -6,6 +6,7 @@ import logging
 import re
 import subprocess
 import threading
+from typing import Self
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ class VRAMMonitor:
         self._handle: object | None = None
         self._init_failed = False
 
-    def __enter__(self) -> "VRAMMonitor":
+    def __enter__(self) -> Self:
         try:
             import pynvml  # type: ignore[import-untyped]
 
