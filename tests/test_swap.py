@@ -712,7 +712,7 @@ class TestCliSwapCommand:
         exits 0. This test will fail until GREEN implementation checks the response prefix.
         """
         # Arrange
-        with patch("llmcli.cli.daemon_request", return_value="ERR unknown model: ghost-model"):
+        with patch("llmcli.cli.daemon_request", return_value="ERR.UNKNOWN_MODEL ghost-model"):
             # Act
             result = runner.invoke(app, ["swap", "ghost-model"])
 
@@ -725,7 +725,7 @@ class TestCliSwapCommand:
     def test_swap_err_response_prints_error(self, fake_catalog_patch) -> None:
         """llmcli swap prints the ERR message when daemon returns ERR."""
         # Arrange
-        with patch("llmcli.cli.daemon_request", return_value="ERR unknown model: ghost-model"):
+        with patch("llmcli.cli.daemon_request", return_value="ERR.UNKNOWN_MODEL ghost-model"):
             # Act
             result = runner.invoke(app, ["swap", "ghost-model"])
 

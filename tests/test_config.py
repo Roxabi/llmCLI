@@ -23,7 +23,7 @@ from llmcli.config import (
     load,
     check_vram_budget,
 )
-from llmcli.providers import PROVIDERS
+from llmcli.support.providers import PROVIDERS
 
 
 # ---------------------------------------------------------------------------

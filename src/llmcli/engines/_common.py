@@ -79,3 +79,17 @@ def _wait_ready(
         time.sleep(_WAIT_INTERVAL)
 
     raise RuntimeError(f"{engine_name} did not become ready within {timeout}s ({base_url})")
+
+
+def default_health(base_url: str) -> bool:
+    """Return True iff <base_url>/health responds 2xx within 2s.
+
+    Shared by all engines whose health probe is the canonical 2xx-on-/health
+    contract (currently all of them). Falls back to False on any HTTP or
+    connection error.
+    """
+    try:
+        resp = httpx.get(f"{base_url}/health", timeout=2.0)
+        return resp.status_code < 300
+    except Exception:  # noqa: BLE001
+        return False
