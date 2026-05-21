@@ -656,7 +656,7 @@ tag so the Quadlet picks it up without any unit-file change:
 # On the dev host (roxabitower) before the PR merges:
 podman build -t ghcr.io/roxabi/llmcli:staging -f Dockerfile.llm .
 make install-quadlet
-$EDITOR ~/.config/containers/systemd/llmcli.env   # fill in keys
+$EDITOR ~/.roxabi/llmcli/env/proxy.env   # fill in keys
 systemctl --user start llmcli
 ```
 
@@ -676,11 +676,11 @@ podman pull ghcr.io/roxabi/llmcli:staging && systemctl --user restart llmcli
 
 ### Env file template
 
-The env file lives at `~/.config/containers/systemd/llmcli.env` (chmod 600). `make install-quadlet`
+The env file lives at `~/.roxabi/llmcli/env/proxy.env` (chmod 600). `make install-quadlet`
 creates this stub idempotently — it **never** overwrites an existing file:
 
 ```bash
-# ~/.config/containers/systemd/llmcli.env — chmod 600
+# ~/.roxabi/llmcli/env/proxy.env — chmod 600
 LLMCLI_API_KEY=
 FIREWORKS_API_KEY=
 ANTHROPIC_API_KEY=
@@ -706,7 +706,7 @@ journalctl --user -u llmcli --since today  # today's log
 
 | Failure | Symptom | Recovery |
 |---|---|---|
-| `~/.config/containers/systemd/llmcli.env` missing | `daemon-reload` warns; `start` fails with `EnvironmentFile not found` | `make install-quadlet` recreates stub |
+| `~/.roxabi/llmcli/env/proxy.env` missing | `daemon-reload` warns; `start` fails with `EnvironmentFile not found` | `make install-quadlet` recreates stub |
 | `LLMCLI_API_KEY` or provider key empty | `llmcli proxy` exits 1; `RestartForceExitStatus=1` suppresses restart — unit enters `failed` immediately with no retry burn-up | populate env file, `systemctl --user reset-failed llmcli && systemctl --user start llmcli` |
 | `litellm` missing in image | `llmcli proxy` exits 127 ("litellm binary not found"); `RestartForceExitStatus=127` suppresses restart — unit `failed` immediately | rebuild image locally with this PR's `Dockerfile.llm` OR wait for CI rebuild |
 | Image not present + no network on M₁ | `podman` run fails (no pull source) | `podman pull ghcr.io/roxabi/llmcli:staging` on host first, OR local `podman build` from this repo |
@@ -788,7 +788,7 @@ If `proxy-base.yaml` is absent, `llmcli proxy` generates a minimal default confi
 4. Built-in default `18091`
 
 The Quadlet unit sets `Environment=LLMCLI_PROXY_HOST=0.0.0.0` so the container listens on
-all interfaces; override in `~/.config/containers/systemd/llmcli.env` to restrict.
+all interfaces; override in `~/.roxabi/llmcli/env/proxy.env` to restrict.
 
 ### Migration recipe (:4000 lyra-supervisor → :18091 Quadlet)
 
