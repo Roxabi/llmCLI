@@ -29,6 +29,7 @@ class HostSettings:
     api_key_env: str = "LLMCLI_API_KEY"
     default_model: str | None = None
     vram_budget_gib: float | None = None
+    port: int | None = None  # B2 — None = absent from TOML; resolver falls back to 18091
 
 
 @dataclass(frozen=True)
