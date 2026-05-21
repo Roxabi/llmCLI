@@ -1,0 +1,160 @@
+---
+title: "feat(nats): fold lifecycle control plane into NATS worker — replace AF_UNIX daemon"
+issue: 34
+status: approved
+tier: F-full
+date: 2026-05-21
+---
+
+## Problem
+
+llmCLI carries **two control planes per GPU host**:
+
+| Plane | Transport | Owner | Reach |
+|---|---|---|---|
+| Data (inference) | NATS `lyra.llm.generate.request` | `LlmNatsAdapter` (quadlet, host network) | tailnet-wide via nkey |
+| Control (lifecycle) | AF_UNIX socket at `~/.local/state/llmcli/llmcli.sock` | `src/llmcli/daemon.py` (host process) | local-only, requires SSH |
+
+The split has three concrete recurring costs (per ADR-004 §Context):
+
+- **Two deploy patterns per host.** Quadlet for the worker, manual / supervisor for the daemon. M₂ has no clean answer today.
+- **Location asymmetry.** Inference works tailnet-wide; lifecycle requires SSH to the GPU host. `llmcli swap` from M₂ → M₁ doesn't exist; operators `ssh roxabituwer` then run `llmcli swap`.
+- **Two auth/observability surfaces.** NATS nkey + JetStream metrics for one plane; filesystem perms + ad-hoc logs for the other.
+
+Surrounding plumbing has matured in the 12 days since #34 was filed and *strengthens* the case:
+
+- ADR-004 itself was committed post-filing (`44d21b2`), making the architectural premise explicit.
+- The worker quadlet shipped (#44, `7bc0e8d`) — the "existing quadlet worker" the issue assumes is now real on disk at `deploy/quadlet/llmcli-nats-worker.container`.
+- `LlmNatsAdapter._ensure_model` already has a graceful "daemon socket absent → assume external load" fallback (`src/llmcli/nats/llm_adapter.py:100-107`), providing a soft migration cushion.
+- `cli/lifecycle.py status` already parses both `OK model=…` plain text **and** JSON dict payloads — already forward-compatible with richer responses.
+
+Without folding, a 3rd GPU host pays the duplication tax again, the SSH asymmetry persists, and the worker keeps its half-life dependency on a daemon process the rest of the lyra ecosystem doesn't need.
+
+## Who
+
+- **Primary:** Mickael (operator) on M₂ wanting to manage M₁'s loaded model without SSH. Today: `ssh roxabituwer; llmcli swap qwen3-4b`. Goal: `llmcli swap --host roxabituwer qwen3-4b` from any tailnet member.
+- **Secondary:**
+  - **lyra agents** — consume llmCLI via `LlmNatsAdapter`, unaffected functionally; benefit from unified observability (lifecycle audit trail in JetStream).
+  - **claude-code (ccl/ccp aliases)** — consume llmCLI via LiteLLM `:4000` (and post-#51, via the `:18091` quadlet proxy); fully unaffected — both proxies stay in place. `chat` command and inference data plane untouched.
+  - **Future GPU host (3rd machine)** — pays only the quadlet deploy cost, not the daemon supervisor wiring.
+
+## Constraints
+
+**Hard (from code reads + roxabi SDK survey):**
+
+| ID | Constraint | Source / Why it matters |
+|---|---|---|
+| C1 | `NatsAdapterBase._extra_subjects()` subscribes **without queue group** (broadcast to all workers) | `roxabi-nats/adapter_base.py:195` — naive lifecycle subjects fan out. Swap atomicity (only one worker acts) requires either per-worker-targeted subjects `lyra.llm.lifecycle.swap.{worker_id}` *or* an SDK extension point. Open question O1. |
+| C2 | `LlmNatsAdapter` currently passes default `wait_ready=True` to `NatsAdapterBase` | `roxabi-nats 0.4.1` added `wait_ready: bool = True` (`f4983504`); worker nkey has no ACL for JetStream KV. **Must ship `wait_ready=False` in same PR** or worker boot probes fail. |
+| C3 | Cloud-passthrough engines (`engine="remote"`) explicitly rejected by daemon | `src/llmcli/daemon.py:166-171` — lifecycle handlers must mirror this rejection (remote models managed by LiteLLM, not the worker subprocess). |
+| C4 | Hot-swap atomicity is in-process today | `daemon._cmd_swap` (lines 180-218) holds an implicit lock by single-threading. NATS path needs queue-group-of-1 OR per-worker subjects (couples to C1). |
+| C5 | `CONTRACT_VERSION = "1"` unchanged across 12 days | Additive Pydantic models with `extra="ignore"` are safe; no envelope bump needed. |
+| C6 | Worker container runs as uid=1502, drops all caps, `NoNewPrivileges=true` | `deploy/quadlet/llmcli-nats-worker.container:35-36` — subprocess spawn for `llama-server` already works under this profile (vanilla `subprocess.Popen`, no new caps needed). |
+| C7 | New error codes need registration in `roxabi_contracts.errors.KNOWN_CODES` | e.g. `llm.lifecycle_rejected`, `llm.swap_busy`. Cross-repo coordination via `Roxabi/lyra` staging branch. |
+| C8 | LiteLLM `:4000` and `:18091` stay in front of `llama-server` for HTTP consumers | claude-code (`ccl`/`ccp`) and `llmcli chat` bypass NATS entirely; this PR must not change that path. |
+
+**Soft (project conventions):**
+
+- Worktree mandatory (`.claude/worktrees/34-nats-lifecycle-fold`) — F-full + multi-domain.
+- Conventional commits, no force/hard/amend.
+- File-length quality gate: 300 LOC. `daemon.py` is 265 LOC today; `LifecycleMixin` likely splits into 1-2 files (registry vs handlers) to stay under, matching the `GenerationMixin` split pattern (`_generation.py` is 208 LOC).
+- ¬relax import-linter contracts in `.importlinter`.
+- Tag format: `llmcli/vX.Y.Z`.
+
+## Out of Scope
+
+- **Removing LiteLLM `:4000`** — claude-code still consumes it via `ccl`/`ccp`. Retirement is #51, gated separately.
+- **Rewiring `llmcli chat`** — already bypasses lifecycle (plain OpenAI HTTP to LiteLLM). Unaffected.
+- **Replacing the data-plane streaming pattern** — `GenerationMixin._stream_response` chunk-publish-on-reply-inbox stays as-is; data and control namespaces are disjoint.
+- **Exposing `llama-server` directly from the worker** (skipping LiteLLM for inference) — separate decision; not load-bearing here.
+- **Cross-repo NATS subject schemas for other domains** — only `roxabi_contracts.llm.*` subjects added.
+- **Operator nkey provisioning UX** — assumed already operable for the human (manual nkey gen + ACL grants in `nats-server.conf`). Tooling for this is a separate ticket if it surfaces.
+- **Migration tooling** — feature flag implementation may be a single env var (`LLMCLI_LIFECYCLE_VIA_NATS=1`) read by CLI; ¬a full migration framework.
+
+## Approach (high-level)
+
+```
+┌─────────────────┐                          ┌─────────────────────────────────┐
+│ Operator on M₂  │  llmcli swap --host M₁ X │ M₁: llmcli-nats-worker quadlet  │
+│ (tailnet)       │ ───────────────────────► │ ┌─────────────────────────────┐ │
+│   nkey: ops     │  NATS pub on             │ │ LlmNatsAdapter              │ │
+│                 │  lyra.llm.lifecycle.swap │ │  ┌─ GenerationMixin (HTTP)  │ │
+│                 │  .{worker_id|*}          │ │  └─ LifecycleMixin (NEW)    │ │
+│                 │                          │ │       ↓                     │ │
+│                 │  reply on _inbox/…       │ │   EngineInstance registry   │ │
+│                 │  ◄────────────────────── │ │       ↓                     │ │
+└─────────────────┘  LlmLifecycleResponse    │ │   subprocess: llama-server  │ │
+                                             │ └─────────────────────────────┘ │
+                                             │  ┌───┐                          │
+                                             │  │ X │ daemon.py — DELETED      │
+                                             │  └───┘ AF_UNIX socket — gone    │
+                                             └─────────────────────────────────┘
+                                                          ↓ HTTP
+                                                  LiteLLM :4000 (unchanged)
+                                                          ↓ HTTP
+                                                  llama-server (unchanged)
+```
+
+Surface delta:
+
+| Layer | Before | After |
+|---|---|---|
+| Contracts (`roxabi-contracts.llm`) | `SUBJECTS = {generate_request, heartbeat, llm_workers}` + `LlmRequest`/`LlmResponse`/`LlmChunkEvent` | + `SUBJECTS.lifecycle_{swap,stop,status,list,reload_catalog}` (per-worker-targeted templates, see O1) + `LlmLifecycleRequest`/`LlmLifecycleResponse` models + new error code(s) |
+| Worker (`src/llmcli/nats/`) | `LlmNatsAdapter(GenerationMixin, NatsAdapterBase)` + heartbeat | + `LifecycleMixin` absorbing `EngineInstance` registry, swap/stop/status logic, catalog reload. Pass `wait_ready=False`. |
+| CLI (`src/llmcli/cli/`) | `lifecycle.py {serve,stop,status}` + `swap.py` → `daemon_request` over AF_UNIX | Same commands, now NATS publish; `--host` and `--fleet` flags added; `llmcli serve` mode TBD (open question O5). |
+| Deploy (`deploy/quadlet/`) | Worker has optional commented daemon-socket bind-mount | Bind-mount removed; worker boots default model itself; daemon-socket env paths deleted |
+| Removed | — | `src/llmcli/daemon.py`, `daemon_request` helper, `LLMCLI_SOCKET` env, AF_UNIX socket path |
+| Migration | n/a | Feature-flag env (`LLMCLI_LIFECYCLE_VIA_NATS`) toggles CLI between AF_UNIX and NATS; both paths ship; cutover PR flips default and deletes flag + daemon (open question O4). |
+
+## Premise Validity
+
+**Success in 6 months:** `llmcli swap --host roxabituwer qwen3-4b` works from any tailnet member with a valid operator nkey. `src/llmcli/daemon.py` + the AF_UNIX socket no longer exist on disk. Every lifecycle action (swap, stop, reload-catalog) emits a JetStream-replayable record. M₁ + M₂ run a **single quadlet** per host (the worker), no host daemon, no supervisor wrapper for llmCLI lifecycle.
+
+**Failure in 6 months (falsifiable):** Both control planes still coexist: `daemon.py` and lifecycle NATS subjects both present in `main`, gated by a feature flag (`LLMCLI_LIFECYCLE_VIA_NATS`) that was never flipped to default-on. Operators still SSH to the GPU host to swap models because the lifecycle path was never trusted enough to delete the fallback. Concretely: `git ls-files src/llmcli/daemon.py` returns the file 6 months from cutover-PR merge → failure.
+
+**Simplest alternative:** Option A from ADR-004 / closed issue #33 — wrap `daemon.py` under supervisor on M₂ (mirror M₁'s `lyra.service` autostart linger). ~50 lines of `conf.d/llmcli_daemon.conf` + `make register` entry.
+
+**Why not simplest:** Preserves both control planes. Lifecycle stays SSH-only because AF_UNIX is host-scoped. Two deploy patterns per host remain (quadlet + supervisor). Doesn't scale to a third GPU host — every new host pays the duplication tax. ADR-004 already settled this: A relocates the boundary, doesn't remove the asymmetry.
+
+## Complexity
+
+**Tier: F-full** — declared in issue body; confirmed by signals.
+
+Signals observed:
+
+- **Multi-domain:** contracts (cross-repo `Roxabi/lyra`) + worker (Python NATS adapter) + CLI (Typer commands) + deploy (Quadlet/systemd) + tests + docs. Domains: backend + infra.
+- **New architecture:** queue-group-of-1 vs per-worker subjects (open question O1) introduces a NATS routing pattern llmCLI doesn't use today; `LifecycleMixin` is new code, not a refactor of `daemon.py`.
+- **Fleet-wide impact:** every GPU host (M₁ + M₂ + future) and every operator surface.
+- **Unknowns concentrated in 4 open questions** (auth split, hot-swap policy mid-stream, reload-catalog broadcast vs per-host, migration cutover strategy) — spec must resolve.
+- **Cross-repo coordination:** PRs to `Roxabi/lyra` staging for `roxabi-contracts.llm` (new subjects + models + error codes) precede or co-merge with llmCLI's PR.
+
+## Open Questions (resolve in /analyze → /spec)
+
+| ID | Question | Default leaning (revisable) |
+|---|---|---|
+| O1 | **Swap atomicity:** queue-group-of-1 (would need SDK extension to `NatsAdapterBase`) vs per-worker-targeted subjects (`lyra.llm.lifecycle.swap.{worker_id}` via existing `_extra_subjects()` broadcast)? | **Per-worker subjects** — no SDK change, operator routes via `--host`, fan-out `--fleet` uses wildcard. |
+| O2 | **Auth split:** separate operator nkey (subject perm split: generate vs lifecycle) vs reuse worker nkey? | **Separate** — reads cleanly off ADR-004 "Subject permissions cleanly split inference consumers from operators." |
+| O3 | **Hot-swap mid-stream:** drain in-flight generations (wait N seconds, then hard-cut) vs hard-cut + return retryable error to streamers? | **Drain with timeout** — matches `NatsAdapterBase.drain_timeout` precedent; tunable. |
+| O4 | **Migration cutover:** feature-flag both paths in parallel (`LLMCLI_LIFECYCLE_VIA_NATS=1`) then flip + delete, vs hard switch in single PR? | **Feature-flag** — safer rollout; cutover PR is one-liner default flip + daemon deletion. |
+| O5 | **Reload-catalog scope:** broadcast `lyra.llm.lifecycle.reload-catalog` (every worker re-reads its TOML) vs per-host `.{worker_id}`? | **Broadcast** — catalog changes are file-system-local; broadcast tells *every* host "your TOML may have changed, re-read." |
+
+## Related Work
+
+- **Supersedes #33** (closed won't-fix) — host daemon under supervisor.
+- **References ADR-004** (`docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx`) — Option C committed `44d21b2`.
+- **Builds on #44** — `llmcli-nats-worker` quadlet exists.
+- **Compatible with #40** — `llmcli proxy` lifecycle command shell is orthogonal.
+- **Unblocks #51** — `:4000` retirement (lifecycle no longer tied to host process).
+- **Roxabi/lyra precedent:** `ClipoolWorker` subscribes `lyra.clipool.control` via `_extra_subjects()` broadcast (`~/projects/lyra/src/lyra/adapters/clipool/clipool_worker.py:35,145`) — directional template for `LifecycleMixin`.
+
+## Pre-implementation checklist
+
+- [x] Issue exists with clear body + tier
+- [x] ADR-004 committed and referenced
+- [x] Drift checks: 20 commits (confirmatory, not invalidating)
+- [x] Roxabi SDK surface mapped (`SUBJECTS`, `NatsAdapterBase`, error codes)
+- [x] Hard constraints C1-C8 enumerated from code reads
+- [x] 4 open questions identified for /spec resolution
+- [ ] `/analyze` — deep technical exploration (next)
+- [ ] `/spec` — acceptance criteria + slices + open questions resolved
+- [ ] `/plan` — tasks, agents, file groups, dependencies
