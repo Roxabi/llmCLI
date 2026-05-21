@@ -150,32 +150,16 @@ class Daemon:
         return f"OK model={instance.model_name} port={instance.port} uptime={uptime}"
 
     def _engine_for_spec(self, spec: ModelSpec) -> Engine:
-        """Dispatch on spec.engine, returning the appropriate engine instance.
-
-        Unknown engine values raise ValueError — no silent fallback to a wrong engine.
-        """
-        from .engines.llamacpp import LlamaCppEngine
-        from .engines.llamacpp_tq3 import LlamaCppTQ3Engine
-        from .engines.vllm import VLLMEngine
-
-        _ENGINE_REGISTRY: dict[str, type] = {
-            "llamacpp": LlamaCppEngine,
-            "llamacpp_tq3": LlamaCppTQ3Engine,
-            "vllm": VLLMEngine,
-        }
+        """Dispatch on spec.engine. Delegates to engines.get_engine after a remote-guard."""
         if spec.engine == "remote":
             raise ValueError(
                 f"Model '{spec.name}' uses engine='remote' — cloud-passthrough models are "
                 f"managed by LiteLLM, not the local daemon. Use 'llmcli register-proxy' to "
                 f"expose this model via the proxy."
             )
-        engine_cls = _ENGINE_REGISTRY.get(spec.engine)
-        if engine_cls is None:
-            raise ValueError(
-                f"Unknown engine '{spec.engine}' for model '{spec.name}'. "
-                f"Valid engines: {sorted(_ENGINE_REGISTRY)}"
-            )
-        return engine_cls()
+        from llmcli.engines import get_engine
+
+        return get_engine(spec)
 
     def _cmd_swap(self, arg: str) -> str:
         name = arg.strip()

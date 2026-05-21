@@ -6,11 +6,9 @@ import signal
 import subprocess
 import time
 
-import httpx
-
 from ..config import ModelSpec
 from ..engine import EngineInstance
-from ._common import _wait_ready
+from ._common import _wait_ready, default_health
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -78,11 +76,7 @@ class VLLMEngine:
 
     def health(self, instance: EngineInstance) -> bool:
         """Return True iff the vllm /health endpoint responds 2xx."""
-        try:
-            resp = httpx.get(f"{instance.base_url}/health", timeout=2.0)
-            return resp.status_code < 300
-        except Exception:  # noqa: BLE001
-            return False
+        return default_health(instance.base_url)
 
     def stop(self, instance: EngineInstance) -> None:
         """Send SIGTERM to the process group; escalate to SIGKILL if it does not exit.
