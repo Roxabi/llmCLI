@@ -3,7 +3,8 @@ HUB_SERVICES   := llm
 -include $(SUPERVISOR_HUB)/hub.mk
 
 QUADLET_DIR := $(HOME)/.config/containers/systemd
-QUADLET_ENV := $(QUADLET_DIR)/llmcli.env
+QUADLET_ENV_DIR := $(HOME)/.roxabi/llmcli/env
+QUADLET_ENV := $(QUADLET_ENV_DIR)/proxy.env
 
 .PHONY: register llm llm-swap install lint test install-quadlet
 
@@ -42,11 +43,12 @@ install:
 
 install-quadlet:
 	@mkdir -p $(QUADLET_DIR)
+	@mkdir -p $(QUADLET_ENV_DIR)
 	@mkdir -p $(HOME)/.cache/huggingface
 	@install -m 644 deploy/quadlet/llmcli.container $(QUADLET_DIR)/llmcli.container
 	@if [ ! -f "$(QUADLET_ENV)" ]; then \
 	  install -m 600 /dev/null "$(QUADLET_ENV)" ; \
-	  printf '# llmcli.env — chmod 600. Populate with provider keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$(QUADLET_ENV)" ; \
+	  printf '# proxy.env — chmod 600. Populate with provider keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$(QUADLET_ENV)" ; \
 	  echo "Created stub $(QUADLET_ENV) — edit before starting." ; \
 	else \
 	  echo "Preserving existing $(QUADLET_ENV)." ; \

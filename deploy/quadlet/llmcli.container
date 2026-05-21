@@ -9,7 +9,7 @@ Label=io.containers.autoupdate=registry
 ContainerName=llmcli
 PublishPort=18091:18091
 Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
-EnvironmentFile=%h/.config/containers/systemd/llmcli.env
+EnvironmentFile=%h/.roxabi/llmcli/env/proxy.env
 Environment=LLMCLI_PROXY_PORT=18091
 Environment=LLMCLI_PROXY_HOST=0.0.0.0
 UserNS=keep-id:uid=1502,gid=1502
