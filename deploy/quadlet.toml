@@ -1,0 +1,17 @@
+[meta]
+tool = "llmcli"
+uid = 1502
+
+[component.proxy]
+container = "llmcli.container"
+required_secrets = ["llmcli-litellm-key"]
+env_file = "~/.roxabi/llmcli/env/proxy.env"
+host_roles = ["any"]
+
+[component.worker]
+container = "llmcli-nats-worker.container"
+required_secrets = ["llmcli-nats-worker", "llmcli-litellm-key"]
+env_file = "~/.roxabi/llmcli/env/worker.env"
+host_roles = ["llm-worker"]
+host_overrides.roxabituwer = { model = "qwen3-8b" }
+host_overrides.roxabitower = { model = "qwen3.6-35b-a3b-tq3" }
