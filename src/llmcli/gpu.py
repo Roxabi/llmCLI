@@ -151,12 +151,14 @@ class VRAMMonitor:
             free_mb, used_mb = vm.sample()
             # ... many more samples over the lifetime ...
 
-    Or for long-lived objects::
+    Or for long-lived objects (e.g. adapters whose lifecycle is not a
+    single ``with`` block), use the explicit API which delegates to the
+    same primitives::
 
         vm = VRAMMonitor()
-        vm.__enter__()
+        vm.open()
         free_mb, used_mb = vm.sample()
-        vm.__exit__(None, None, None)
+        vm.close()
     """
 
     def __init__(self, device_index: int = 0) -> None:
@@ -165,6 +167,8 @@ class VRAMMonitor:
         self._init_failed = False
 
     def __enter__(self) -> Self:
+        if self._handle is not None:
+            return self
         try:
             import pynvml  # type: ignore[import-untyped]
 
@@ -183,6 +187,14 @@ class VRAMMonitor:
             except Exception:  # noqa: BLE001
                 pass
             self._handle = None
+
+    def open(self) -> Self:
+        """Explicit lifecycle counterpart to ``__enter__`` for non-``with`` callers."""
+        return self.__enter__()
+
+    def close(self) -> None:
+        """Explicit lifecycle counterpart to ``__exit__`` for non-``with`` callers."""
+        self.__exit__(None, None, None)
 
     def sample(self) -> tuple[float, float]:
         """Return (free_mb, used_mb). (0.0, 0.0) when nvml unavailable."""

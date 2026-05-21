@@ -18,12 +18,14 @@ the message.  See ``_WireErr`` for the full code enum.
 from __future__ import annotations
 
 import os
+import re
 import socket
 import time
 from enum import StrEnum
 from pathlib import Path
 
-from roxabi_nats.errors import sanitize_for_wire
+from roxabi_contracts.errors import scrub_credentials, truncate_with_marker
+from roxabi_nats.errors import DEFAULT_MAX_LEN, sanitize_for_wire
 
 from .config import ModelSpec, check_vram_budget
 from .engine import Engine, EngineInstance
@@ -45,15 +47,33 @@ class _WireErr(StrEnum):
     INTERNAL = "INTERNAL"
 
 
+# Control chars that break log hygiene on a single-line wire frame —
+# C0 minus tab (\t = 0x09) plus DEL (0x7f). \n is also stripped here as
+# defense-in-depth even though _recv_line already splits on it.
+_WIRE_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
+
+
+def _sanitize_wire_msg(msg: str, *, max_len: int = DEFAULT_MAX_LEN) -> str:
+    """String counterpart to ``sanitize_for_wire(exc)`` for raw client-supplied tokens.
+
+    Mirrors the same primitives (``scrub_credentials`` + ``truncate_with_marker``)
+    and additionally collapses single-line-breaking control characters so a
+    raw-byte client cannot smuggle ``\\r``/``\\b`` log-rewriting bytes through
+    UNKNOWN_CMD/UNKNOWN_MODEL frames where ``msg`` is the verbatim client token.
+    """
+    return truncate_with_marker(scrub_credentials(_WIRE_CTRL_RE.sub(" ", msg)), max_len)
+
+
 def _format_err(code: _WireErr, msg: str = "", *, exc: BaseException | None = None) -> str:
     """Format an ERR frame with typed code and sanitized message.
 
-    When ``exc`` is provided, the message is ``sanitize_for_wire(exc)`` —
-    truncated to 200 chars and stripped of credentials in embedded URLs.
+    Both the ``exc`` path (``sanitize_for_wire(exc)``) and the ``msg`` path
+    (``_sanitize_wire_msg``) apply the same credential-scrub + length-cap so
+    raw client-supplied tokens cannot smuggle ``\\r``/``\\n``-stuffed log
+    hygiene attacks or unbounded payloads through the wire.
     """
-    if exc is not None:
-        msg = sanitize_for_wire(exc)
-    return f"ERR.{code.value} {msg}".rstrip()
+    payload = sanitize_for_wire(exc) if exc is not None else _sanitize_wire_msg(msg)
+    return f"ERR.{code.value} {payload}".rstrip()
 
 
 SOCKET_PATH = Path(
