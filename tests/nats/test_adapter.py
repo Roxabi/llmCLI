@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -220,28 +219,19 @@ def test_ensure_model_oserror_sets_loaded_model(tmp_path, monkeypatch):
 
 
 def test_heartbeat_payload_has_vram_keys(adapter, monkeypatch):
-    # Patch VRAM probe to a deterministic value (avoids real nvidia-smi / pynvml).
-    import llmcli.gpu as gpu_mod
+    # Patch VRAMMonitor.sample to return deterministic (free_mb, used_mb).
+    from llmcli.gpu import VRAMMonitor
 
-    monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 10.0)
-
-    # Patch pynvml in sys.modules so heartbeat_payload's `import pynvml` branch
-    # returns a known total VRAM of 16 GiB.
-    fake_pynvml = MagicMock()
-    fake_pynvml.nvmlInit.return_value = None
-    fake_pynvml.nvmlShutdown.return_value = None
-    fake_pynvml.nvmlDeviceGetHandleByIndex.return_value = "handle"
-    mem_info = MagicMock()
-    mem_info.total = 16 * 1024 * 1024 * 1024  # 16 GiB in bytes
-    fake_pynvml.nvmlDeviceGetMemoryInfo.return_value = mem_info
-    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+    monitor = VRAMMonitor()
+    monkeypatch.setattr(monitor, "sample", lambda: (10240.0, 6144.0))
+    adapter._vram_monitor = monitor
 
     p = adapter.heartbeat_payload()
 
     assert p["model_loaded"] == "qwen3-8b"
     assert p["active_requests"] == 0
-    assert p["vram_free_mb"] == int(10.0 * 1024)  # 10240
-    assert p["vram_used_mb"] == 16 * 1024 - int(10.0 * 1024)  # 6144
+    assert p["vram_free_mb"] == 10240  # 10.0 GiB in MB
+    assert p["vram_used_mb"] == 6144  # 6.0 GiB in MB
     assert "worker_id" in p
 
 
@@ -276,58 +266,59 @@ async def test_reject_when_full_emits_worker_internal_retryable(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("initial_handle", "expected_shutdown_calls"),
-    [(None, 0), ("fake-handle", 1)],
-    ids=["no_handle", "with_handle"],
+    "initial_monitor",
+    [None, "with_monitor"],
+    ids=["no_monitor", "with_monitor"],
 )
-async def test_shutdown_closes_http_client_and_resets_nvml(
-    adapter, monkeypatch, initial_handle, expected_shutdown_calls
+async def test_shutdown_closes_http_client_and_resets_vram_monitor(
+    adapter, monkeypatch, initial_monitor
 ):
-    """_shutdown closes httpx client; nvmlShutdown fires only when handle is cached."""
+    """_shutdown closes httpx client; VRAMMonitor.__exit__ fires only when monitor is set."""
+    from llmcli.gpu import VRAMMonitor
     from roxabi_nats.adapter_base import NatsAdapterBase
 
     base_shutdown = AsyncMock(return_value=None)
     monkeypatch.setattr(NatsAdapterBase, "_shutdown", base_shutdown)
 
-    fake_pynvml = MagicMock()
-    fake_pynvml.nvmlShutdown.return_value = None
-    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+    exit_calls: list[str] = []
 
-    adapter._nvml_handle = initial_handle
+    if initial_monitor == "with_monitor":
+        monitor = VRAMMonitor()
+        monkeypatch.setattr(monitor, "__exit__", lambda *a: exit_calls.append("exit"))
+        adapter._vram_monitor = monitor
+    else:
+        adapter._vram_monitor = None
 
     await adapter._shutdown()
 
     assert adapter._client.aclose.await_count == 1
-    assert fake_pynvml.nvmlShutdown.call_count == expected_shutdown_calls
-    assert adapter._nvml_handle is None
+    assert adapter._vram_monitor is None
     assert base_shutdown.await_count == 1
+    if initial_monitor == "with_monitor":
+        assert exit_calls == ["exit"]
+    else:
+        assert exit_calls == []
 
 
-def test_heartbeat_vram_used_zero_when_nvml_unavailable(adapter, monkeypatch):
-    """nvml handle unavailable → vram_used_mb falls back to 0 (else branch)."""
-    import llmcli.gpu as gpu_mod
-
-    monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 8.0)
-    monkeypatch.setattr(LlmNatsAdapter, "_get_nvml_handle", lambda self: None)
+def test_heartbeat_vram_zero_when_monitor_not_set(adapter):
+    """No VRAMMonitor → vram_free_mb and vram_used_mb both 0."""
+    adapter._vram_monitor = None
 
     p = adapter.heartbeat_payload()
 
-    assert p["vram_free_mb"] == int(8.0 * 1024)
+    assert p["vram_free_mb"] == 0
     assert p["vram_used_mb"] == 0
 
 
-def test_heartbeat_vram_used_zero_when_nvml_query_fails(adapter, monkeypatch):
-    """nvml handle present but memory query raises → vram_used_mb falls back to 0 (except branch)."""
-    import llmcli.gpu as gpu_mod
+def test_heartbeat_vram_used_zero_when_sample_returns_zeros(adapter, monkeypatch):
+    """VRAMMonitor.sample() returning (0.0, 0.0) → both fields 0."""
+    from llmcli.gpu import VRAMMonitor
 
-    monkeypatch.setattr(gpu_mod, "probe_free_vram_gib", lambda: 8.0)
-    monkeypatch.setattr(LlmNatsAdapter, "_get_nvml_handle", lambda self: "fake-handle")
-
-    fake_pynvml = MagicMock()
-    fake_pynvml.nvmlDeviceGetMemoryInfo.side_effect = RuntimeError("nvml query failed")
-    monkeypatch.setitem(sys.modules, "pynvml", fake_pynvml)
+    monitor = VRAMMonitor()
+    monkeypatch.setattr(monitor, "sample", lambda: (0.0, 0.0))
+    adapter._vram_monitor = monitor
 
     p = adapter.heartbeat_payload()
 
-    assert p["vram_free_mb"] == int(8.0 * 1024)
+    assert p["vram_free_mb"] == 0
     assert p["vram_used_mb"] == 0
