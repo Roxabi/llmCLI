@@ -34,7 +34,7 @@ def nats_serve_llm(
     litellm_url: Annotated[
         str,
         typer.Option("--litellm-url", envvar="LLMCLI_LITELLM_URL", help="LiteLLM proxy base URL."),
-    ] = "http://localhost:4000/v1",
+    ] = "http://localhost:18091/v1",
     litellm_key: Annotated[
         str,
         typer.Option(
