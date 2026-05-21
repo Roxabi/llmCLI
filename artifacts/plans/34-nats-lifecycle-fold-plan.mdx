@@ -1,0 +1,1101 @@
+---
+title: "Plan: feat(nats) — fold lifecycle control plane into NATS worker (PR-1, Slices 0-5)"
+issue: 34
+spec: artifacts/specs/34-nats-lifecycle-fold-spec.mdx
+analysis: artifacts/analyses/34-nats-lifecycle-fold-analysis.mdx
+consensus: artifacts/analyses/34-nats-lifecycle-fold-consensus.mdx
+complexity: 7/10
+tier: F-full
+generated: 2026-05-21
+---
+
+## Summary
+
+PR-1 (this plan) migrates 5 lifecycle ops (`swap`, `stop`, `status`, `list`, `reload-catalog`) from AF_UNIX to NATS via a new `LifecycleMixin` next to `GenerationMixin`. Cross-repo contracts ship on `Roxabi/lyra:staging` first; llmCLI bumps `uv.lock`. Feature flag `LLMCLI_LIFECYCLE_VIA_NATS=1` enables the NATS path during a validation window. Slice 6 (cutover PR — deletes `daemon.py`, flips flag default) gets its own follow-up plan after PR-1 stabilizes.
+
+## Architecture
+
+### Data + control flow
+
+```mermaid
+flowchart TD
+    subgraph M2[M₂ — operator host]
+        CLI[llmcli swap --host roxabituwer X]
+        ENV2[LLMCLI_LIFECYCLE_VIA_NATS=1]
+        OPSEED[~/.config/llmcli/nkeys/operator.seed]
+    end
+
+    subgraph CONTRACTS[Roxabi/lyra:staging<br/>packages/roxabi-contracts]
+        SUBJ[subjects.py<br/>lifecycle_swap/stop/status/list/reload-catalog]
+        MODELS[models.py<br/>LifecycleRequest/Response]
+        ERR[errors.py<br/>llm.lifecycle_rejected]
+    end
+
+    subgraph NATS[NATS bus tailnet]
+        SWP[lyra.llm.lifecycle.swap]
+        STA[lyra.llm.lifecycle.status]
+        STO[lyra.llm.lifecycle.stop]
+        LST[lyra.llm.lifecycle.list]
+        RLD[lyra.llm.lifecycle.reload-catalog]
+        INB[_inbox.llm-operator.>]
+    end
+
+    subgraph M1[M₁ — roxabituwer prod]
+        QUAD[llmcli-nats-worker.container<br/>EnvironmentFile=worker.env]
+        ADP[LlmNatsAdapter MRO:<br/>LifecycleMixin → GenerationMixin → NatsAdapterBase]
+        LMX[LifecycleMixin<br/>_extra_subjects super()<br/>_draining: asyncio.Event<br/>_dispatch_lifecycle_op]
+        ENG[EngineInstance registry<br/>llama-server subprocess]
+        WORKSEED[/home/llmcli/.config/llmcli/nkeys/seed.seed]
+    end
+
+    CLI --> ENV2
+    ENV2 -->|flag=1| SWP
+    OPSEED -->|auth| SWP
+    CONTRACTS -->|uv.lock SHA pin| ADP
+    CONTRACTS -->|uv.lock SHA pin| CLI
+    SUBJ --> SWP & STA & STO & LST & RLD
+    MODELS --> CLI
+    MODELS --> LMX
+    ERR --> LMX
+
+    SWP & STA & STO & LST -.broadcast.-> ADP
+    RLD -.broadcast.-> ADP
+    WORKSEED -->|auth| ADP
+    ADP --> LMX
+    LMX -->|host filter| ENG
+    LMX -->|reply| INB
+    INB --> CLI
+
+    QUAD -.runs.-> ADP
+
+    style CONTRACTS fill:#e3f2fd
+    style ENV2 fill:#fff3cd
+```
+
+### File × function map
+
+```mermaid
+flowchart LR
+    subgraph contracts[roxabi-contracts/src/roxabi_contracts/llm/]
+        SUBJ_PY[subjects.py<br/>+lifecycle_swap<br/>+lifecycle_stop<br/>+lifecycle_status<br/>+lifecycle_list<br/>+lifecycle_reload-catalog]
+        MOD_PY[models.py<br/>+LifecycleRequest<br/>+LifecycleResponse]
+        INIT_PY[__init__.py<br/>+re-exports]
+    end
+    subgraph contracts_errs[roxabi-contracts/src/roxabi_contracts/]
+        ERR_PY[errors.py<br/>+llm.lifecycle_rejected]
+    end
+    subgraph nats_pkg[src/llmcli/nats/]
+        LIFE_PY[_lifecycle.py NEW<br/>LifecycleMixin._extra_subjects<br/>+handle_lifecycle<br/>+_dispatch_lifecycle_op<br/>+_do_swap _do_stop<br/>+_do_status _do_list<br/>+_do_reload_catalog<br/>+heartbeat_payload]
+        ADP_PY[llm_adapter.py MOD<br/>LlmNatsAdapter MRO ←LifecycleMixin<br/>+wait_ready=False<br/>+handle dispatch]
+        INIT_NATS[__init__.py<br/>+LifecycleMixin re-export]
+    end
+    subgraph cli_pkg[src/llmcli/cli/]
+        SWAP_PY[swap.py MOD<br/>+inline NATS publish<br/>+--host flag<br/>+flag branch]
+        LIFE_CLI[lifecycle.py MOD<br/>+status/stop/list/reload-catalog<br/>+inline NATS publish<br/>+--host flag<br/>+flag branch]
+    end
+    subgraph deploy[deploy/]
+        QUAD_FILE[quadlet/llmcli-nats-worker.container MOD]
+    end
+    subgraph ci[.github/workflows/]
+        CI_YML[ci.yml MOD<br/>+services.nats<br/>+pytest -m nats split]
+    end
+    subgraph tests[tests/nats/]
+        CONFTEST[conftest.py MOD<br/>+@pytest.mark.nats]
+        T_SWAP[test_lifecycle_swap.py NEW]
+        T_STATUS[test_lifecycle_status.py NEW]
+        T_DRAIN[test_lifecycle_drain.py NEW]
+        T_MRO[test_lifecycle_mro.py NEW]
+        T_FILT[test_lifecycle_host_filter.py NEW]
+        T_REJ[test_lifecycle_remote_reject.py NEW]
+    end
+    subgraph docs[docs + root]
+        CLAUDEMD[CLAUDE.md MOD<br/>Consumers + CLI tables]
+        ADR_MD[docs/architecture/adr/004-*.mdx MOD<br/>banner → PR]
+    end
+
+    SUBJ_PY & MOD_PY & ERR_PY & INIT_PY -.uv.lock SHA pin.-> ADP_PY
+    SUBJ_PY & MOD_PY -.uv.lock SHA pin.-> SWAP_PY & LIFE_CLI
+    LIFE_PY -.imports.-> ADP_PY
+    INIT_NATS -.exports.-> ADP_PY
+    LIFE_PY -.tested by.-> T_SWAP & T_STATUS & T_DRAIN & T_MRO & T_FILT & T_REJ
+    SWAP_PY & LIFE_CLI -.tested by.-> T_SWAP & T_STATUS
+    CI_YML -.runs.-> CONFTEST
+    QUAD_FILE -.deploys.-> ADP_PY
+
+    style LIFE_PY fill:#fde4e4
+    style ADP_PY fill:#fff3cd
+```
+
+## Bootstrap Context
+
+From analysis (`artifacts/analyses/34-nats-lifecycle-fold-analysis.mdx`):
+
+- **Shape A locked** (broadcast + app-layer host filter via `_extra_subjects()`, clipool precedent).
+- **Drain pattern (A2):** `_draining: asyncio.Event` — set on swap → wait on semaphore drain → execute → clear. Pre-acquire check in `handle()` is atomic in single-threaded asyncio.
+- **MRO composition (A3):** `LifecycleMixin._extra_subjects()` returns `[*LIFECYCLE_SUBJECTS, *super()._extra_subjects()]`; `heartbeat_payload()` merges via `super()`.
+- **ACL split (O2):** operator nkey gets `pub lyra.llm.lifecycle.>`; worker nkey gets `sub lyra.llm.lifecycle.>`. Inboxes: operator at `_inbox.llm-operator.>`; worker keeps existing `_inbox.hub.>`.
+- **Cross-repo ordering:** roxabi-contracts PR merges *first* on `Roxabi/lyra:staging`; llmCLI's `uv.lock` pinned to that SHA in same PR-1.
+- **Feature flag:** `LLMCLI_LIFECYCLE_VIA_NATS` in `worker.env`. CLI branches on env var. Slice 6 removes both.
+- **CI:** `pytest -m nats` against `nats:2.11-alpine` service container; unit tests stay broker-free.
+- **Quadlet:** Exec/HealthCmd verified-aligned via `deploy/entrypoint.sh` (`Exec=llm` → `MODE=llm` → `exec llmcli nats-serve llm ...`).
+
+## Agents
+
+| Agent instance | Task count | Files |
+|---|---|---|
+| `devops-A` | 5 | `~/projects/lyra/deploy/nats/auth.conf`, `acl-matrix.json`, M₂ creds + reload |
+| `backend-dev-A` | 5 | `~/projects/lyra/packages/roxabi-contracts/src/roxabi_contracts/llm/*.py`, `errors.py` |
+| `backend-dev-B` | ~12 | `src/llmcli/nats/_lifecycle.py` (NEW), `llm_adapter.py`, `nats/__init__.py`, `cli/swap.py`, `cli/lifecycle.py`, `pyproject.toml`/`uv.lock` |
+| `devops-B` | 3 | `deploy/quadlet/llmcli-nats-worker.container`, `.github/workflows/ci.yml`, `worker.env` documentation |
+| `tester-A` | ~8 | `tests/nats/conftest.py`, `tests/nats/test_lifecycle_swap.py`, `…_status.py`, `…_drain.py` |
+| `tester-B` | ~5 | `tests/nats/test_lifecycle_mro.py`, `…_host_filter.py`, `…_remote_reject.py`, integration |
+| `doc-writer-A` | 2 | `CLAUDE.md`, `docs/architecture/adr/004-*.mdx` |
+
+**Architect / security-auditor:** not assigned to PR-1 implementation tasks. Consulted indirectly via `/code-review` post-PR. (Pre-existing fixes A2/A3/D1-D5 from spec review are baked into the plan.)
+
+## Wave Structure
+
+5 waves, max 4 parallel agents. Elapsed ~5 working days vs ~12 sequential.
+
+| Wave | Trigger | Agents | Tasks |
+|------|---------|--------|-------|
+| 1 | start | 3 ∥ | `devops-A`: T1→T2→T3→T4→T5 (Slice 0 ACL) · `backend-dev-A`: T6→T7→T8→T9→T10 (Slice 1 contracts) · `tester-A`: T11→T12→T13 (RED test drafts for Slice 2, runtime-skipped pending GREEN) |
+| 2 | Wave 1 done + `uv.lock` bump | 2 ∥ | `backend-dev-B`: T14→T15→T16→T17→T18→T19→T20 (Slice 2 LifecycleMixin GREEN + adapter wiring) · `tester-A`: T21 (RED-GATE Slice 2 verify) |
+| 3 | Wave 2 done | 3 ∥ | `backend-dev-B`: T22→T23→T24→T25→T26→T27→T28 (Slice 3 CLI inline NATS + `--host` flag + feature-flag branching) · `devops-B`: T29→T30→T31 (Slice 4 quadlet + worker.env) · `tester-B`: T32→T33→T34 (Slice 5 RED test drafts for CLI + host filter) |
+| 4 | Wave 3 done | 2 ∥ | `tester-A`: T35→T36→T37 (drain + MRO + integration GREEN) · `devops-B`: T38→T39 (Slice 5 CI service container + pytest split) |
+| 5 | Wave 4 done | 1 → 1 | `doc-writer-A`: T40→T41 (CLAUDE.md + ADR-004 banner) → final RED-GATE T42 (`pytest -m nats` green in CI) |
+
+### Budget
+
+| Task class | Items | Class | Est. ops | Split? |
+|---|---|---|---|---|
+| T1-T5 (Slice 0 ACL ops) | 5 | judgmental + bounded | ~22 | — |
+| T6-T10 (Slice 1 contracts) | 5 | bounded | ~14 | — |
+| T11-T13 (Slice 2 RED test drafts) | 3 | judgmental | ~15 | — |
+| T14-T20 (Slice 2 GREEN LifecycleMixin) | 7 | judgmental | ~35 | split applied: T17/T18/T19 are separate handlers |
+| T21 (Slice 2 RED-GATE) | 1 | bounded | ~3 | — |
+| T22-T28 (Slice 3 CLI) | 7 | bounded + judgmental | ~30 | — |
+| T29-T31 (Slice 4 quadlet) | 3 | bounded | ~8 | — |
+| T32-T34 (Slice 5 RED test drafts) | 3 | judgmental | ~15 | — |
+| T35-T37 (Slice 5 GREEN tests) | 3 | judgmental | ~18 | — |
+| T38-T39 (Slice 5 CI) | 2 | judgmental | ~10 | — |
+| T40-T41 (Slice 5 docs) | 2 | bounded | ~5 | — |
+| T42 (final RED-GATE) | 1 | bounded | ~3 | — |
+
+**Total estimated ops: ~178** across 42 tasks. Max single-task ops: ~6 (no task exceeds the 50-op cap).
+
+## Consistency Report
+
+| Spec element | Coverage | Tasks |
+|---|---|---|
+| SC AC-1 local default | ✓ | T22 (swap), T26 (--host flag), T27 (flag branch), T35 |
+| SC AC-1b contracts gate | ✓ | T10 (verify import after staging merge) |
+| SC AC-2 remote target | ✓ | T22, T26, T35, T37 (integration) |
+| SC AC-3 all 5 ops | ✓ | T22-T25 (CLI), T35, T36 |
+| SC AC-4 `wait_ready=False` | ✓ | T16 |
+| SC AC-5 drain test | ✓ | T13 (RED), T17 (impl), T35 (drain test impl) |
+| SC AC-6 MRO composition | ✓ | T11 (RED), T15 (impl super()), T34 (RED), T36 (GREEN) |
+| SC AC-7 ACL negative | ✓ | T4 (operator creds), T5 (verification + negative test) |
+| SC AC-8 feature flag toggle | ✓ | T27 (flag branch), T35 (integration toggle test) |
+| SC AC-9 (cutover PR) | **deferred** to Slice 6 follow-up plan | — |
+| SC AC-10 CI services | ✓ | T38 (services block), T33 (marker register), T39 (pytest split) |
+| SC AC-11 audit trail | ✓ | T5 (nats sub verification), T37 (audit replay test) |
+| SC AC-12 docs | ✓ (partial — ADR status flip is Slice 6) | T40 (CLAUDE.md), T41 (ADR banner) |
+| E1 rollback | ✓ | T31 (worker.env documentation includes rollback note) |
+| E5 drain timeout | ✓ | T13, T17 |
+| E10 crash mid-swap | ✓ | T37 (integration kill test) |
+| E11 TOML parse error | ✓ | T19 (reload-catalog handler), T34 (RED) |
+
+**Untraced:** none.
+**Uncovered:** AC-9 (Slice 6 cutover) — by design; separate plan.
+**Exemptions:** none.
+
+## Micro-Tasks
+
+### Slice 0 — ACL provisioning (Wave 1, `devops-A`)
+
+#### T1 [P] Generate operator nkey via `lyra-acl genkeys` — RED-GATE
+
+- **File:** `~/projects/lyra/deploy/nats/auth.conf` (via `lyra-acl genkeys` tooling — no manual edits)
+- **Command shape:** `cd ~/projects/lyra && lyra-acl genkeys --add-identity LLM_OPERATOR --pub "lyra.llm.lifecycle.>" --sub "_inbox.llm-operator.>"`
+- **Verify:** `gh release view --repo Roxabi/lyra latest --json body | grep LLM_OPERATOR` returns the identity name in `acl-matrix.json` audit row.
+- **Expected:** new `LLM_OPERATOR` identity in `auth.conf`; `acl-matrix.json` updated; nkey + JWT seed files generated locally.
+- **Time:** 8-10 min (consult `~/projects/lyra/docs/nats/acl-tooling.md` for exact subcommand)
+- **Agent:** `devops-A`
+- **Spec trace:** A1, Slice 0 procedure step 1
+- **Slice:** V0
+- **Phase:** RED-GATE
+- **Difficulty:** 3
+
+#### T2 [P] Augment worker nkey grants
+
+- **File:** `~/projects/lyra/deploy/nats/auth.conf` (via tooling)
+- **Command shape:** `lyra-acl genkeys --augment-identity LLM_WORKER --add-sub "lyra.llm.lifecycle.>"`
+- **Verify:** `jq '.identities[] | select(.name=="LLM_WORKER") | .sub' ~/projects/lyra/deploy/nats/acl-matrix.json` lists `lyra.llm.lifecycle.>`.
+- **Expected:** worker nkey retains existing grants + new `sub lyra.llm.lifecycle.>`.
+- **Time:** 5 min
+- **Agent:** `devops-A`
+- **Spec trace:** A2
+- **Slice:** V0
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T3 Update `acl-matrix.json` audit
+
+- **File:** `~/projects/lyra/deploy/nats/acl-matrix.json`
+- **Verify:** `jq '.identities | length' ~/projects/lyra/deploy/nats/acl-matrix.json` ≥ previous count + 1.
+- **Expected:** new identity row + augmented worker row.
+- **Time:** 3 min (typically auto-generated by `lyra-acl genkeys`; verify manually if not)
+- **Agent:** `devops-A`
+- **Spec trace:** A3
+- **Slice:** V0
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T4 Distribute operator creds to M₂
+
+- **File:** `~/.config/llmcli/nkeys/operator.seed` + `operator.creds` on M₂ (via `scp` from generation host, or Podman secret)
+- **Verify:** `ls -la ~/.config/llmcli/nkeys/operator.*` on M₂ shows `-rw------- 1 mickael mickael` mode `0600`.
+- **Expected:** operator nkey accessible by `llmcli` CLI on M₂ at canonical path.
+- **Time:** 5 min
+- **Agent:** `devops-A`
+- **Spec trace:** Slice 0 procedure step 3
+- **Slice:** V0
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T5 Reload `nats-server` on M₁ + ACL verification
+
+- **File:** none (op-only)
+- **Command:** `ssh roxabituwer 'systemctl --user reload nats-server'` then `nats sub "lyra.llm.lifecycle.>" --creds ~/.config/llmcli/nkeys/operator.creds` from M₂
+- **Verify:** subscription succeeds; `nats sub` without `--creds` returns permission error.
+- **Expected:** positive + negative tests both pass.
+- **Time:** 5 min
+- **Agent:** `devops-A`
+- **Spec trace:** Slice 0 procedure steps 5–6; SC AC-7, AC-11
+- **Slice:** V0
+- **Phase:** RED-GATE
+- **Difficulty:** 3
+
+### Slice 1 — `roxabi-contracts.llm` (Wave 1, `backend-dev-A`, cross-repo on `Roxabi/lyra:staging`)
+
+#### T6 [P] Add `LIFECYCLE_SUBJECTS` to `subjects.py`
+
+- **File:** `~/projects/lyra/packages/roxabi-contracts/src/roxabi_contracts/llm/subjects.py`
+- **Snippet:**
+  ```python
+  @dataclass(frozen=True, slots=True)
+  class _Subjects:
+      generate_request: Literal["lyra.llm.generate.request"] = "lyra.llm.generate.request"
+      heartbeat: Literal["lyra.llm.heartbeat"] = "lyra.llm.heartbeat"
+      llm_workers: Literal["llm-workers"] = "llm-workers"
+      lifecycle_swap: Literal["lyra.llm.lifecycle.swap"] = "lyra.llm.lifecycle.swap"
+      lifecycle_stop: Literal["lyra.llm.lifecycle.stop"] = "lyra.llm.lifecycle.stop"
+      lifecycle_status: Literal["lyra.llm.lifecycle.status"] = "lyra.llm.lifecycle.status"
+      lifecycle_list: Literal["lyra.llm.lifecycle.list"] = "lyra.llm.lifecycle.list"
+      lifecycle_reload_catalog: Literal["lyra.llm.lifecycle.reload-catalog"] = "lyra.llm.lifecycle.reload-catalog"
+  ```
+- **Verify:** `cd ~/projects/lyra && python -c "from roxabi_contracts.llm.subjects import SUBJECTS; print(SUBJECTS.lifecycle_swap)"` prints `lyra.llm.lifecycle.swap`.
+- **Time:** 3 min
+- **Agent:** `backend-dev-A`
+- **Spec trace:** N1–N5
+- **Slice:** V1
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T7 [P] Add `LifecycleRequest` + `LifecycleResponse` to `models.py`
+
+- **File:** `~/projects/lyra/packages/roxabi-contracts/src/roxabi_contracts/llm/models.py`
+- **Snippet:**
+  ```python
+  class LifecycleRequest(ContractEnvelope):
+      request_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
+      host: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9._-]{0,253}$")
+      op: Literal["swap", "stop", "status", "list", "reload-catalog"]
+      model_name: Optional[str] = None
+
+      @model_validator(mode="after")
+      def _swap_requires_model(self) -> Self:
+          if self.op == "swap" and not self.model_name:
+              raise ValueError("op='swap' requires model_name")
+          return self
+
+  class LifecycleResponse(ContractEnvelope):
+      request_id: str
+      ok: bool
+      host: Optional[str] = None
+      error: Optional[str] = None
+      worker_error: Optional[WorkerError] = None
+      data: Optional[dict] = None
+  ```
+- **Verify:** `python -c "from roxabi_contracts.llm import LifecycleRequest; LifecycleRequest(contract_version='1', trace_id='t', issued_at='2026-05-21T00:00:00Z', request_id='r1', op='swap', model_name='qwen3-8b')"` succeeds; same call without `model_name` raises `ValidationError`.
+- **Time:** 8 min
+- **Agent:** `backend-dev-A`
+- **Spec trace:** Data Model section, classDiagram
+- **Slice:** V1
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T8 [P] Register `llm.lifecycle_rejected` in `errors.py`
+
+- **File:** `~/projects/lyra/packages/roxabi-contracts/src/roxabi_contracts/errors.py`
+- **Snippet:** `KNOWN_CODES.add("llm.lifecycle_rejected")` (or matching pattern from existing entries)
+- **Verify:** `python -c "from roxabi_contracts.errors import KNOWN_CODES; assert 'llm.lifecycle_rejected' in KNOWN_CODES"` exits 0.
+- **Time:** 2 min
+- **Agent:** `backend-dev-A`
+- **Spec trace:** C7
+- **Slice:** V1
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T9 Re-export in `__init__.py`
+
+- **File:** `~/projects/lyra/packages/roxabi-contracts/src/roxabi_contracts/llm/__init__.py`
+- **Snippet:** add `LifecycleRequest`, `LifecycleResponse` to `__all__` and imports
+- **Verify:** `python -c "from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse"` succeeds.
+- **Time:** 2 min
+- **Agent:** `backend-dev-A`
+- **Spec trace:** Slice 1 description
+- **Slice:** V1
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T10 PR contracts on staging + bump llmCLI `uv.lock` — RED-GATE for Wave 2
+
+- **Files:** `~/projects/lyra/...` (PR opened + merged), `pyproject.toml`/`uv.lock` in llmCLI
+- **Commands:**
+  - Open PR `feat(contracts): add llm.lifecycle.* subjects + models (blocks llmCLI#34)` on `Roxabi/lyra:staging`
+  - After merge: `cd ~/projects/llmCLI && uv lock --upgrade-package roxabi-contracts`
+- **Verify (in llmCLI):** `uv run python -c "from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse; from roxabi_contracts.llm.subjects import SUBJECTS; from roxabi_contracts.errors import KNOWN_CODES; assert 'llm.lifecycle_rejected' in KNOWN_CODES; print(SUBJECTS.lifecycle_swap)"` prints `lyra.llm.lifecycle.swap`.
+- **Expected:** SC AC-1b satisfied.
+- **Time:** 15 min (PR opening + review wait)
+- **Agent:** `backend-dev-A`
+- **Spec trace:** AC-1b, E9 ordering
+- **Slice:** V1
+- **Phase:** RED-GATE
+- **Difficulty:** 3
+
+### Slice 2 — `LifecycleMixin` (Wave 2, `backend-dev-B` + `tester-A`)
+
+#### T11 [P] RED: MRO composition tests
+
+- **File:** `tests/nats/test_lifecycle_mro.py` (NEW)
+- **Snippet (test shape):**
+  ```python
+  @pytest.mark.nats  # ← marker (no broker needed for this test, but groups w/ lifecycle suite)
+  def test_extra_subjects_super_chain():
+      class StubMixin:
+          def _extra_subjects(self): return ["stub.subject"]
+      class A(LifecycleMixin, StubMixin, NatsAdapterBase): ...
+      a = A(subject="x", queue_group="y", envelope_name="z", schema_version=1)
+      assert set(a._extra_subjects()) == {*LIFECYCLE_SUBJECTS, "stub.subject"}
+
+  def test_heartbeat_payload_merges():
+      ...
+  ```
+- **Verify:** `uv run pytest tests/nats/test_lifecycle_mro.py -v` → 2 tests **FAIL** (red).
+- **Time:** 8 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-6
+- **Slice:** V2
+- **Phase:** RED
+- **Difficulty:** 3
+
+#### T12 [P] RED: Drain pattern tests
+
+- **File:** `tests/nats/test_lifecycle_drain.py` (NEW)
+- **Snippet (test shape):**
+  ```python
+  @pytest.mark.nats
+  async def test_drain_in_flight_completes_then_swap():
+      # publish a generate.request with synthetic 2s gen; mid-flight publish lifecycle.swap;
+      # assert: generation completes; swap reply OK; subsequent new generate gets worker.capacity
+      ...
+
+  async def test_drain_timeout_force_cuts():
+      # gen takes > drain_timeout; assert: streamer sees upstream.unavailable retryable; new engine starts
+      ...
+  ```
+- **Verify:** `uv run pytest tests/nats/test_lifecycle_drain.py -v -m nats` → both tests **FAIL** (red).
+- **Time:** 12 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-5; E5
+- **Slice:** V2
+- **Phase:** RED
+- **Difficulty:** 4
+
+#### T13 [P] RED: Engine="remote" rejection test
+
+- **File:** `tests/nats/test_lifecycle_remote_reject.py` (NEW)
+- **Snippet:**
+  ```python
+  @pytest.mark.nats
+  async def test_swap_remote_engine_returns_lifecycle_rejected():
+      # inject a catalog model with engine="remote"; publish lifecycle.swap; assert reply has
+      # worker_error.code == "llm.lifecycle_rejected" and retryable=False
+      ...
+  ```
+- **Verify:** `pytest tests/nats/test_lifecycle_remote_reject.py -v` → **FAIL**.
+- **Time:** 5 min
+- **Agent:** `tester-A`
+- **Spec trace:** C3, E4
+- **Slice:** V2
+- **Phase:** RED
+- **Difficulty:** 2
+
+#### T14 GREEN: Skeleton `src/llmcli/nats/_lifecycle.py`
+
+- **File:** `src/llmcli/nats/_lifecycle.py` (NEW)
+- **Snippet:**
+  ```python
+  LIFECYCLE_SUBJECTS = (
+      "lyra.llm.lifecycle.swap",
+      "lyra.llm.lifecycle.stop",
+      "lyra.llm.lifecycle.status",
+      "lyra.llm.lifecycle.list",
+      "lyra.llm.lifecycle.reload-catalog",
+  )
+
+  class LifecycleMixin:
+      def __init_lifecycle__(self) -> None:
+          self._draining: asyncio.Event = asyncio.Event()
+          self._lifecycle_lock: asyncio.Lock = asyncio.Lock()
+      def _extra_subjects(self) -> list[str]: ...
+      def heartbeat_payload(self) -> dict: ...
+      async def handle_lifecycle(self, msg, payload: dict) -> None: ...
+      async def _dispatch_lifecycle_op(self, op: str, msg, payload: dict) -> None: ...
+  ```
+- **Verify:** `uv run python -c "from llmcli.nats._lifecycle import LifecycleMixin, LIFECYCLE_SUBJECTS; assert len(LIFECYCLE_SUBJECTS) == 5"` succeeds.
+- **Time:** 5 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S1, S7
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T15 GREEN: `_extra_subjects` + `heartbeat_payload` (super-composition)
+
+- **File:** `src/llmcli/nats/_lifecycle.py`
+- **Snippet:**
+  ```python
+  def _extra_subjects(self) -> list[str]:
+      return [*LIFECYCLE_SUBJECTS, *super()._extra_subjects()]
+
+  def heartbeat_payload(self) -> dict:
+      base = super().heartbeat_payload()
+      base["lifecycle_draining"] = self._draining.is_set()
+      return base
+  ```
+- **Verify:** T11 RED tests now **PASS**: `uv run pytest tests/nats/test_lifecycle_mro.py -v`.
+- **Time:** 5 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S1, S6; SC AC-6
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T16 GREEN: `handle_lifecycle` host filter + dispatcher
+
+- **File:** `src/llmcli/nats/_lifecycle.py`
+- **Snippet:**
+  ```python
+  async def handle_lifecycle(self, msg, payload: dict) -> None:
+      try:
+          req = LifecycleRequest.model_validate(payload)
+      except ValidationError:
+          log.exception("lifecycle: invalid payload"); return
+      if req.host not in (None, "*", socket.gethostname()):
+          return  # silent drop — not our host
+      await self._dispatch_lifecycle_op(req.op, msg, req)
+
+  async def _dispatch_lifecycle_op(self, op, msg, req):
+      handler = {"swap": self._do_swap, "stop": self._do_stop, "status": self._do_status,
+                 "list": self._do_list, "reload-catalog": self._do_reload_catalog}[op]
+      async with self._lifecycle_lock:
+          await handler(msg, req)
+  ```
+- **Verify:** `uv run python -c "import asyncio, llmcli.nats._lifecycle as m; print(m.LifecycleMixin.handle_lifecycle.__qualname__)"`.
+- **Time:** 8 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S2, S3
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T17 GREEN: `_do_swap` with drain pattern + remote rejection
+
+- **File:** `src/llmcli/nats/_lifecycle.py`
+- **Snippet:**
+  ```python
+  async def _do_swap(self, msg, req: LifecycleRequest) -> None:
+      spec = self._catalog.models.get(req.model_name)
+      if spec is None:
+          await self._reply_err(msg, req, "llm.lifecycle_rejected", f"unknown model: {req.model_name}", retryable=False); return
+      if spec.engine == "remote":
+          await self._reply_err(msg, req, "llm.lifecycle_rejected",
+              "model uses engine='remote' — managed by LiteLLM proxy", retryable=False); return
+      try:
+          check_vram_budget(spec, self._catalog.host)
+      except ValueError as exc:
+          await self._reply_err(msg, req, "llm.lifecycle_rejected", f"vram budget exceeded: {exc}", retryable=False); return
+
+      # Drain (A2): set flag → wait until semaphore is fully released or drain_timeout
+      self._draining.set()
+      try:
+          await asyncio.wait_for(self._wait_sem_idle(), timeout=self._drain_timeout)
+      except asyncio.TimeoutError:
+          log.warning("lifecycle.swap: drain timeout, hard-cut")
+      # Stop-before-start (mirrors daemon._cmd_swap)
+      for old_name, old_inst in list(self._instances.items()):
+          self._engine_for_spec(self._catalog.models[old_name]).stop(old_inst)
+          del self._instances[old_name]
+      try:
+          new_inst = self._engine_for_spec(spec).start(spec)
+      except Exception as exc:  # noqa: BLE001
+          await self._reply_err(msg, req, "worker.crash", str(exc), retryable=True); return
+      finally:
+          self._draining.clear()
+      self._instances[req.model_name] = new_inst
+      await self._reply_ok(msg, req, data={"model": req.model_name, "port": new_inst.port,
+                                            "vram_used_mb": probe_used_vram_mb()})
+  ```
+- **Verify:** T12 + T13 RED tests pass: `uv run pytest tests/nats/test_lifecycle_drain.py tests/nats/test_lifecycle_remote_reject.py -v`.
+- **Time:** 15 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S4; SC AC-5; E3, E4, E5
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 5
+
+#### T18 GREEN: `_do_status` + `_do_list`
+
+- **File:** `src/llmcli/nats/_lifecycle.py`
+- **Snippet shape:** returns `LifecycleResponse(ok=True, data={"model":…, "port":…, "vram_used_mb":…})` for status; `data={"models":[…]}` for list (catalog × running flag).
+- **Verify:** unit tests pass (will be added in T36).
+- **Time:** 8 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S3 (sub-handlers); SC AC-3
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T19 GREEN: `_do_stop` + `_do_reload_catalog`
+
+- **File:** `src/llmcli/nats/_lifecycle.py`
+- **Snippet shape:** `_do_stop` stops all engines, returns ok; `_do_reload_catalog` re-reads catalog via `config.load()`, catches `tomllib.TOMLDecodeError` → returns `llm.lifecycle_rejected` with parse error message.
+- **Verify:** unit tests (T36 covers); E11 negative test passes.
+- **Time:** 7 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S3; E11
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T20 GREEN: Wire `LifecycleMixin` into `LlmNatsAdapter` (MRO + `wait_ready=False` + dispatch)
+
+- **File:** `src/llmcli/nats/llm_adapter.py`
+- **Snippet (key changes):**
+  ```python
+  from llmcli.nats._lifecycle import LIFECYCLE_SUBJECTS, LifecycleMixin
+
+  class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
+      def __init__(self, *, model_name: str, litellm_url: str, litellm_key: str, ...):
+          super().__init__(
+              SUBJECTS.generate_request,
+              SUBJECTS.llm_workers,
+              envelope_name="llm",
+              schema_version=1,
+              heartbeat_subject=SUBJECTS.heartbeat,
+              heartbeat_interval=heartbeat_interval,
+              drain_timeout=drain_timeout,
+              inbox_prefix="_inbox.llmcli-llm",
+              wait_ready=False,  # ← C2
+          )
+          self.__init_lifecycle__()  # sets _draining + _lifecycle_lock
+          ...
+
+      async def handle(self, msg, payload: dict) -> None:
+          if msg.subject in LIFECYCLE_SUBJECTS:
+              await self.handle_lifecycle(msg, payload); return
+          await super().handle(msg, payload)  # preserves MRO chain (S5)
+  ```
+- **Verify:** `uv run pytest tests/nats/ -v -m "not nats" + with nats marker` — adapter constructs cleanly; existing `generate.request` tests still pass.
+- **Time:** 10 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** S5, S7; SC AC-4
+- **Slice:** V2
+- **Phase:** GREEN
+- **Difficulty:** 4
+
+#### T21 RED-GATE: Slice 2 verification
+
+- **Command:** `uv run pytest tests/nats/test_lifecycle_mro.py tests/nats/test_lifecycle_drain.py tests/nats/test_lifecycle_remote_reject.py -v`
+- **Expected:** all tests **PASS** (5+ tests green).
+- **Verify:** exit code 0.
+- **Time:** 2 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-5, AC-6; E4, E5
+- **Slice:** V2
+- **Phase:** RED-GATE
+- **Difficulty:** 1
+
+### Slice 3 — CLI rewire (Wave 3, `backend-dev-B`)
+
+#### T22 GREEN: `cli/swap.py` — inline NATS publish + `--host` + flag branch
+
+- **File:** `src/llmcli/cli/swap.py`
+- **Snippet (key changes):**
+  ```python
+  @app.command()
+  def swap(
+      name: str,
+      host: Optional[str] = typer.Option(None, "--host", help="Target hostname; default = local hostname"),
+      timeout: float = typer.Option(300.0, "--timeout"),
+  ) -> None:
+      catalog = _cli.config.load()
+      if name not in catalog.models:
+          err_console.print(f"[red]Unknown model '{name}'. Available: {', '.join(catalog.models)}[/red]")
+          raise typer.Exit(1)
+      if os.environ.get("LLMCLI_LIFECYCLE_VIA_NATS", "").lower() in ("1", "true"):
+          asyncio.run(_swap_via_nats(name, host=host or socket.gethostname(), timeout=timeout))
+      else:
+          resp = _cli.daemon_request(f"SWAP {name}", timeout=timeout)
+          ...
+
+  async def _swap_via_nats(name: str, host: str, timeout: float) -> None:
+      nc = await nats_connect(os.environ["NATS_URL"], ...creds=Path("~/.config/llmcli/nkeys/operator.creds").expanduser())
+      req = LifecycleRequest(contract_version="1", trace_id=uuid4().hex, issued_at=datetime.now(timezone.utc),
+                             request_id=uuid4().hex, host=host, op="swap", model_name=name)
+      msg = await nc.request(SUBJECTS.lifecycle_swap, req.model_dump_json().encode(), timeout=timeout)
+      resp = LifecycleResponse.model_validate_json(msg.data)
+      if not resp.ok:
+          err_console.print(f"[red]{resp.worker_error.code}: {resp.worker_error.message}[/red]"); raise typer.Exit(1)
+      console.print(f"OK swapped to {resp.data['model']} (port={resp.data['port']}, vram={resp.data['vram_used_mb']}MB)")
+      await nc.drain()
+  ```
+- **Verify:** with `LLMCLI_LIFECYCLE_VIA_NATS=1` env, `uv run llmcli swap --host roxabituwer qwen3-8b` against a running M₁ worker prints `OK swapped to qwen3-8b ...`. Unit test: `uv run pytest tests/cli/test_swap.py -v`.
+- **Time:** 15 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** U1; SC AC-1, AC-2; E1 rollback (env=0 → daemon_request path)
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 4
+
+#### T23 GREEN: `cli/lifecycle.py` — `status` rewire
+
+- **File:** `src/llmcli/cli/lifecycle.py`
+- **Snippet shape:** same `_via_nats` pattern; reuses existing JSON-dict Rich table renderer.
+- **Verify:** `llmcli status --host roxabituwer` returns expected table.
+- **Time:** 8 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** U2; SC AC-3
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T24 GREEN: `cli/lifecycle.py` — `stop` rewire
+
+- **File:** `src/llmcli/cli/lifecycle.py`
+- **Verify:** `llmcli stop --host roxabituwer` prints `Daemon: OK stopped` (or NATS equivalent: `OK stopped`).
+- **Time:** 5 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** U3; SC AC-3
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T25 GREEN: `cli/lifecycle.py` — `list` command (NEW)
+
+- **File:** `src/llmcli/cli/lifecycle.py`
+- **Snippet shape:** new `@app.command()` `list_models()` that renders catalog × running flag table.
+- **Verify:** `llmcli list --host roxabituwer` returns table; without `--host` returns local view.
+- **Time:** 8 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** U4; SC AC-3
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T26 GREEN: `cli/lifecycle.py` — `reload-catalog` command (NEW)
+
+- **File:** `src/llmcli/cli/lifecycle.py`
+- **Snippet shape:** new `@app.command(name="reload-catalog")` `reload_catalog()`; broadcasts (no `--host` filter); aggregates ok/fail per host in PR-1? **NOTE**: per consensus DP1 hybrid, fleet aggregation deferred to v2. PR-1: single-host reload-catalog call (broadcast on NATS but only local host responds when `--host` omitted; with `--host` only that one). Document deferred fleet semantics in code comment + v2 issue.
+- **Verify:** `llmcli reload-catalog --host roxabituwer` prints `OK reloaded N models`.
+- **Time:** 8 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** U5; SC AC-3; v2 fleet deferral
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T27 GREEN: Feature-flag branching helper
+
+- **File:** `src/llmcli/cli/lifecycle.py` (shared utility — top of file)
+- **Snippet:**
+  ```python
+  def _use_nats_lifecycle() -> bool:
+      return os.environ.get("LLMCLI_LIFECYCLE_VIA_NATS", "").lower() in ("1", "true")
+  ```
+- **Refactor:** `swap.py`, `lifecycle.py` (status/stop/list/reload-catalog) all branch on `_use_nats_lifecycle()`.
+- **Verify:** `LLMCLI_LIFECYCLE_VIA_NATS=0 llmcli status` uses daemon_request; `LLMCLI_LIFECYCLE_VIA_NATS=1 llmcli status` uses NATS.
+- **Time:** 5 min
+- **Agent:** `backend-dev-B`
+- **Spec trace:** SC AC-8
+- **Slice:** V3
+- **Phase:** GREEN
+- **Difficulty:** 2
+
+#### T28 RED-GATE: Slice 3 verification
+
+- **Command:** `uv run pytest tests/cli/ -v`
+- **Expected:** all CLI tests pass; manual smoke test on M₂ ↔ M₁ for all 5 ops with `--host`.
+- **Time:** 3 min
+- **Agent:** `tester-B` (handoff smoke to user)
+- **Spec trace:** SC AC-1, AC-2, AC-3
+- **Slice:** V3
+- **Phase:** RED-GATE
+- **Difficulty:** 2
+
+### Slice 4 — Quadlet + flag bundle (Wave 3 parallel, `devops-B`)
+
+#### T29 [P] Update `worker.env` documentation
+
+- **File:** documentation in `docs/guides/deployment.md` OR README — explain `LLMCLI_LIFECYCLE_VIA_NATS=1` flag, its lifecycle (added in PR-1, removed in Slice 6 cutover PR), and rollback procedure (E1).
+- **Verify:** doc references the env var with rollback `sed` command verbatim.
+- **Time:** 5 min
+- **Agent:** `devops-B`
+- **Spec trace:** E1, SC AC-8
+- **Slice:** V4
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T30 [P] Quadlet header comment: D2 Exec/HealthCmd verification + entrypoint shim path
+
+- **File:** `deploy/quadlet/llmcli-nats-worker.container`
+- **Snippet (add to `[Unit]` header):**
+  ```
+  # NOTE: Exec=llm → deploy/entrypoint.sh resolves MODE=llm → `exec llmcli nats-serve llm "$@"`.
+  # HealthCmd=pgrep -f "llmcli nats-serve" matches the resolved process name.
+  # No realignment change needed (paper-only mismatch). Verified 2026-05-21 per #34 spec.
+  ```
+- **Verify:** `head -15 deploy/quadlet/llmcli-nats-worker.container` shows the comment.
+- **Time:** 3 min
+- **Agent:** `devops-B`
+- **Spec trace:** D2, Slice 4 description
+- **Slice:** V4
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T31 [P] Remove commented daemon-socket bind-mount
+
+- **File:** `deploy/quadlet/llmcli-nats-worker.container`
+- **Lines to delete (currently around L14-17):**
+  ```
+  # Optional: bind-mount host daemon socket to enable SWAP/STATUS pre-check on startup.
+  # Requires llmcli daemon running on the worker host at ~/.local/state/llmcli/llmcli.sock.
+  # Without this, _ensure_model auto-skips (daemon-optional mode) — safe for pure remote-worker.
+  # Volume=%h/.local/state/llmcli/llmcli.sock:/home/llmcli/.local/state/llmcli/llmcli.sock
+  ```
+- **Verify:** `grep -c "daemon socket\|llmcli.sock" deploy/quadlet/llmcli-nats-worker.container` returns 0.
+- **Time:** 2 min
+- **Agent:** `devops-B`
+- **Spec trace:** Slice 4 description (Files Impacted table)
+- **Slice:** V4
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+### Slice 5 — Tests + CI + docs (Waves 3-5, `tester-A` + `tester-B` + `devops-B` + `doc-writer-A`)
+
+#### T32 [P] RED: CLI swap NATS path test
+
+- **File:** `tests/cli/test_swap_nats.py` (NEW)
+- **Snippet shape:** monkeypatch `nats_connect`; assert publish on `lyra.llm.lifecycle.swap` with correct payload shape; mocked reply returns `LifecycleResponse(ok=True, data={...})`; assert stdout matches.
+- **Verify:** `pytest tests/cli/test_swap_nats.py -v` → **FAIL**.
+- **Time:** 8 min
+- **Agent:** `tester-B`
+- **Spec trace:** SC AC-1, AC-2
+- **Slice:** V5
+- **Phase:** RED
+- **Difficulty:** 3
+
+#### T33 [P] RED: Host filter test
+
+- **File:** `tests/nats/test_lifecycle_host_filter.py` (NEW)
+- **Snippet shape:** instantiate `LifecycleMixin` test adapter; call `handle_lifecycle` with `host="other-host"`; assert no reply sent; with `host=socket.gethostname()`, reply sent.
+- **Verify:** `pytest tests/nats/test_lifecycle_host_filter.py -v` → **FAIL**.
+- **Time:** 5 min
+- **Agent:** `tester-B`
+- **Spec trace:** S2; E2
+- **Slice:** V5
+- **Phase:** RED
+- **Difficulty:** 2
+
+#### T34 [P] RED: TOML parse error (E11)
+
+- **File:** `tests/nats/test_lifecycle_remote_reject.py` (extend with new test_func OR new file `test_lifecycle_reload_toml.py`)
+- **Snippet shape:** write malformed TOML fixture; call `_do_reload_catalog`; assert reply has `worker_error.code == "llm.lifecycle_rejected"` and message contains "catalog parse error"; in-memory catalog unchanged.
+- **Verify:** `pytest tests/nats/test_lifecycle_reload_toml.py -v` → **FAIL**.
+- **Time:** 5 min
+- **Agent:** `tester-B`
+- **Spec trace:** E11
+- **Slice:** V5
+- **Phase:** RED
+- **Difficulty:** 2
+
+#### T35 GREEN: Integration test — swap from M₂ to M₁ via real NATS
+
+- **File:** `tests/nats/test_lifecycle_swap.py` (NEW, integration; marker `@pytest.mark.nats`)
+- **Snippet shape:** uses `nats:2.11-alpine` service container; spawn `LlmNatsAdapter` test instance; CLI-side publish a `LifecycleRequest(op="swap", host=<test_hostname>, model_name="…")`; assert ok reply, model loaded, port assigned.
+- **Verify:** `pytest tests/nats/test_lifecycle_swap.py -v -m nats` → **PASS** (requires nats container).
+- **Time:** 12 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-1, AC-2, AC-11
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 4
+
+#### T36 GREEN: Status/list/stop/reload-catalog unit tests
+
+- **File:** `tests/nats/test_lifecycle_status.py` + extensions
+- **Snippet shape:** for each op: mock catalog + engine; call `_do_<op>` directly; assert `LifecycleResponse.data` shape per spec.
+- **Verify:** all unit tests pass.
+- **Time:** 12 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-3
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T37 GREEN: E10 crash-mid-swap integration test
+
+- **File:** `tests/nats/test_lifecycle_crash_recovery.py` (NEW)
+- **Snippet shape:** in-process — spawn adapter, start `_do_swap`, kill subprocess between `EngineInstance.stop()` and `EngineInstance.start()` (use a patched factory that raises); assert worker survives; after restart-simulation, `_do_status` returns `model=None`; subsequent `_do_swap` succeeds.
+- **Verify:** `pytest tests/nats/test_lifecycle_crash_recovery.py -v -m nats` → **PASS**.
+- **Time:** 10 min
+- **Agent:** `tester-A`
+- **Spec trace:** E10
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 4
+
+#### T38 [P] CI service container + pytest split
+
+- **File:** `.github/workflows/ci.yml`
+- **Snippet (add to `ci` job):**
+  ```yaml
+  services:
+    nats:
+      image: nats:2.11-alpine
+      ports: ["4222:4222"]
+      options: >-
+        --health-cmd "wget -qO- http://localhost:8222/healthz || true"
+        --health-interval 5s
+        --health-timeout 2s
+        --health-retries 5
+  ```
+- **And split `Test` step:**
+  ```yaml
+  - name: Test (unit)
+    run: uv run pytest -m "not nats"
+  - name: Test (nats integration)
+    run: uv run pytest -m nats
+    env:
+      NATS_URL: nats://localhost:4222
+  ```
+- **Verify:** push to PR branch → both steps green in Actions.
+- **Time:** 10 min
+- **Agent:** `devops-B`
+- **Spec trace:** SC AC-10
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 3
+
+#### T39 [P] Register `@pytest.mark.nats` marker
+
+- **File:** `tests/nats/conftest.py` (or `pyproject.toml` `[tool.pytest.ini_options].markers`)
+- **Snippet:**
+  ```python
+  # pyproject.toml:
+  markers = [
+      "no_gpu: …",
+      "gpu: …",
+      "nats: tests requiring a live NATS broker (skipped without service container)",
+  ]
+  ```
+- **Verify:** `pytest --markers | grep nats` shows the marker.
+- **Time:** 3 min
+- **Agent:** `devops-B`
+- **Spec trace:** SC AC-10
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T40 Update `CLAUDE.md` Consumers + CLI Commands tables
+
+- **File:** `CLAUDE.md`
+- **Edits:** add `--host` flag to all 5 lifecycle commands in the "CLI Commands" table; add a note in "Consumers" that pre-cutover the flag toggles between AF_UNIX and NATS.
+- **Verify:** `grep "LLMCLI_LIFECYCLE_VIA_NATS" CLAUDE.md` returns a line.
+- **Time:** 5 min
+- **Agent:** `doc-writer-A`
+- **Spec trace:** SC AC-12
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T41 ADR-004 banner pointing at PR-1
+
+- **File:** `docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx`
+- **Edit:** keep `status: Proposed` (will flip to `Accepted` in Slice 6); add a banner line under frontmatter: `> Implementation tracked in #34 — PR-1 ships Slices 0-5; cutover PR (Slice 6) flips this status to Accepted.`
+- **Verify:** `head -10 docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx` shows the banner.
+- **Time:** 3 min
+- **Agent:** `doc-writer-A`
+- **Spec trace:** SC AC-12 (partial — full flip is Slice 6)
+- **Slice:** V5
+- **Phase:** GREEN
+- **Difficulty:** 1
+
+#### T42 RED-GATE: full CI green
+
+- **Command:** `gh run watch` on the PR-1 push or `gh pr checks <PR#>`
+- **Expected:** all checks green (lint, typecheck, unit tests, `pytest -m nats` tests, secrets).
+- **Verify:** exit code 0 from `gh pr checks`.
+- **Time:** wait + verify, ~5 min
+- **Agent:** `tester-A`
+- **Spec trace:** SC AC-10; all RED-GATEs above
+- **Slice:** V5
+- **Phase:** RED-GATE
+- **Difficulty:** 1
+
+## Task Seeding Blueprint
+
+<!-- Used by /implement to seed TaskCreate calls on session start. -->
+
+### Wave 1 — no deps, 3 agents ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|------|---------------|-----------|---------|
+| T1 | devops-A | — | Generate operator nkey via lyra-acl genkeys (Slice 0) |
+| T2 | devops-A | T1 | Augment worker nkey grants (Slice 0) |
+| T3 | devops-A | T2 | Update acl-matrix.json audit (Slice 0) |
+| T4 | devops-A | T3 | Distribute operator creds to M₂ (Slice 0) |
+| T5 | devops-A | T4 | Reload nats-server M₁ + ACL verification RED-GATE (Slice 0) |
+| T6 | backend-dev-A | — | Add LIFECYCLE_SUBJECTS to subjects.py (Slice 1) |
+| T7 | backend-dev-A | — | Add LifecycleRequest/Response to models.py (Slice 1) |
+| T8 | backend-dev-A | — | Register llm.lifecycle_rejected in errors.py (Slice 1) |
+| T9 | backend-dev-A | T6,T7,T8 | Re-export in __init__.py (Slice 1) |
+| T10 | backend-dev-A | T9 | PR contracts on staging + bump llmCLI uv.lock RED-GATE (Slice 1) |
+| T11 | tester-A | — | RED: MRO composition tests (Slice 2) |
+| T12 | tester-A | — | RED: Drain pattern tests (Slice 2) |
+| T13 | tester-A | — | RED: engine=remote rejection test (Slice 2) |
+
+### Wave 2 — after T5 + T10 + T11-T13, 2 agents ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|------|---------------|-----------|---------|
+| T14 | backend-dev-B | T10,T11,T12,T13 | GREEN: Skeleton _lifecycle.py (Slice 2) |
+| T15 | backend-dev-B | T14 | GREEN: _extra_subjects + heartbeat_payload super-composition (Slice 2) |
+| T16 | backend-dev-B | T14 | GREEN: handle_lifecycle host filter + dispatcher (Slice 2) |
+| T17 | backend-dev-B | T16 | GREEN: _do_swap with drain + remote rejection (Slice 2) |
+| T18 | backend-dev-B | T16 | GREEN: _do_status + _do_list (Slice 2) |
+| T19 | backend-dev-B | T16 | GREEN: _do_stop + _do_reload_catalog (Slice 2) |
+| T20 | backend-dev-B | T15,T17,T18,T19 | GREEN: Wire LifecycleMixin into LlmNatsAdapter MRO (Slice 2) |
+| T21 | tester-A | T20 | RED-GATE: Slice 2 verification (Slice 2) |
+
+### Wave 3 — after T21, 3 agents ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|------|---------------|-----------|---------|
+| T22 | backend-dev-B | T21 | GREEN: cli/swap.py inline NATS + --host + flag (Slice 3) |
+| T23 | backend-dev-B | T22 | GREEN: cli/lifecycle.py status rewire (Slice 3) |
+| T24 | backend-dev-B | T23 | GREEN: cli/lifecycle.py stop rewire (Slice 3) |
+| T25 | backend-dev-B | T23 | GREEN: cli/lifecycle.py list command NEW (Slice 3) |
+| T26 | backend-dev-B | T23 | GREEN: cli/lifecycle.py reload-catalog NEW (Slice 3) |
+| T27 | backend-dev-B | T22,T23 | GREEN: Feature-flag branching helper (Slice 3) |
+| T28 | tester-B | T22,T23,T24,T25,T26,T27 | RED-GATE: Slice 3 verification (Slice 3) |
+| T29 | devops-B | T21 | Update worker.env documentation (Slice 4) |
+| T30 | devops-B | T21 | Quadlet header comment D2 verification path (Slice 4) |
+| T31 | devops-B | T21 | Remove commented daemon-socket bind-mount (Slice 4) |
+| T32 | tester-B | T22 | RED: CLI swap NATS path test (Slice 5) |
+| T33 | tester-B | T20 | RED: Host filter test (Slice 5) |
+| T34 | tester-B | T19 | RED: TOML parse error test (Slice 5) |
+
+### Wave 4 — after Wave 3, 2 agents ∥
+
+| Task | Agent instance | blockedBy | Subject |
+|------|---------------|-----------|---------|
+| T35 | tester-A | T28,T32,T38 | GREEN: integration swap M₂→M₁ (Slice 5) |
+| T36 | tester-A | T28,T33,T34 | GREEN: status/list/stop/reload-catalog unit tests (Slice 5) |
+| T37 | tester-A | T35 | GREEN: E10 crash-mid-swap integration test (Slice 5) |
+| T38 | devops-B | T31 | CI service container + pytest split (Slice 5) |
+| T39 | devops-B | T31 | Register @pytest.mark.nats marker (Slice 5) |
+
+### Wave 5 — after Wave 4, 1 agent → 1 RED-GATE
+
+| Task | Agent instance | blockedBy | Subject |
+|------|---------------|-----------|---------|
+| T40 | doc-writer-A | T28 | Update CLAUDE.md Consumers + CLI tables (Slice 5) |
+| T41 | doc-writer-A | T28 | ADR-004 banner pointing at PR-1 (Slice 5) |
+| T42 | tester-A | T35,T36,T37,T38,T39,T40,T41 | RED-GATE: full CI green (Slice 5) |
+
+## Cutover PR (Slice 6) — deferred follow-up
+
+After PR-1 is merged AND validated on M₁ for ≥1 cycle:
+
+```bash
+/plan --issue 34
+```
+
+Will produce a much smaller follow-up plan (~5 tasks, ~0.5d):
+
+- Delete `src/llmcli/daemon.py` + `tests/test_daemon.py`
+- Delete `daemon_request`, `Daemon`, `LLMCLI_SOCKET` from `src/llmcli/cli/__init__.py` re-exports
+- Flip `LLMCLI_LIFECYCLE_VIA_NATS=1` from opt-in flag to default; remove flag check from CLI helpers
+- Remove `LLMCLI_LIFECYCLE_VIA_NATS` from `worker.env` (cutover SLA: ≤2 weeks per PL2)
+- Flip ADR-004 `status: Proposed` → `status: Accepted`
+
+## Task IDs
+
+<!-- Generated by /plan. Used by /implement to resume tasks on session restart. -->
+
+- T1: 14 — Generate operator nkey via lyra-acl genkeys
+- T2: 15 — Augment worker nkey grants
+- T3: 16 — Update acl-matrix.json audit
+- T4: 17 — Distribute operator creds to M₂
+- T5: 18 — Reload nats-server M₁ + ACL verification RED-GATE
+- T6: 19 — Add LIFECYCLE_SUBJECTS to subjects.py
+- T7: 20 — Add LifecycleRequest/Response to models.py
+- T8: 21 — Register llm.lifecycle_rejected in errors.py
+- T9: 22 — Re-export in __init__.py
+- T10: 23 — PR contracts on staging + bump llmCLI uv.lock RED-GATE
+- T11: 24 — RED: MRO composition tests
+- T12: 25 — RED: Drain pattern tests
+- T13: 26 — RED: engine=remote rejection test
+- T14: 27 — GREEN: Skeleton src/llmcli/nats/_lifecycle.py
+- T15: 28 — GREEN: _extra_subjects + heartbeat_payload super-composition
+- T16: 29 — GREEN: handle_lifecycle host filter + dispatcher
+- T17: 30 — GREEN: _do_swap with drain + remote rejection
+- T18: 31 — GREEN: _do_status + _do_list
+- T19: 32 — GREEN: _do_stop + _do_reload_catalog
+- T20: 33 — GREEN: Wire LifecycleMixin into LlmNatsAdapter MRO
+- T21: 34 — RED-GATE: Slice 2 verification
+- T22: 35 — GREEN: cli/swap.py inline NATS + --host + flag
+- T23: 36 — GREEN: cli/lifecycle.py status rewire
+- T24: 37 — GREEN: cli/lifecycle.py stop rewire
+- T25: 38 — GREEN: cli/lifecycle.py list command NEW
+- T26: 39 — GREEN: cli/lifecycle.py reload-catalog NEW
+- T27: 40 — GREEN: Feature-flag branching helper
+- T28: 41 — RED-GATE: Slice 3 verification
+- T29: 42 — Update worker.env documentation
+- T30: 43 — Quadlet header comment D2 verification path
+- T31: 44 — Remove commented daemon-socket bind-mount
+- T32: 45 — RED: CLI swap NATS path test
+- T33: 46 — RED: Host filter test
+- T34: 47 — RED: TOML parse error test
+- T35: 48 — GREEN: integration swap M₂→M₁ via real NATS
+- T36: 49 — GREEN: status/list/stop/reload-catalog unit tests
+- T37: 50 — GREEN: E10 crash-mid-swap integration test
+- T38: 51 — CI service container + pytest split
+- T39: 52 — Register @pytest.mark.nats marker
+- T40: 53 — Update CLAUDE.md Consumers + CLI tables
+- T41: 54 — ADR-004 banner pointing at PR-1
+- T42: 55 — RED-GATE: full CI green

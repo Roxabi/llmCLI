@@ -1,0 +1,88 @@
+---
+title: "NATS lifecycle fold — appetite + abstraction consensus"
+issue: 34
+status: consensus-reached
+date: 2026-05-21
+panel: architect, devops, product-lead
+confidence: high
+---
+
+## Problem
+
+After 4 reviewers returned REVISE on `artifacts/analyses/34-nats-lifecycle-fold-analysis.mdx`, two scope decisions remained unresolved and were escalated to a 3-expert consensus panel:
+
+- **DP1 — appetite/scope:** 3d full (optimistic) vs 4-5d full (honest) vs 1.5d v1 (swap+status only, defer rest).
+- **DP2 — `cli/_nats_client.py` abstraction:** keep 120 LOC helper vs inline NATS publish in each CLI command.
+
+All other findings (A2 drain `asyncio.Event`, A3 MRO `super()` composition, D1 `lyra-acl genkeys` workflow, D2 Quadlet Exec/HealthCmd realign, D5 CI `nats` marker + service container, PL1 operator nkey provisioning as deliverable, PL2 cutover PR as named slice) were already accepted and not in scope here.
+
+## Panel
+
+| α | Focus |
+|---|---|
+| architect | Arch soundness, MRO/composition cleanliness, abstraction discipline (DRY vs YAGNI), file-length quality gate |
+| devops | Cross-repo PR coordination on `Roxabi/lyra`, CI gates, lyra-acl ops, M₁ rollback paths, feature-flag deploy mechanics |
+| product-lead | Premise validation speed, single-operator velocity, scope discipline, falsifiable failure tracking |
+
+## Consensus ρ
+
+### DP1 — appetite/scope: **Option 2 (hybrid)**
+
+**4-5 working days. Full 5-op surface (`swap`/`stop`/`status`/`list`/`reload-catalog`) via NATS + feature flag + cutover PR slice + `--host <hostname>` flag. `--fleet` reply aggregation is explicitly deferred to a v2 follow-up child issue.**
+
+### DP2 — `cli/_nats_client.py`: **Option 2 (inline)**
+
+**Inline NATS publish/reply (~20 LOC per command) in `swap.py` and `lifecycle.py` for v1. No new `_nats_client.py` file. Extract abstraction in v2 only when `--fleet` reply aggregation makes the second concrete use site real.**
+
+### Rationale
+
+DP1 converged on Option 2 after a reconciliation round resolved a 2-1 split:
+
+- Architect + devops opposed Option 3 because it splits a conceptually atomic fold — partial v1 (swap+status on NATS while stop+list remain on AF_UNIX) creates a **three-way routing state** in the CLI layer that is operationally worse than the status quo (uniform AF_UNIX). The value of the fold is the single-transport invariant, which a partial v1 breaks. Product-lead conceded this argument.
+- Product-lead's residual concern (`--fleet` aggregation is the primary blowup vector and is additive to the success criterion) became the hybrid carve: ship all 5 ops in v1, defer `--fleet` to v2. Architect + devops ratified by mechanical alignment with their own prior reasoning — Architect's DP2 opt 2 verbatim said "at v1 with 2 CLI files and 5 ops, `_nats_client.py` is premature extraction" (which is exactly the post-hybrid v1 state); devops's DP2 opt 2 said `_nats_client.py` "earns its existence only when `--fleet` aggregation is real, not projected" (deferred to v2 when it is real).
+
+DP2 was unanimous Option 2 across all three panelists regardless of DP1 outcome; the hybrid carve makes it doubly aligned (zero use sites for `_nats_client.py` in v1).
+
+### Trade-offs
+
+- **Honest appetite + bounded scope:** 4-5d absorbs the non-compressible serial frictions (cross-repo `Roxabi/lyra` review cycle, in-person M₁ validation, drain timing tests, `lyra-acl genkeys` workflow, `wait_ready=False` migration) without producing a schedule fiction that pressures shortcuts in drain semantics or ACL configuration.
+- **Single-transport invariant preserved:** All 5 lifecycle ops migrate to NATS together in v1, so the CLI layer routes uniformly via NATS once the feature flag is flipped — no intermediate three-way state, no mixed-plane window beyond the feature-flag testing window.
+- **Abstraction deferred to actual second use site:** `_nats_client.py` materializes when `--fleet` arrives in v2 (`>=2` proven call sites: per-host publish + multi-host reply aggregation). Until then, 2 inline NATS publish/reply blocks in `swap.py`/`lifecycle.py` (~40 LOC duplication) are tracked as a mandatory extraction debt against the v2 child issue.
+
+## Alternatives
+
+| ω | Proposed by | Rejected because |
+|---|---|---|
+| DP1 Option 1 — 3d full scope, "acknowledge optimism" | Original analysis | Document-acknowledged optimism is not mitigation; it is written acceptance of the falsifiable failure mode. Cross-repo review-cycle latency is external and non-compressible by engineering effort. Pressures skipping the cutover PR or drain timing tests — both of which the prior reviewers explicitly flagged as critical. |
+| DP1 Option 3 — 1.5d v1, swap+status only, defer rest | Product-lead (initial) | Creates a three-way routing state (NATS for swap/status, AF_UNIX for stop/list, CLI router knows per-command transport) that is architecturally worse than the status quo (uniform AF_UNIX). Persists until slice 2 ships; "slice 2 slips" risk is real in a single-operator project (same failure pattern as the feature-flag-never-flipped frame failure mode). Conceded by proposer during reconciliation. |
+| DP2 Option 1 — keep `_nats_client.py` (120 LOC, all 5 commands) | Original analysis | Premature extraction: in v1 there is no `--fleet` aggregation path, which is the only concrete second use site that justifies the helper. Violates the "≥2 use sites before abstraction" principle stated in the option itself. 120 LOC for 0 confirmed second consumer is a YAGNI violation. |
+
+## Dissent
+
+**Product-lead residual dissent (recorded, non-blocking):**
+
+"The 4-5d honest appetite absorbs `--fleet` complexity into the same milestone as the premise validation. If the blowup materializes mid-implementation, the cutover PR (and thus the falsifiable success criterion) slips with it."
+
+→ Resolved by the hybrid carve. `--fleet` is explicitly deferred to v2; v1 appetite is now 4-5d *without* `--fleet` reply aggregation, materially reducing blowup probability on the cutover-PR critical path. Architect's "2-3x blowup risk on contracts + tests" remains the live risk inside the 4-5d envelope; appetite buffer accommodates it.
+
+## Implementation Notes
+
+For `/spec` to embed:
+
+| Item | Resolution |
+|---|---|
+| **Appetite** | 4-5 working days. Cutover PR (Slice 6, per PL2) named deliverable inside this envelope. |
+| **v1 surface** | `swap`, `stop`, `status`, `list`, `reload-catalog` — all 5 ops on NATS. `--host <hostname>` flag on each. No `--fleet`. |
+| **v2 follow-up (separate child issue, file at `/spec` time)** | `--fleet` flag + reply aggregation + extract `_nats_client.py` (≥2 use sites: per-host publish + multi-host aggregation). |
+| **CLI implementation** | Inline NATS publish/reply in `swap.py` and `lifecycle.py`. ~20 LOC per command. No new file in `cli/`. |
+| **Extraction debt** | Tracked as a `## Tech debt` line in the v1 PR body, pointing at the v2 child issue number. |
+| **Cutover gating** | Cutover PR cannot merge until `--fleet` v2 has been *validated* on M₁ — but cutover PR does not have to *include* `--fleet`. The single-transport invariant only requires all 5 ops on NATS, which v1 delivers. |
+
+## Next
+
+`/spec --issue 34` consumes this consensus + the revised analysis to produce:
+- Acceptance criteria for v1 (5 ops, no `--fleet`, no `_nats_client.py`)
+- Slice breakdown (target ~4-5d)
+- Named cutover PR deliverable (Slice 6)
+- Named operator-nkey provisioning step (Slice 0 or contracts slice)
+- v2 child issue created via `/issue-triage` for the `--fleet` + `_nats_client.py` carve-out
