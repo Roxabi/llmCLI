@@ -1,0 +1,60 @@
+---
+title: "stage-axis audit findings — 5 pre-cascade risks to drain before N=4 engines"
+issue: 53
+status: approved
+tier: F-lite
+date: 2026-05-21
+---
+
+## Problem
+
+The 2026-05-20 cross-repo stage-axis audit (lyra #1277 framework) confirmed llmCLI is **not** exhibiting the N×M cascade today — codebase is small (2 741 LOC), engine files are thin (113–150 LOC), concerns are already extracted horizontally (`_common.py`, `gpu.py`, `GenerationMixin`). But the audit identified 5 **pre-cascade triggers** that are harmless at N=3 engines and become N-edit-per-bug events at N=4.
+
+The single historical sibling-fix event (`waitpid` zombie fix) was caught and consolidated at N=2 within the same session (commit `0a528a7`) — proof the latent triggers are real, just not yet fired at scale.
+
+lyra #1291 closed on 2026-05-20 and shipped `sanitize_for_wire` in `roxabi-nats`, which unblocks Finding 3's socket-boundary sanitization piece. Other 4 findings are self-contained.
+
+The goal of this issue is **bounded consolidation before the next engine arrives** — net negative LOC, additive protocol changes, zero behavior change at the user-visible layer.
+
+## Who
+
+- **Primary:** the llmCLI maintainer adding engine #4 (or chasing a bug across engines today) — each cited duplication is a future N-edit ambush.
+- **Secondary:** lyra (NATS adapter consumer) — Finding 3 (typed error codes + `sanitize_for_wire`) lets the adapter dispatch on `code` rather than substring-match on `OK`/`ERR`.
+- **Secondary:** voiceCLI + imageCLI maintainers — llmCLI is the reference impl for the 3-CLI worker pattern; cleanups here propagate as a template.
+
+## Constraints
+
+- All changes must be **additive at the wire level** (AF_UNIX daemon protocol, NATS subjects) — no breaking changes for `nats/llm_adapter.py` or external `llmcli` CLI consumers.
+- `sanitize_for_wire` is on `roxabi-nats` `staging` branch but **not yet in local `.venv`** → `uv sync` required first.
+- File-length gate (max 300 lines) and folder-size gate (max 12 files in `src/**`) must remain green after Finding 5's folder reshape.
+- Existing tests must stay green; new public surface (e.g. `_default_health`, `support/` modules) needs unit coverage.
+- Worktree-mandatory per CLAUDE.md Rule 6; no work on `staging` directly.
+- `roxabi-nats` pin remains `branch=staging` (no version bump) — `uv lock --upgrade-package roxabi-nats` to refresh.
+
+## Out of Scope
+
+- Stage-axis pivot proper (replacing `Engine` Protocol with stage-pipeline ABC). Codebase too small (N=3); revisit if N≥5 ∨ quant-variant pressure arrives.
+- Refactoring `cli/bench.py` (well under gate).
+- Cross-repo follow-up on voiceCLI + imageCLI (each owned by its own audit issue: voiceCLI #162, imageCLI #89).
+- Any new `Engine` implementation or model addition.
+- Touching the LiteLLM proxy layer (just shipped, untouched here).
+
+## Premise Validity
+
+**Success in 6 months:** when engine #4 lands (or first cross-engine bug after this PR merges), **no `health()` / `_ENGINE_REGISTRY` sibling-fix commit is required** — both consolidated in `_common.py` / `engines.get_engine()`. `daemon.py` error frames carry typed `ERR.<code> <msg>` tokens that `nats/llm_adapter.py` dispatches on. `src/llmcli/` folder count ≤ 10 (≥2 slot headroom). LOC net change ≤ -20.
+
+**Failure in 6 months:** count of "same-fix-applied-to-N-engines" commits ≥1 within 30 days of engine #4 landing — measurable via `git log --oneline --grep='sibling fix\|same fix\|apply to N'` since merge date. **OR** the folder-size gate fires on a routine module add (forcing emergency reshape during a feature). Either condition = the consolidation didn't actually consolidate.
+
+**Simplest alternative:** Close #53 without action. Address each finding reactively when (and only if) the cascade fires (the way the `waitpid` zombie fix was caught at N=2).
+**Why not simplest:** Two reasons. (a) Cost asymmetry: doing this now is a single ≤300-LOC PR with zero behavior risk; doing it reactively means the trigger fires at the worst moment (engine bring-up or production incident) and the consolidation diff competes with the feature diff for review attention. (b) lyra #1291 already shipped `sanitize_for_wire` specifically for llmCLI's `daemon.py:197,215` sites — the upstream is paid for; not adopting it leaves a stringly-typed black hole in the AF_UNIX path that lyra's NATS adapter has to substring-match around.
+
+## Complexity
+
+**Tier: F-lite** — clear scope (5 pre-specced findings with exact file paths + LOC counts + fix descriptions), single domain (backend refactor + protocol additivity), no new architecture, no unknowns. ~8–10 files touched, all in `src/llmcli/`.
+
+Signals observed:
+- Issue label `size:S` was set at issue creation (likely per-finding sizing) — full-epic execution warrants F-lite override.
+- Clear scope: issue body documents fix per finding with line-level precision.
+- Single domain: backend / IPC protocol only — no frontend, no infra, no docs (besides standards doc bumps if any).
+- No unknowns: upstream dependency (lyra #1291) shipped + verified at `roxabi_nats.errors.sanitize_for_wire`.
+- 5 logical slices may collapse to 1 PR or be split — decision deferred to `/spec`.
