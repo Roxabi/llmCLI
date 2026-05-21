@@ -7,7 +7,7 @@ description: Set up ccl, cccl, ccp, and cccp shell aliases to route claude-code 
 
 Route `claude` to local or prod LLMs via four shell aliases: `ccl` (local normal), `cccl`
 (local fast), `ccp` (prod normal), `cccp` (prod fast). All aliases point
-`ANTHROPIC_BASE_URL` at the LiteLLM proxy on `:4000`, which forwards requests to the
+`ANTHROPIC_BASE_URL` at the LiteLLM proxy on `:18091`, which forwards requests to the
 `llama-server` instance managed by llmCLI.
 
 ---
@@ -16,8 +16,8 @@ Route `claude` to local or prod LLMs via four shell aliases: `ccl` (local normal
 
 | Requirement | Check |
 |---|---|
-| llmCLI running on target host | `make llm status` shows `RUNNING` |
-| LiteLLM proxy up on `:4000` | `curl -sf http://localhost:4000/health` |
+| llmCLI running on target host | `systemctl --user status llmcli` shows `active (running)` |
+| LiteLLM proxy up on `:18091` | `curl -sf http://localhost:18091/health/liveliness` |
 | Proxy block registered | `llmcli register-proxy` has been run |
 | `LLMCLI_API_KEY` set in env | `echo $LLMCLI_API_KEY` is non-empty |
 
@@ -36,26 +36,26 @@ Add to `~/.bashrc` or `~/.zshrc`:
 # Model names must match catalog keys in ~/.roxabi/llmcli/llmcli.toml
 
 # Local (roxabitower) — normal + fast (same model in v1)
-alias ccl='ANTHROPIC_BASE_URL=http://localhost:4000 \
+alias ccl='ANTHROPIC_BASE_URL=http://localhost:18091 \
            ANTHROPIC_MODEL=qwen3_6-35b-a3b-tq3 \
            ANTHROPIC_SMALL_FAST_MODEL=qwen3_6-35b-a3b-tq3 \
            ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
            claude'
 
-alias cccl='ANTHROPIC_BASE_URL=http://localhost:4000 \
+alias cccl='ANTHROPIC_BASE_URL=http://localhost:18091 \
             ANTHROPIC_MODEL=qwen3_6-35b-a3b-tq3 \
             ANTHROPIC_SMALL_FAST_MODEL=qwen3_6-35b-a3b-tq3 \
             ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
             claude'
 
 # Prod (roxabituwer) — normal + fast (same model in v1)
-alias ccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:4000 \
+alias ccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:18091 \
            ANTHROPIC_MODEL=qwen3-8b-q4 \
            ANTHROPIC_SMALL_FAST_MODEL=qwen3-8b-q4 \
            ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
            claude'
 
-alias cccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:4000 \
+alias cccp='ANTHROPIC_BASE_URL=http://roxabituwer.lan:18091 \
             ANTHROPIC_MODEL=qwen3-8b-q4 \
             ANTHROPIC_SMALL_FAST_MODEL=qwen3-8b-q4 \
             ANTHROPIC_API_KEY=$(cat ~/.roxabi/llmcli/api_key) \
@@ -108,7 +108,7 @@ to `~/.claude/settings.json.local`:
 {
   "apiKeyHelper": "cat ~/.roxabi/llmcli/api_key",
   "env": {
-    "ANTHROPIC_BASE_URL": "http://localhost:4000",
+    "ANTHROPIC_BASE_URL": "http://localhost:18091",
     "ANTHROPIC_MODEL": "qwen3_6-35b-a3b-tq3",
     "ANTHROPIC_SMALL_FAST_MODEL": "qwen3_6-35b-a3b-tq3"
   }
@@ -127,7 +127,7 @@ to `~/.claude/settings.json.local`:
 {
   "apiKeyHelper": "cat ~/.roxabi/llmcli/api_key",
   "env": {
-    "ANTHROPIC_BASE_URL": "http://roxabituwer.lan:4000",
+    "ANTHROPIC_BASE_URL": "http://roxabituwer.lan:18091",
     "ANTHROPIC_MODEL": "qwen3-8b-q4",
     "ANTHROPIC_SMALL_FAST_MODEL": "qwen3-8b-q4"
   }
@@ -184,13 +184,13 @@ chmod 600 ~/.roxabi/llmcli/api_key
 Two separate services must be up:
 
 ```bash
-# Is llmCLI serving?
-make llm status
-make llm          # start if not running
+# Is llmCLI proxy serving?
+systemctl --user status llmcli
+systemctl --user start llmcli   # start if not running
 
 # Is the LiteLLM proxy up?
-curl -sf http://localhost:4000/health || echo "proxy down"
-make -C ~/projects/lyra litellm status   # start if needed
+curl -sf http://localhost:18091/health/liveliness || echo "proxy down"
+journalctl --user -u llmcli -n 20   # check logs if down
 ```
 
 ### Model not found (404 from proxy)
@@ -227,6 +227,6 @@ LiteLLM routes by `model` name; each alias sets a distinct model string (`qwen3_
 vs `qwen3-8b-q4`) that maps to a different `api_base` in the proxy config.
 
 ```
-ccl  / cccl  →  http://localhost:4000         →  roxabitower llama-server :8091
-ccp  / cccp  →  http://roxabituwer.lan:4000   →  roxabituwer llama-server :8091
+ccl  / cccl  →  http://localhost:18091         →  roxabitower llama-server :8091
+ccp  / cccp  →  http://roxabituwer.lan:18091   →  roxabituwer llama-server :8091
 ```

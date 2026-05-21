@@ -11,7 +11,7 @@ reach back into the worker host directly.
 
 - lyra-nats reachable from the worker host at `<hub-tailnet-fqdn>:4222`
 - `llm-worker` NKEY seed exists on the hub at `~/.lyra/nkeys/llm-worker.seed`
-- LiteLLM proxy running on the worker host at `:4000`
+- LiteLLM proxy running on the worker host at `:18091` (via `llmcli` Quadlet)
 - `llama-server` binary available in the container image; qwen3-8b model pre-pulled
   into the shared HuggingFace cache at `~/.cache/huggingface/`
 
