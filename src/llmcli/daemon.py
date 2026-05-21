@@ -18,12 +18,14 @@ the message.  See ``_WireErr`` for the full code enum.
 from __future__ import annotations
 
 import os
+import re
 import socket
 import time
 from enum import StrEnum
 from pathlib import Path
 
-from roxabi_nats.errors import sanitize_for_wire
+from roxabi_contracts.errors import scrub_credentials, truncate_with_marker
+from roxabi_nats.errors import DEFAULT_MAX_LEN, sanitize_for_wire
 
 from .config import ModelSpec, check_vram_budget
 from .engine import Engine, EngineInstance
@@ -45,15 +47,36 @@ class _WireErr(StrEnum):
     INTERNAL = "INTERNAL"
 
 
+# Control chars that break log hygiene on a single-line wire frame —
+# C0 (0x00-0x1f, minus tab 0x09), DEL (0x7f), AND C1 (0x80-0x9f). C1 is
+# critical: a raw-byte client can encode CSI (U+009B = ESC+[ equivalent
+# for C1-enabled terminals like xterm) as valid UTF-8 (0xC2 0x9B) which
+# `buf.decode(errors="replace")` accepts cleanly, and then rewrite the
+# operator's terminal log line if the C0-only filter let it through.
+_WIRE_CTRL_RE = re.compile(r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]")
+
+
+def _sanitize_wire_msg(msg: str, *, max_len: int = DEFAULT_MAX_LEN) -> str:
+    """String counterpart to ``sanitize_for_wire(exc)`` for raw client-supplied tokens.
+
+    Mirrors the same primitives (``scrub_credentials`` + ``truncate_with_marker``)
+    and additionally collapses single-line-breaking control characters so a
+    raw-byte client cannot smuggle ``\\r``/``\\b`` log-rewriting bytes through
+    UNKNOWN_CMD/UNKNOWN_MODEL frames where ``msg`` is the verbatim client token.
+    """
+    return truncate_with_marker(scrub_credentials(_WIRE_CTRL_RE.sub(" ", msg)), max_len)
+
+
 def _format_err(code: _WireErr, msg: str = "", *, exc: BaseException | None = None) -> str:
     """Format an ERR frame with typed code and sanitized message.
 
-    When ``exc`` is provided, the message is ``sanitize_for_wire(exc)`` —
-    truncated to 200 chars and stripped of credentials in embedded URLs.
+    Both the ``exc`` path (``sanitize_for_wire(exc)``) and the ``msg`` path
+    (``_sanitize_wire_msg``) apply the same credential-scrub + length-cap so
+    raw client-supplied tokens cannot smuggle ``\\r``/``\\n``-stuffed log
+    hygiene attacks or unbounded payloads through the wire.
     """
-    if exc is not None:
-        msg = sanitize_for_wire(exc)
-    return f"ERR.{code.value} {msg}".rstrip()
+    payload = sanitize_for_wire(exc) if exc is not None else _sanitize_wire_msg(msg)
+    return f"ERR.{code.value} {payload}".rstrip()
 
 
 SOCKET_PATH = Path(
@@ -240,14 +263,24 @@ class Daemon:
     # Wire protocol
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _recv_line(conn: socket.socket) -> str:
+    # Hard cap on a single wire frame — bounds peak memory before any regex
+    # work runs on the payload. Matches the recv chunk size; legitimate
+    # commands (STATUS, SWAP <name>, SHUTDOWN) fit comfortably below this.
+    _RECV_LINE_MAX_BYTES = 4096
+
+    @classmethod
+    def _recv_line(cls, conn: socket.socket) -> str:
         buf = b""
         while b"\n" not in buf:
             chunk = conn.recv(4096)
             if not chunk:
                 break
             buf += chunk
+            if len(buf) >= cls._RECV_LINE_MAX_BYTES:
+                # Truncate at the transport layer so downstream regex/scrub
+                # never sees a payload larger than the protocol expects.
+                buf = buf[: cls._RECV_LINE_MAX_BYTES]
+                break
         return buf.decode(errors="replace").split("\n")[0]
 
     @staticmethod

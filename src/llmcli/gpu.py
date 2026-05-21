@@ -151,12 +151,14 @@ class VRAMMonitor:
             free_mb, used_mb = vm.sample()
             # ... many more samples over the lifetime ...
 
-    Or for long-lived objects::
+    Or for long-lived objects (e.g. adapters whose lifecycle is not a
+    single ``with`` block), use the explicit API which delegates to the
+    same primitives::
 
         vm = VRAMMonitor()
-        vm.__enter__()
+        vm.open()
         free_mb, used_mb = vm.sample()
-        vm.__exit__(None, None, None)
+        vm.close()
     """
 
     def __init__(self, device_index: int = 0) -> None:
@@ -165,6 +167,13 @@ class VRAMMonitor:
         self._init_failed = False
 
     def __enter__(self) -> Self:
+        # Re-entry is sticky in both directions: already-opened short-circuits
+        # so we don't double-init (and orphan the previous handle), and a prior
+        # init failure short-circuits too — GPU/driver availability does not
+        # change at runtime, so retrying nvmlInit() on every open() is wasteful
+        # noise.
+        if self._handle is not None or self._init_failed:
+            return self
         try:
             import pynvml  # type: ignore[import-untyped]
 
@@ -183,6 +192,27 @@ class VRAMMonitor:
             except Exception:  # noqa: BLE001
                 pass
             self._handle = None
+
+    def open(self) -> Self:
+        """Explicit lifecycle counterpart to ``__enter__`` for non-``with`` callers.
+
+        Double-call is absorbed silently by ``__enter__``'s re-entry guard
+        (idempotent context-manager semantics, valid for nested ``with``),
+        but on the explicit-API path a second ``open()`` without a matching
+        ``close()`` is unambiguously caller misuse — log a warning so
+        adapter lifecycle bugs surface in operator logs rather than as
+        latent never-released-handle leaks.
+        """
+        if self._handle is not None:
+            logger.warning(
+                "VRAMMonitor.open() called while already open — call ignored. "
+                "Caller likely missed a matching close()."
+            )
+        return self.__enter__()
+
+    def close(self) -> None:
+        """Explicit lifecycle counterpart to ``__exit__`` for non-``with`` callers."""
+        self.__exit__(None, None, None)
 
     def sample(self) -> tuple[float, float]:
         """Return (free_mb, used_mb). (0.0, 0.0) when nvml unavailable."""
