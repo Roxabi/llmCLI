@@ -930,9 +930,7 @@ class TestProxyEnvPortMalformed:
         runner = CliRunner()
         with patch("llmcli.cli.config") as mock_config:
             mock_config.load.return_value = self._EMPTY_CATALOG
-            result = runner.invoke(
-                typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")]
-            )
+            result = runner.invoke(typer_app, ["proxy", "--config-out", str(tmp_path / "out.yaml")])
 
         # Assert
         assert result.exit_code == 1, (

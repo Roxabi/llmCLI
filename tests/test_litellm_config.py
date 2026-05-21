@@ -651,7 +651,9 @@ class TestBuildBlockHostnameFilter:
         real_hostname = "definitely-not-this-host-12345"
         catalog = _make_remote_catalog("openai", machines=[real_hostname])
         # Act — no hostname kwarg → falls through to socket.gethostname()
-        with patch("llmcli.support.litellm_config.socket.gethostname", return_value="some-other-host"):
+        with patch(
+            "llmcli.support.litellm_config.socket.gethostname", return_value="some-other-host"
+        ):
             result = build_block(catalog, PUBLIC_BASE_URL)
         inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
         parsed = yaml.safe_load(inner)
@@ -664,7 +666,9 @@ class TestBuildBlockHostnameFilter:
         # Arrange — catalog pinned to "matching-host"
         catalog = _make_remote_catalog("openai", machines=["matching-host"])
         # Act — no hostname kwarg → falls through to socket.gethostname() (mocked to match)
-        with patch("llmcli.support.litellm_config.socket.gethostname", return_value="matching-host"):
+        with patch(
+            "llmcli.support.litellm_config.socket.gethostname", return_value="matching-host"
+        ):
             result = build_block(catalog, PUBLIC_BASE_URL)
         inner = result.replace(BLOCK_START, "").replace(BLOCK_END, "").strip()
         parsed = yaml.safe_load(inner)
