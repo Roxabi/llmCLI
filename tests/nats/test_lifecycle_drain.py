@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from llmcli.nats._lifecycle import LifecycleMixin
-from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
+from roxabi_contracts.llm import LifecycleRequest
 
 
 # ---------------------------------------------------------------------------
