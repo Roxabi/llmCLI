@@ -8,6 +8,15 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2.11-alpine
+        ports: ["4222:4222"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8222/healthz || true"
+          --health-interval 5s
+          --health-timeout 2s
+          --health-retries 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install uv
@@ -18,8 +27,12 @@ jobs:
         run: uv run ruff check .
       - name: Typecheck
         run: uv run ruff check --select=PYI .
-      - name: Test
-        run: uv run pytest
+      - name: Test (unit)
+        run: uv run pytest -m "not nats"
+      - name: Test (nats integration)
+        run: uv run --extra nats pytest -m nats
+        env:
+          NATS_URL: nats://localhost:4222
 
   secrets:
     name: Secret scan
