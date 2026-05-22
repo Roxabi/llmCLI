@@ -22,4 +22,4 @@ vram_budget_gib   = 16.0
 # The worker daemon reads LLMCLI_NATS_URL from env/worker.env; this section covers
 # the operator side (interactive commands run outside the container).
 # LLMCLI_NATS_URL env var takes precedence — CI, wrappers, and ad-hoc overrides keep working.
-url = "nats://<hub-tailnet-hostname>:4222"
+url = "nats://<hub-tailnet-ip>:4222"

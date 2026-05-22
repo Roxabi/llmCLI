@@ -189,8 +189,9 @@ resolve `*.ts.net` hostnames, and the same constraint applies to the operator CL
 when dialling out over the tailnet from the worker host. Run
 `tailscale status | awk '/roxabituwer/{print $1}'` on the hub to get the IP.
 
-Without either `[nats].url` or `LLMCLI_NATS_URL`, the operator CLI silently falls back
-to `nats://localhost:4222`, which targets the wrong broker on a remote worker host.
+Without either `[nats].url` or `LLMCLI_NATS_URL`, the operator CLI falls back to
+`nats://localhost:4222` without warning — on a remote worker host with no local NATS
+broker, you will see a timeout or connection error.
 
 ---
 

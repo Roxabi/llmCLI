@@ -29,10 +29,10 @@ rm /tmp/llm-worker.seed
 printf 'sk-...' | podman secret create llmcli-litellm-key -
 
 # 4. Write the worker env file (provides LLMCLI_NATS_URL to the container)
-install -d -m 700 ~/.roxabi/llmcli
-printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-fqdn>:4222\n' \
-    > ~/.roxabi/llmcli/worker.env
-chmod 600 ~/.roxabi/llmcli/worker.env
+install -d -m 700 ~/.roxabi/llmcli/env
+printf 'LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222\n' \
+    > ~/.roxabi/llmcli/env/worker.env
+chmod 600 ~/.roxabi/llmcli/env/worker.env
 
 # 5. Ensure the HuggingFace cache dir exists (Podman bind-mount source must pre-exist)
 mkdir -p ~/.cache/huggingface
@@ -49,7 +49,7 @@ systemctl --user start llmcli-nats-worker
 
 ## Operator CLI NATS config
 
-The worker daemon above reads `LLMCLI_NATS_URL` from `~/.roxabi/llmcli/worker.env`
+The worker daemon above reads `LLMCLI_NATS_URL` from `~/.roxabi/llmcli/env/worker.env`
 (injected via the `EnvironmentFile=` in the Quadlet). The operator CLI — `llmcli swap`,
 `llmcli stop`, `llmcli status`, `llmcli list`, `llmcli reload-catalog` — runs outside
 the container and needs to know the NATS URL separately.
@@ -66,9 +66,10 @@ url = "nats://<hub-tailnet-ip>:4222"
 `LLMCLI_NATS_URL` in the environment takes precedence over the toml entry — useful
 for CI or ad-hoc host overrides without editing the catalog.
 
-Without either, the operator CLI falls back to `nats://localhost:4222`. On a remote
-worker host this will silently target the wrong broker (see [Tailnet IP vs FQDN inside
-container](#tailnet-ip-vs-fqdn-inside-container) for the correct IP to use).
+Without either, the operator CLI falls back to `nats://localhost:4222` without warning —
+on a remote worker host with no local NATS broker, you will see a timeout or connection
+error (see [Tailnet IP vs FQDN inside container](#tailnet-ip-vs-fqdn-inside-container)
+for the correct IP to use).
 
 ## Verification
 
