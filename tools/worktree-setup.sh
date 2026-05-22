@@ -5,6 +5,7 @@
 # if a branch bumps deps, `rm .venv && uv sync` inside the worktree.
 set -euo pipefail
 
+# git worktree list --porcelain always emits the main worktree first per git docs.
 MAIN_REPO=$(git worktree list --porcelain | awk '/^worktree / {print $2; exit}')
 
 if [ -z "${MAIN_REPO:-}" ] || [ ! -d "${MAIN_REPO}/.venv" ]; then
@@ -18,7 +19,9 @@ if [ "${PWD}" = "${MAIN_REPO}" ]; then
 fi
 
 if [ -L .venv ]; then
-  rm .venv
+  existing=$(readlink .venv 2>/dev/null)
+  [ "$existing" = "${MAIN_REPO}/.venv" ] && { echo "worktree-setup: already linked — OK"; exit 0; }
+  rm -f .venv || { echo "worktree-setup: cannot remove .venv symlink" >&2; exit 1; }
 elif [ -d .venv ]; then
   echo "worktree-setup: .venv already exists as a real directory — leaving it untouched" >&2
   exit 0
