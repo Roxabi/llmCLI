@@ -13,6 +13,7 @@ ContainerName=llmcli-nats-worker
 # host network — rootless podman cannot route tailnet 100.x without it
 Network=host
 Volume=%h/.cache/huggingface:/home/llmcli/.cache/huggingface
+Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
 Environment=HF_HOME=/home/llmcli/.cache/huggingface
 Secret=llmcli-nats-worker,type=mount,target=/run/secrets/llmcli-nats-worker.seed,mode=0400,uid=1502,gid=1502
 Secret=llmcli-litellm-key,type=env,target=LLMCLI_LITELLM_API_KEY
