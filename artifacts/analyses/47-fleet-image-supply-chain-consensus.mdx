@@ -1,0 +1,73 @@
+---
+title: "security: harden fleet image supply-chain — Expert Consensus"
+issue: 47
+status: consensus-reached
+date: 2026-05-22
+panel: architect, security-auditor, devops
+confidence: high
+---
+
+## Problem
+
+Fleet Quadlets use floating tags with automatic registry polling:
+- `Image=ghcr.io/roxabi/llmcli:staging`
+- `Label=io.containers.autoupdate=registry`
+
+Any push to `:staging` on GHCR is auto-pulled and run on the next `podman auto-update` cycle. Compromise of the registry account or CI pipeline would reach prod (M₁, 24/7) without an approval gate.
+
+Scope: llmCLI (2 containers), lyra (4), voiceCLI (2), imageCLI (1), roxabi-live (1). `lyra-nats` already pins `nats:2.10.29-alpine@sha256:…` and omits autoupdate — this is the precedent.
+
+## Panel
+
+| α | Focus |
+|---|-------|
+| architect | fleet-wide arch consistency, ops model, standards |
+| security-auditor | supply-chain integrity, attack surface, compliance |
+| devops | deploy complexity, host config, CI/workflow cost |
+
+## Consensus ρ
+
+**Option 2** — Digest pinning + removal of `io.containers.autoupdate=registry`.
+
+Replace `Image=ghcr.io/roxabi/<tool>:staging` with `Image=ghcr.io/roxabi/<tool>:staging@sha256:<digest>` in every fleet Quadlet. Introduce a `make image-bump` workflow/tool that queries GHCR and proposes digest updates via PR. Drop the autoupdate label fleet-wide; digest pinning makes it a no-op anyway.
+
+### Rationale
+
+- **Immutability** — exact bytes run on every host; no silent drift.
+- **Approval gate** — PR merge required before new image reaches prod; `git blame` on `.container` = automatic deploy log.
+- **Precedent** — `lyra-nats` already proves digest pinning works in this exact Podman + systemd `--user` environment.
+- **Ops cost** — low. No new host infra; single registry API query in CI. Fleet-wide rollout via idempotent `deploy.sh` sync.
+
+### Trade-offs
+
+- **Automation dependency** — if `make image-bump` breaks, containers run stale images. Mitigation: CI alert on "digest age > N days" or periodic dry-run.
+- **Standards churn** — `docs/container-deployment-standard.md` S11 (Auto-update) and S13 (Image tag) must be updated fleet-wide.
+- **No cryptographic provenance** — digest pinning prevents silent drift but does not prove image origin. A compromised CI that opens a malicious PR could still reach prod if merged.
+
+## Alternatives
+
+| ω | Proposed by | Rejected because |
+|---|-------------|------------------|
+| Option 1 — Cosign keyless | security-auditor (ρ) | Over-engineered for 2-host/1-operator fleet. Adds sigstore CI complexity across ~10 repos; requires `containers-policy.json` distribution to every host; debugging policy failures is brittle. A signed malicious image would still auto-deploy (signature ≠ safety). |
+| Option 3 — Drop AutoUpdate only | none | Insufficient. `:staging` remains floating; manual `podman pull` or `systemctl restart` still delivers compromised image. Removes automation without adding control or immutability. |
+
+## Dissent
+
+security-auditor maintains that **Option 1 (Cosign)** is the only control that eliminates the compromise path completely. Cryptographic provenance binds the image to the GitHub Actions workflow identity; a compromised registry or rotated tag cannot forge a valid signature. Podman 4.x honors `containers-policy.json` in rootless mode.
+
+**Recorded** — accepted as deferred work. Revisit cosign when:
+- Fleet grows beyond 2 hosts / 1 operator
+- Compliance requirements mandate SLSA L2+ supply-chain provenance
+- `publish-container.yml` shared workflow is already being modified for other reasons
+
+## Implementation Notes
+
+1. **Per-repo:** update all `.container` files: `Image=ghcr.io/roxabi/<tool>:staging@sha256:<digest>` + comment citing bump source.
+2. **Remove** `Label=io.containers.autoupdate=registry` fleet-wide.
+3. **Add** `tools/bump-image.sh` or `make image-bump` target using `skopeo inspect` or `crane digest` against GHCR.
+4. **Update** `docs/container-deployment-standard.md` S11 + S13.
+5. **Rollout order:** M₂ first (dev), then M₁ (prod). `deploy.sh` idempotent sync handles both.
+
+## Next
+
+/spec → /plan → worktree → implement fleet-wide → PR per repo → close #47.

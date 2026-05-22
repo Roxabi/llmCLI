@@ -1,0 +1,61 @@
+---
+title: "refactor(engine): lift _WAIT_TIMEOUT — Expert Consensus"
+issue: 88
+status: consensus-reached
+date: 2026-05-22
+panel: architect, backend-dev, axial-adr-review
+confidence: high
+---
+
+## Problem
+
+`_WAIT_TIMEOUT` is a per-engine module-level constant:
+- `src/llmcli/engines/llamacpp.py:17` — 60 s
+- `src/llmcli/engines/vllm.py:17` — 180 s
+
+Each new engine (mlx, tensorrt-llm) would add another constant. This is an engines×1 drift surface along the non-primary axis (ADR-006 target-axis-trap).
+
+## Panel
+
+| α | Focus |
+|---|-------|
+| architect | arch soundness, ADR-006 alignment, maintainability |
+| backend-dev | impl complexity, runtime correctness, API design |
+| axial-adr-review | axial decomposition drift, N×M risk |
+
+## Consensus ρ
+
+**Option 2** — Add `start_timeout(self) -> float` to the `Engine` Protocol with default `60.0`; `VLLMEngine` overrides to `180.0`. Engine `start()` methods pass `self.start_timeout()` into `_common._wait_ready`.
+
+### Rationale
+
+Engine-class startup latency is a backend characteristic, not a model property. Moving it to `ModelSpec` would push stage timing into user-facing catalog configuration, creating a new `models × engines` drift surface (users copy-pasting `startup_timeout_s = 180` across vllm entries).
+
+Option 2 reuses the existing Override Protocol shape (`supports_swap`, `supports_hot_reload`). `_common._wait_ready` already accepts `timeout: float`; the primitive is ready. Future scalar stage parameters (e.g., `_STOP_GRACE`) can reuse the same channel, preventing a proliferation of module-level constants.
+
+### Trade-offs
+
+- **Per-model tuning not supported** without later extension. Mitigation: if needed, a per-model override can be added to the engine method later (`spec.startup_timeout_s or self._default_timeout`).
+- **Structural implementors must define method explicitly** — Python Protocol defaults do not propagate to structural subtypes. Mitigation: `LlamaCppEngine` and `VLLMEngine` already implement `supports_swap` / `supports_hot_reload` explicitly; `start_timeout` follows the same pattern at ≤3 LOC per engine.
+
+## Alternatives
+
+| ω | Proposed by | Rejected because |
+|---|-------------|------------------|
+| Option 1 — `startup_timeout_s` on `ModelSpec` | backend-dev (ρ) | Inverts dependency (catalog owns engine timing); leaks engine internals into user config; N×M drift in TOML or config loader |
+
+## Dissent
+
+backend-dev raised the structural subtype concern: `LlamaCppEngine` and `VLLMEngine` do not nominally inherit `Engine`, so a Protocol default would not propagate at runtime. This concern is **valid and mitigated** — the engines already explicitly implement Protocol methods; `start_timeout` requires the same explicit definition. The override remains within the ADR-006 "≤10 LOC per engine" budget.
+
+## Implementation Notes
+
+1. `engine.py` — add `start_timeout(self) -> float = 60.0` to `Engine` Protocol (with doc comment noting structural implementors must define concretely).
+2. `engines/llamacpp.py` — add `start_timeout(self) -> float: return 60.0`; pass `self.start_timeout()` into `_wait_ready`; delete `_WAIT_TIMEOUT`.
+3. `engines/vllm.py` — add `start_timeout(self) -> float: return 180.0`; pass `self.start_timeout()` into `_wait_ready`; delete `_WAIT_TIMEOUT`.
+4. `engines/llamacpp_tq3.py` — inherits from `LlamaCppEngine`; no change needed.
+5. No `ModelSpec` or TOML schema changes required.
+
+## Next
+
+/spec → /plan → worktree → implement → test → PR → close #88.
