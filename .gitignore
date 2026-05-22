@@ -15,3 +15,6 @@ uv.lock.local
 
 # dev-core worktree orchestration state
 .claude/worktrees/
+
+# Generated NATS auth config (ephemeral credentials)
+tests/nats/auth/nats-server.conf
