@@ -1,7 +1,6 @@
 {
   "allowlist": [
-    "llmcli",
-    "pytest-timeout"
+    "llmcli"
   ],
   "overrides": {}
 }

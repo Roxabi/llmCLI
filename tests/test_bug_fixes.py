@@ -1,13 +1,16 @@
-"""Tests for smoke-test bug fixes B1, B2, B3.
+"""Tests for smoke-test bug fixes B1, B2, B3, B4.
 
 B1 — cli swap uses timeout=300s
 B2 — check_vram_budget probes free VRAM; kv_overhead_gib heuristic
 B3 — engine.start reaps zombie on early subprocess exit; stop() reaps after kill
+B4 — license_check handles compound strings with noise tokens (DFSG approved, OSI Approved)
 """
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +21,16 @@ from llmcli import config
 from llmcli.config import HostSettings, ModelSpec, check_vram_budget
 from llmcli.engines.llamacpp import LlamaCppEngine
 from llmcli.gpu import kv_overhead_gib, probe_free_vram_gib
+
+# Load tools/license_check.py dynamically (lives outside src/, not a package).
+_lc_path = Path(__file__).parent.parent / "tools" / "license_check.py"
+_lc_spec = importlib.util.spec_from_file_location("license_check", _lc_path)
+_lc = importlib.util.module_from_spec(_lc_spec)  # type: ignore[arg-type]
+sys.modules.setdefault("license_check", _lc)
+_lc_spec.loader.exec_module(_lc)  # type: ignore[union-attr]
+
+_split_compound_spdx = _lc._split_compound_spdx
+_is_compliant = _lc.is_compliant
 
 
 # ---------------------------------------------------------------------------
@@ -394,3 +407,72 @@ class TestEngineStopReapsAfterKill:
             patch("llmcli.engines.llamacpp.os.waitpid", side_effect=fake_waitpid),
         ):
             engine.stop(instance)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# B4 — license_check: compound license strings with noise tokens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_gpu
+class TestSplitCompoundSpdx:
+    """B4: _split_compound_spdx strips noise tokens from compound strings."""
+
+    def test_dfsg_approved_filtered(self) -> None:
+        parts = _split_compound_spdx("DFSG approved; MIT License")
+        assert parts == ["MIT License"]
+
+    def test_osi_approved_filtered(self) -> None:
+        parts = _split_compound_spdx("OSI Approved; Apache License 2.0")
+        assert parts == ["Apache License 2.0"]
+
+    def test_multiple_noise_tokens_filtered(self) -> None:
+        parts = _split_compound_spdx("DFSG approved; OSI Approved; MIT License")
+        assert parts == ["MIT License"]
+
+    def test_plain_license_unchanged(self) -> None:
+        parts = _split_compound_spdx("MIT License")
+        assert parts == ["MIT License"]
+
+    def test_and_separated_preserved(self) -> None:
+        parts = _split_compound_spdx("Apache-2.0 AND MIT")
+        assert parts == ["Apache-2.0", "MIT"]
+
+    def test_or_separated_preserved(self) -> None:
+        parts = _split_compound_spdx("MIT OR Apache-2.0")
+        assert parts == ["MIT", "Apache-2.0"]
+
+    def test_empty_string_returns_empty(self) -> None:
+        assert _split_compound_spdx("") == []
+
+
+@pytest.mark.no_gpu
+class TestIsCompliantNoiseTokens:
+    """B4: is_compliant accepts compound strings that contain noise tokens."""
+
+    def test_dfsg_approved_mit_is_compliant(self) -> None:
+        # Acceptance criteria: pytest-timeout's license string must pass without allowlist
+        assert _is_compliant("pytest-timeout", "DFSG approved; MIT License", {})
+
+    def test_osi_approved_apache_is_compliant(self) -> None:
+        assert _is_compliant("some-pkg", "OSI Approved; Apache License 2.0", {})
+
+    def test_pure_noise_token_is_not_compliant(self) -> None:
+        # "DFSG approved" alone (no real license) → empty parts after filtering → not compliant
+        assert not _is_compliant("pkg", "DFSG approved", {})
+
+    def test_unknown_compound_is_not_compliant(self) -> None:
+        # "DFSG approved" is filtered by NOISE_TOKENS; remaining "GPL-3.0" is not in SAFE_LICENSES
+        assert not _is_compliant("pkg", "DFSG approved; GPL-3.0", {})
+
+    def test_plain_mit_still_compliant(self) -> None:
+        assert _is_compliant("pkg", "MIT", {})
+
+    def test_allowlisted_package_always_compliant(self) -> None:
+        assert _is_compliant("pytest-timeout", "DFSG approved", {"allowlist": ["pytest-timeout"]})
+
+    def test_noise_token_matching_is_exact_case(self) -> None:
+        # NOISE_TOKENS uses exact-case matching (pip-licenses output is deterministic).
+        # "DFSG Approved" (capital A) is NOT in NOISE_TOKENS, so it survives filtering
+        # and is not in SAFE_LICENSES either → non-compliant. Documents the contract.
+        assert not _is_compliant("pkg", "DFSG Approved; MIT License", {})
