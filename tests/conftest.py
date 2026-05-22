@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 from unittest.mock import patch
 
 import pytest
+
+
+def pytest_ignore_collect(collection_path, config):  # noqa: ARG001
+    """Skip NATS test dirs when the nats optional-extra is not installed."""
+    if importlib.util.find_spec("roxabi_contracts") is not None:
+        return None
+    p = str(collection_path)
+    if "/tests/nats" in p or p.endswith(("test_lifecycle_nats.py", "test_swap_nats.py")):
+        return True
+    return None
 
 
 @pytest.fixture(autouse=True)
