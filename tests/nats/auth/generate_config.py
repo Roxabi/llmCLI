@@ -23,6 +23,7 @@ import secrets
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "nats-server.conf")
 
 CONFIG_TEMPLATE = """port: 4222
+http_port: 8222
 
 authorization {{
   users = [
