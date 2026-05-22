@@ -150,11 +150,25 @@ class TestPullCommand:
 
 
 # ---------------------------------------------------------------------------
-# U3-U5 — serve, stop, status: tests removed in Slice 6 cutover (#34).
-# `serve` is a deprecation stub (covered by TestHelpOutput exit-1 below);
-# `stop` and `status` go through NATS and are covered by
-# tests/nats/test_lifecycle_status.py + tests/cli/test_swap_nats.py et al.
+# U3-U5 — stop, status, list: tests removed in Slice 6 cutover (#34).
+# All three go through NATS and are covered by tests/cli/test_lifecycle_nats.py
+# (CLI layer) + tests/nats/test_lifecycle_status.py (worker layer).
+# `serve` is now a deprecation stub — covered by TestServeStub below.
 # ---------------------------------------------------------------------------
+
+
+class TestServeStub:
+    """B9 (#34 Slice 6): `serve` exits 1 with a redirect to the NATS worker."""
+
+    def test_serve_exits_one(self) -> None:
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 1
+
+    def test_serve_output_redirects_to_worker(self) -> None:
+        result = runner.invoke(app, ["serve"])
+        combined = result.output + (result.stderr or "")
+        assert "removed" in combined.lower()
+        assert "llmcli-nats-worker" in combined
 
 
 # ---------------------------------------------------------------------------

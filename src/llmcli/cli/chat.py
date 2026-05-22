@@ -26,7 +26,16 @@ def chat(name: str, prompt: str) -> None:
 
     spec = catalog.models[name]
 
-    # Determine base_url: catalog port is the authoritative source (AF_UNIX daemon removed in Slice 6).
+    # B8 (#34 Slice 6): chat needs a local engine with a configured port. After
+    # the daemon STATUS lookup was removed, spec.port is the only source; remote
+    # engines never set it, so reject explicitly instead of POSTing to :0.
+    if spec.engine == "remote" or spec.port == 0:
+        err_console.print(
+            f"[red]llmcli chat requires a local engine with a configured port. "
+            f"Model {name!r} uses engine={spec.engine!r} (port={spec.port}).[/red]"
+        )
+        raise typer.Exit(code=1)
+
     base_url = f"http://localhost:{spec.port}/v1"
 
     api_key = os.environ.get(catalog.host.api_key_env, "no-key")
