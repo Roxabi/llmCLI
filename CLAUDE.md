@@ -23,6 +23,11 @@ Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp`
 | `llamacpp_tq3` | `llama-server` (TurboQuant fork) | TQ3_4S mixed-quant — required for Qwen3.6-35B-A3B-TQ3_4S |
 | `vllm` | `vllm serve` | Safetensors (NVFP4/GPTQ) — dev only (RTX 5070 Ti); `uv sync --group vllm` |
 
+### Architectural axis
+
+Primary axis of decomposition: **lifecycle_stages** (composition + stability).
+axial rule: engines are thin leaves composing stage primitives from `engines/_common.py` and NATS mixins. New engine = +1 file; do NOT re-implement stage logic. See [ADR-006](docs/architecture/adr/006-axis-of-decomposition.mdx).
+
 ## Host Topology
 
 | Host | GPU | VRAM | LLM role | Providers |
