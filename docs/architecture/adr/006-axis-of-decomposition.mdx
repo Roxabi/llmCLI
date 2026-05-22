@@ -69,6 +69,22 @@ When extending the system:
 - New mandatory stage forces all engine leaf files to update (or use `NotImplementedError` default) — Mitigation: new stages default to `NotImplementedError`; gate in `NatsAdapterBase` before routing
 - vllm lifecycle differs enough that some stage abstractions leak (no persistent process, HTTP-only, no VRAM query) — Mitigation: thin `VllmStageAdapter` shim; document leakage boundary explicitly
 
+#### Override Protocol
+
+Two known stage divergences formalize the override contract:
+
+| Engine | Stage | Behavior | Reason |
+|--------|-------|----------|--------|
+| `vllm` | `swap` | no-op (refuse) | Single model per process; no live model unload |
+| `llamacpp_tq3` | `swap` | restart (refuse hot-swap) | Mixed-quant kernel reload required; hot-swap not supported |
+
+**Contract:**
+
+- Engines declare incapability by overriding `supports_swap()` and/or `supports_hot_reload()` and returning `False`
+- Default in the `Engine` Protocol (`src/llmcli/engine.py`) = `True` (capable) — engines that support the operation do not override
+- When `supports_swap()` returns `False`, `_do_swap` in `src/llmcli/nats/_lifecycle.py` MUST refuse the request with `ERR.UNSUPPORTED` — no silent fallback, no degraded partial execution
+- Override LOC budget: ≤10 LOC per engine override (enforced by the 10-LOC limit in the Negative bullet above)
+
 ### Anti-pattern signal
 Grep pattern: `engines/(llamacpp|llamacpp_tq3|vllm).*def.*(wait|poll|ready)` in `src/llmcli/engines/`.
 If this pattern appears, stage logic is being re-implemented inside an engine leaf instead of delegating to `_common.py`. That is the canonical drift signal for this axis.
