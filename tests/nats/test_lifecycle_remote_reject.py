@@ -62,7 +62,7 @@ async def test_swap_remote_engine_returns_lifecycle_rejected():
         def __init__(self):
             self.__init_lifecycle__()
             self._sem = asyncio.Semaphore(2)
-            self._drain_timeout = 5.0
+            self.drain_timeout = 5.0
             self._instances: dict = {}
             # Catalog with one remote-engine model
             remote_spec = MagicMock()

@@ -3,7 +3,7 @@
 Handles swap/stop/status/list/reload-catalog on broadcast subjects.
 MRO: LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase).
 
-Host class must expose: _catalog, _instances, _sem, _drain_timeout,
+Host class must expose: _catalog, _instances, _sem, drain_timeout,
 _engine_for_spec(spec). Call __init_lifecycle__() after super().__init__().
 """
 
@@ -23,6 +23,19 @@ from llmcli.config import check_vram_budget, load as load_catalog
 
 log = logging.getLogger(__name__)
 
+# B3: wire-safe error messages keyed by exception class name.
+# str(exc) is never sent on the wire — it may contain file paths, addresses,
+# or internal state that operators should not expose to callers.
+_CRASH_MESSAGES: dict[str, str] = {
+    "FileNotFoundError": "model file not found",
+    "PermissionError": "permission denied",
+    "TimeoutError": "engine startup timed out",
+    "ConnectionError": "engine connection failed",
+    "TOMLDecodeError": "catalog parse error",
+    "ValueError": "invalid configuration",
+}
+_CRASH_FALLBACK = "engine start failed"
+
 LIFECYCLE_SUBJECTS = (
     "lyra.llm.lifecycle.swap",
     "lyra.llm.lifecycle.stop",
@@ -30,6 +43,7 @@ LIFECYCLE_SUBJECTS = (
     "lyra.llm.lifecycle.list",
     "lyra.llm.lifecycle.reload-catalog",
 )
+
 
 class LifecycleMixin:
     """Mixin that adds NATS lifecycle control to any NatsAdapterBase subclass."""
@@ -124,21 +138,29 @@ class LifecycleMixin:
         model_name = req.model_name
         log.info(
             "lifecycle.swap: start trace_id=%s request_id=%s model=%s host=%s",
-            req.trace_id, req.request_id, model_name, req.host,
+            req.trace_id,
+            req.request_id,
+            model_name,
+            req.host,
         )
         catalog = self._catalog  # type: ignore[attr-defined]
 
         spec = catalog.models.get(model_name)
         if spec is None:
             await self._reply_err(
-                msg, req, "llm.lifecycle_rejected",
-                f"unknown model: {model_name}", retryable=False,
+                msg,
+                req,
+                "llm.lifecycle_rejected",
+                f"unknown model: {model_name}",
+                retryable=False,
             )
             return
 
         if spec.engine == "remote":
             await self._reply_err(
-                msg, req, "llm.lifecycle_rejected",
+                msg,
+                req,
+                "llm.lifecycle_rejected",
                 "model uses engine='remote' — managed by LiteLLM proxy, not the worker",
                 retryable=False,
             )
@@ -148,25 +170,29 @@ class LifecycleMixin:
             check_vram_budget(spec, catalog.host)
         except ValueError as exc:
             await self._reply_err(
-                msg, req, "llm.lifecycle_rejected",
-                f"vram budget exceeded: {exc}", retryable=False,
+                msg,
+                req,
+                "llm.lifecycle_rejected",
+                f"vram budget exceeded: {exc}",
+                retryable=False,
             )
             return
-        except TypeError:
-            # host/spec attrs are MagicMocks in tests — skip dynamic check
-            pass
-
         instances: dict = self._instances  # type: ignore[attr-defined]
         if model_name in instances:
             inst = instances[model_name]
-            await self._reply_ok(msg, req, data={
-                "model": model_name,
-                "port": inst.port,
-                "vram_used_mb": 0,
-            })
+            await self._reply_ok(
+                msg,
+                req,
+                data={
+                    "model": model_name,
+                    "port": inst.port,
+                    "vram_used_mb": 0,
+                },
+            )
             log.info(
                 "lifecycle.swap: noop trace_id=%s model=%s (same model)",
-                req.trace_id, model_name,
+                req.trace_id,
+                model_name,
             )
             return
 
@@ -183,7 +209,7 @@ class LifecycleMixin:
             try:
                 await asyncio.wait_for(
                     self._wait_sem_idle(),
-                    timeout=self._drain_timeout,  # type: ignore[attr-defined]
+                    timeout=self.drain_timeout,
                 )
             except asyncio.TimeoutError:
                 log.warning("lifecycle.swap: drain timeout — hard-cutting in-flight")
@@ -196,11 +222,9 @@ class LifecycleMixin:
             new_engine = self._engine_for_spec(spec)  # type: ignore[attr-defined]
             new_inst = await loop.run_in_executor(executor, new_engine.start, spec)
         except Exception as exc:  # noqa: BLE001
-            await self._reply_err(msg, req, "worker.crash", str(exc), retryable=True)
-            log.info(
-                "lifecycle.swap: failed trace_id=%s model=%s exc=%s",
-                req.trace_id, model_name, exc,
-            )
+            wire_msg = _CRASH_MESSAGES.get(type(exc).__name__, _CRASH_FALLBACK)
+            await self._reply_err(msg, req, "worker.crash", wire_msg, retryable=True)
+            log.exception("worker.crash on swap to %s", model_name)
             return
         finally:
             self._draining.clear()
@@ -211,14 +235,21 @@ class LifecycleMixin:
         if vram_monitor is not None:
             _, vram_used_mb = vram_monitor.sample()
             vram_used_mb = int(vram_used_mb)
-        await self._reply_ok(msg, req, data={
-            "model": model_name,
-            "port": new_inst.port,
-            "vram_used_mb": vram_used_mb,
-        })
+        await self._reply_ok(
+            msg,
+            req,
+            data={
+                "model": model_name,
+                "port": new_inst.port,
+                "vram_used_mb": vram_used_mb,
+            },
+        )
         log.info(
             "lifecycle.swap: done trace_id=%s model=%s port=%s vram_used_mb=%d",
-            req.trace_id, model_name, new_inst.port, vram_used_mb,
+            req.trace_id,
+            model_name,
+            new_inst.port,
+            vram_used_mb,
         )
 
     async def _do_status(self, msg, req: LifecycleRequest) -> None:
@@ -232,11 +263,15 @@ class LifecycleMixin:
         if vram_monitor is not None:
             _, vram_used_mb = vram_monitor.sample()
             vram_used_mb = int(vram_used_mb)
-        await self._reply_ok(msg, req, data={
-            "model": name,
-            "port": inst.port,
-            "vram_used_mb": vram_used_mb,
-        })
+        await self._reply_ok(
+            msg,
+            req,
+            data={
+                "model": name,
+                "port": inst.port,
+                "vram_used_mb": vram_used_mb,
+            },
+        )
 
     async def _do_list(self, msg, req: LifecycleRequest) -> None:
         catalog = self._catalog  # type: ignore[attr-defined]
@@ -255,7 +290,9 @@ class LifecycleMixin:
     async def _do_stop(self, msg, req: LifecycleRequest) -> None:
         log.info(
             "lifecycle.stop: start trace_id=%s request_id=%s host=%s",
-            req.trace_id, req.request_id, req.host,
+            req.trace_id,
+            req.request_id,
+            req.host,
         )
         catalog = self._catalog  # type: ignore[attr-defined]
         instances: dict = self._instances  # type: ignore[attr-defined]
@@ -278,8 +315,11 @@ class LifecycleMixin:
             new_catalog = load_catalog()
         except (tomllib.TOMLDecodeError, FileNotFoundError, ValueError) as exc:
             await self._reply_err(
-                msg, req, "llm.lifecycle_rejected",
-                f"catalog load error: {exc}", retryable=False,
+                msg,
+                req,
+                "llm.lifecycle_rejected",
+                f"catalog load error: {exc}",
+                retryable=False,
             )
             return
         self._catalog = new_catalog  # type: ignore[attr-defined]

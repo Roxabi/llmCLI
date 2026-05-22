@@ -18,13 +18,11 @@ import asyncio
 import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import httpx
 from roxabi_nats.adapter_base import NatsAdapterBase
 
 from llmcli.config import load as load_catalog
-from llmcli.daemon import SOCKET_PATH, daemon_request
 from llmcli.gpu import VRAMMonitor
 from llmcli.nats._generation import GenerationMixin
 from llmcli.nats._lifecycle import LIFECYCLE_SUBJECTS, LifecycleMixin
@@ -33,7 +31,6 @@ from roxabi_contracts.llm import SUBJECTS
 log = logging.getLogger(__name__)
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
-_STATUS_MODEL_RE = re.compile(r"model=(\S+)")
 
 
 class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
@@ -53,7 +50,6 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
         model_name: str,
         litellm_url: str,
         litellm_key: str,
-        socket_path: Path | None = None,
         max_concurrent: int = 4,
         reject_when_full: bool = False,
         heartbeat_interval: float = 5.0,
@@ -72,7 +68,6 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
         )
         self.__init_lifecycle__()  # sets _draining + _lifecycle_lock
         self._model_name = model_name
-        self._socket_path = socket_path or SOCKET_PATH
         self._max_concurrent = max_concurrent
         self._sem = asyncio.Semaphore(max_concurrent)
         self._reject_when_full = reject_when_full
@@ -103,37 +98,13 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
         await super().run(nats_url, stop)
 
     def _ensure_model(self) -> None:
-        """SWAP to configured model via daemon socket. Runs in executor.
+        """Record configured model name. Runs in executor.
 
-        When the socket is absent the worker is assumed to be running in
-        remote-worker mode where the model is loaded externally (e.g. by
-        llama-server started by the operator or supervisor). The SWAP/STATUS
-        pre-check is skipped so the container starts without a host daemon.
+        Slice 6 (AF_UNIX daemon removed, #34): the daemon socket no longer exists.
+        Model loading is managed externally (llama-server started by the operator).
         """
-        if not Path(self._socket_path).exists():
-            log.info(
-                "llm_adapter: daemon socket not found at %s — "
-                "skipping SWAP/STATUS (remote-worker mode, model assumed loaded externally)",
-                self._socket_path,
-            )
-            self._loaded_model = self._model_name
-            return
-        try:
-            reply = daemon_request(f"SWAP {self._model_name}", socket_path=self._socket_path)
-            if not reply.startswith("OK"):
-                raise RuntimeError(f"llmCLI daemon SWAP failed: {reply}")
-            status = daemon_request("STATUS", socket_path=self._socket_path)
-            self._loaded_model = self._parse_model(status)
-            log.info("llm_adapter: model=%s ready", self._loaded_model)
-        except OSError as exc:
-            # Socket disappeared mid-flight (daemon restarted, socket removed).
-            # Log and continue — model is presumed loaded; don't crash the worker.
-            log.info(
-                "llm_adapter: daemon unreachable (%s) — "
-                "skipping SWAP/STATUS, assuming model already loaded",
-                exc,
-            )
-            self._loaded_model = self._model_name
+        self._loaded_model = self._model_name
+        log.info("llm_adapter: model=%s assumed loaded externally", self._loaded_model)
 
     # ------------------------------------------------------------------
     # NatsAdapterBase overrides
@@ -187,9 +158,7 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
             await self._err(
                 msg,
                 payload,
-                self._make_worker_error(
-                    "worker.capacity", "drain in progress", retryable=True
-                ),
+                self._make_worker_error("worker.capacity", "drain in progress", retryable=True),
             )
             return
         # Generation path (preserves MRO chain — S5)
@@ -212,15 +181,3 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
 
         async with self._sem:
             await self._run_generation(msg, payload, request_id)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_model(status: str) -> str | None:
-        m = _STATUS_MODEL_RE.search(status)
-        if not m:
-            return None
-        val = m.group(1)
-        return None if val == "none" else val

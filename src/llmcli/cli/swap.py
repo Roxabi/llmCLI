@@ -11,7 +11,6 @@ from uuid import uuid4
 import typer
 
 from llmcli.cli._app import app, console, err_console
-from llmcli.cli._lifecycle_nats import _use_nats_lifecycle  # T27: shared helper
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +18,7 @@ from llmcli.cli._lifecycle_nats import _use_nats_lifecycle  # T27: shared helper
 # ---------------------------------------------------------------------------
 
 
-async def _swap_via_nats(name: str, host: str, timeout: float) -> None:
+async def _swap_via_nats(name: str, host: str, timeout: float, *, allow_anonymous: bool) -> None:
     from nats.aio.client import Client as NATS  # type: ignore[import]
     from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
     from roxabi_contracts.llm.subjects import SUBJECTS
@@ -27,15 +26,13 @@ async def _swap_via_nats(name: str, host: str, timeout: float) -> None:
     nc = NATS()
     creds_path = Path("~/.config/llmcli/nkeys/operator.creds").expanduser()
     nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
-    # Fail-closed: missing creds connects anonymously against permissive brokers.
-    # CI / pre-Slice-0 dev set LLMCLI_NATS_SKIP_CREDS=1 to opt in explicitly.
-    if not creds_path.exists() and os.environ.get(
-        "LLMCLI_NATS_SKIP_CREDS", ""
-    ).lower() not in ("1", "true"):
+    # Fail-closed: missing creds requires explicit --allow-anonymous flag to connect.
+    # Use --allow-anonymous for CI/dev only — do not use in production.
+    if not creds_path.exists() and not allow_anonymous:
         err_console.print(
             f"[red]NATS operator credentials not found at {creds_path}. "
-            f"Run lyra-acl genkeys (Slice 0) or export "
-            f"LLMCLI_NATS_SKIP_CREDS=1 to allow anonymous connect (dev/CI only).[/red]"
+            f"Run lyra-acl genkeys (Slice 0) or pass "
+            f"--allow-anonymous to connect without credentials (CI/dev only).[/red]"
         )
         raise typer.Exit(code=1)
     await nc.connect(
@@ -99,8 +96,14 @@ def swap(
         "--timeout",
         help="Seconds to wait for the daemon to load the model (default: 300s for large models).",
     ),
+    allow_anonymous: bool = typer.Option(
+        False,
+        "--allow-anonymous",
+        help="Connect to NATS without operator credentials. CI/dev only — do not use in production.",
+        hidden=True,
+    ),
 ) -> None:
-    """Hot-swap the running model via the daemon socket or NATS."""
+    """Hot-swap the running model via NATS."""
     import llmcli.cli as _cli
 
     catalog = _cli.config.load()
@@ -110,20 +113,11 @@ def swap(
         err_console.print(f"[red]Unknown model '{name}'. Available: {available}[/red]")
         raise typer.Exit(code=1)
 
-    if _use_nats_lifecycle():
-        # E1 rollback: set LLMCLI_LIFECYCLE_VIA_NATS=0 to revert to AF_UNIX path.
-        asyncio.run(_swap_via_nats(name, host=host or socket.gethostname(), timeout=timeout))
-        return
-
-    # AF_UNIX daemon path (E1 rollback path — env=0 or unset).
-    try:
-        resp = _cli.daemon_request(f"SWAP {name}", timeout=timeout)
-    except Exception as exc:
-        console.print(f"[yellow]Daemon not running or unreachable: {exc}[/yellow]")
-        raise typer.Exit(code=1)
-
-    if resp.startswith("ERR"):
-        err_console.print(f"[red]{resp}[/red]")
-        raise typer.Exit(code=1)
-
-    console.print(f"Daemon: {resp}")
+    asyncio.run(
+        _swap_via_nats(
+            name,
+            host=host or socket.gethostname(),
+            timeout=timeout,
+            allow_anonymous=allow_anonymous,
+        )
+    )

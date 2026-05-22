@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 
 import typer
@@ -27,17 +26,17 @@ def chat(name: str, prompt: str) -> None:
 
     spec = catalog.models[name]
 
-    # Determine base_url: try daemon STATUS first, fall back to catalog port.
+    # B8 (#34 Slice 6): chat needs a local engine with a configured port. After
+    # the daemon STATUS lookup was removed, spec.port is the only source; remote
+    # engines never set it, so reject explicitly instead of POSTing to :0.
+    if spec.engine == "remote" or spec.port == 0:
+        err_console.print(
+            f"[red]llmcli chat requires a local engine with a configured port. "
+            f"Model {name!r} uses engine={spec.engine!r} (port={spec.port}).[/red]"
+        )
+        raise typer.Exit(code=1)
+
     base_url = f"http://localhost:{spec.port}/v1"
-    try:
-        raw = _cli.daemon_request("STATUS")
-        if raw.startswith("{"):
-            instances = json.loads(raw)
-            if name in instances:
-                port = instances[name].get("port", spec.port)
-                base_url = f"http://localhost:{port}/v1"
-    except Exception:
-        pass
 
     api_key = os.environ.get(catalog.host.api_key_env, "no-key")
 
