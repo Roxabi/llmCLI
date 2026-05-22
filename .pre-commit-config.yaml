@@ -1,4 +1,16 @@
+exclude: '^uv\.lock$'
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
   - repo: local
     hooks:
       - id: lint
@@ -28,7 +40,7 @@ repos:
         pass_filenames: false
       - id: gitleaks
         name: gitleaks secret scan
-        entry: gitleaks detect --source . --no-git
+        entry: bash -c "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --source . --no-git; else echo 'gitleaks not installed; CI runs the canonical scan'; fi"
         language: system
         pass_filenames: false
         stages: [pre-push]

@@ -1,0 +1,14 @@
+# gitleaks repo-local allowlist
+# Default ruleset applies; this file narrows false positives.
+
+title = "llmCLI gitleaks config"
+
+[allowlist]
+description = "llmCLI repo allowlist — placeholder configs"
+paths = [
+    # .env.example contains placeholder GitHub Project V2 IDs (PVT_..., PVTSSF_...)
+    # and empty API key slots; values are documentation, not real credentials.
+    '''\.env\.example$''',
+    # llmcli example TOML is a template, not active config.
+    '''llmcli\.example\.toml$''',
+]
