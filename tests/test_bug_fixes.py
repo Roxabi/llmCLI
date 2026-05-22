@@ -470,3 +470,9 @@ class TestIsCompliantNoiseTokens:
 
     def test_allowlisted_package_always_compliant(self) -> None:
         assert _is_compliant("pytest-timeout", "DFSG approved", {"allowlist": ["pytest-timeout"]})
+
+    def test_noise_token_matching_is_exact_case(self) -> None:
+        # NOISE_TOKENS uses exact-case matching (pip-licenses output is deterministic).
+        # "DFSG Approved" (capital A) is NOT in NOISE_TOKENS, so it survives filtering
+        # and is not in SAFE_LICENSES either → non-compliant. Documents the contract.
+        assert not _is_compliant("pkg", "DFSG Approved; MIT License", {})

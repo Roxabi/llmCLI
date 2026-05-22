@@ -40,9 +40,10 @@ from pathlib import Path
 # Metadata tokens that appear alongside license names in pip-licenses output but
 # are not themselves license identifiers (e.g. Debian packaging annotations).
 # Filtered out after splitting compound strings so they don't cause false failures.
+# Matching is exact-case — values must match pip-licenses output verbatim.
 NOISE_TOKENS: set[str] = {
-    "DFSG approved",
-    "OSI Approved",
+    "DFSG approved",  # Debian Free Software Guidelines tag
+    "OSI Approved",   # Open Source Initiative approval tag
 }
 
 SAFE_LICENSES: set[str] = {
