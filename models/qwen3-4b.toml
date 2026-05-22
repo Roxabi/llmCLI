@@ -1,0 +1,9 @@
+# Qwen3-4B dense — Q4_K_M GGUF. Small test model for M₂ (RTX 5070 Ti 16 GB).
+# ~2.4 GiB weights + KV cache → ~3-4 GiB total VRAM. Fast cold-start (~3s).
+engine   = "llamacpp"
+repo     = "Qwen/Qwen3-4B-GGUF"
+file     = "qwen3-4b-q4_k_m.gguf"
+port     = 8093
+vram_gib = 4
+flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
+machines = ["roxabitower"]
