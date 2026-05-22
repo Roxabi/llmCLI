@@ -14,3 +14,6 @@ class LlamaCppTQ3Engine(LlamaCppEngine):
     """
 
     binary: str = os.environ.get("LLMCLI_TQ3_BINARY", "llama-server-tq3")
+
+    def supports_hot_reload(self) -> bool:
+        return False

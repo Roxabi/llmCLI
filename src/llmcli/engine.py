@@ -42,3 +42,13 @@ class Engine(Protocol):
     def stop(self, instance: EngineInstance) -> None: ...
 
     def health(self, instance: EngineInstance) -> bool: ...
+
+    # Override capability flags. Default = True (capable). Engines that diverge
+    # from the canonical stage shape MUST override to False — see ADR-006.
+    # NOTE: Protocol defaults below apply only to nominal subclasses
+    # (class X(Engine)); structural implementors MUST define these concretely.
+    def supports_swap(self) -> bool:
+        return True
+
+    def supports_hot_reload(self) -> bool:
+        return True
