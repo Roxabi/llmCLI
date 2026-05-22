@@ -85,6 +85,33 @@ run mkdir -p "$ENV_DIR"
 run mkdir -p "${HOME}/.cache/huggingface"
 echo "  dirs ok"
 
+# --- Networks ---
+# llmcli.container requires roxabi.network (shared bridge with lyra-*, hermes-*)
+# for container-to-container DNS routing. The .network Quadlet file is owned by
+# lyra deploy (single source of truth across the fleet) — installed at
+# ~/.config/containers/systemd/roxabi.network. We only verify presence here.
+echo ""
+echo "--- Networks ---"
+if podman network exists systemd-roxabi 2>/dev/null; then
+  echo "  [ok]     systemd-roxabi (from roxabi.network Quadlet)"
+elif [ -f "${QUADLET_DIR}/roxabi.network" ]; then
+  echo "  [pending] roxabi.network Quadlet present but network not yet generated"
+  echo "            run: systemctl --user daemon-reload && podman network ls"
+else
+  echo "  [MISSING] roxabi.network Quadlet not found at ${QUADLET_DIR}/roxabi.network" >&2
+  echo "" >&2
+  echo "  llmcli.container references Network=roxabi.network (shared bridge)." >&2
+  echo "  On M₁: provided by lyra deploy." >&2
+  echo "  On other hosts: install via lyra/deploy/quadlet/roxabi.network or:" >&2
+  echo "    cat > ${QUADLET_DIR}/roxabi.network <<EOF" >&2
+  echo "    [Network]" >&2
+  echo "    Driver=bridge" >&2
+  echo "    Label=app=roxabi" >&2
+  echo "    EOF" >&2
+  echo "    systemctl --user daemon-reload" >&2
+  exit 1
+fi
+
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
