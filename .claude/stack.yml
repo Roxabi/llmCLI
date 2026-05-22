@@ -19,7 +19,7 @@ build:
 
 testing:
   unit: pytest
-  secrets: gitleaks
+  secrets: trufflehog  # canonical CI scan (.github/workflows/ci.yml); local pre-commit hook uses gitleaks for faster dev iteration
 
 deploy:
   platform: none

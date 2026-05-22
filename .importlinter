@@ -12,7 +12,8 @@ include_external_packages = True
 #
 # Note: llmcli.daemon was removed in #34 (ADR-004 Slice 6); lifecycle folded into
 # llmcli.nats._lifecycle (LifecycleMixin on the NATS worker).
-# llmcli.gpu sits at L0 — pure utility (probe + KV calc), imported by llmcli.config.
+# llmcli.gpu sits at L0 — pure utility (probe + KV calc), imported by llmcli.config
+# (kv_overhead_gib, probe_free_vram_gib) and llmcli.nats.llm_adapter (VRAMMonitor for heartbeat).
 # Contracts use forbidden-pairs to avoid sibling-detection false positives.
 
 [importlinter:contract:services-no-entry]

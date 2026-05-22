@@ -38,7 +38,7 @@ repos:
         pass_filenames: false
       - id: gitleaks
         name: gitleaks secret scan
-        entry: bash -c "command -v gitleaks >/dev/null && gitleaks detect --source . --no-git || echo 'gitleaks not installed; CI runs the canonical scan'"
+        entry: bash -c "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --source . --no-git; else echo 'gitleaks not installed; CI runs the canonical scan'; fi"
         language: system
         pass_filenames: false
         stages: [pre-push]
