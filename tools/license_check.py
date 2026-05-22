@@ -37,6 +37,14 @@ from pathlib import Path
 
 # SPDX identifiers and common display names considered safe for commercial use.
 # Adjust for your project's requirements.
+# Metadata tokens that appear alongside license names in pip-licenses output but
+# are not themselves license identifiers (e.g. Debian packaging annotations).
+# Filtered out after splitting compound strings so they don't cause false failures.
+NOISE_TOKENS: set[str] = {
+    "DFSG approved",
+    "OSI Approved",
+}
+
 SAFE_LICENSES: set[str] = {
     # MIT
     "MIT",
@@ -125,7 +133,7 @@ def _split_compound_spdx(license_str: str) -> list[str]:
       - pip-licenses semicolon separator: 'Apache Software License; MIT License'
     """
     parts = re.split(r"\s+AND\s+|\s+OR\s+|;\s*", license_str)
-    return [p.strip() for p in parts if p.strip()]
+    return [p.strip() for p in parts if p.strip() and p.strip() not in NOISE_TOKENS]
 
 
 def is_compliant(name: str, license_str: str, policy: dict) -> bool:
@@ -136,9 +144,10 @@ def is_compliant(name: str, license_str: str, policy: dict) -> bool:
         return True  # explicitly allowlisted by name
     if license_str in SAFE_LICENSES:
         return True  # direct match
-    # Compound SPDX: safe if all component licenses are individually safe
+    # Compound SPDX or noise-prefixed string: split, filter noise, check all parts.
+    # A string that reduces to zero parts after noise filtering is not compliant.
     parts = _split_compound_spdx(license_str)
-    if len(parts) > 1:
+    if parts:
         return all(p in SAFE_LICENSES for p in parts)
     return False
 
