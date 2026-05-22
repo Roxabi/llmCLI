@@ -36,6 +36,7 @@ async def lifecycle_nats_request(
     nc = NATS()
     creds_path = Path("~/.roxabi/llmcli/nkeys/operator.creds").expanduser()
     from llmcli.config import apply_nats_env_from_config
+
     apply_nats_env_from_config()
     nats_url = os.environ.get("LLMCLI_NATS_URL", "nats://localhost:4222")
     # Fail-closed: missing creds requires explicit --allow-anonymous flag to connect.

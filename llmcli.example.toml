@@ -16,3 +16,10 @@ api_key_env       = "LLMCLI_API_KEY"
 default_model     = "qwen3_6-35b-a3b-tq3"
 vram_budget_gib   = 16.0
 # port = 18091  # default — overridden by --port flag or LLMCLI_PROXY_PORT env
+
+[nats]
+# NATS URL — required for the operator CLI (swap, stop, status, list, reload-catalog).
+# The worker daemon reads LLMCLI_NATS_URL from env/worker.env; this section covers
+# the operator side (interactive commands run outside the container).
+# LLMCLI_NATS_URL env var takes precedence — CI, wrappers, and ad-hoc overrides keep working.
+url = "nats://<hub-tailnet-ip>:4222"

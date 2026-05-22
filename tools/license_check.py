@@ -43,7 +43,7 @@ from pathlib import Path
 # Matching is exact-case — values must match pip-licenses output verbatim.
 NOISE_TOKENS: set[str] = {
     "DFSG approved",  # Debian Free Software Guidelines tag
-    "OSI Approved",   # Open Source Initiative approval tag
+    "OSI Approved",  # Open Source Initiative approval tag
 }
 
 SAFE_LICENSES: set[str] = {
