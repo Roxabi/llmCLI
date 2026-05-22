@@ -5,6 +5,7 @@
     "002-vllm-availability-check",
     "003-engine-dispatch-registry",
     "004-lifecycle-control-plane-nats-over-af-unix",
-    "005-nats-subject-discipline-and-machines-filter"
+    "005-nats-subject-discipline-and-machines-filter",
+    "006-axis-of-decomposition"
   ]
 }

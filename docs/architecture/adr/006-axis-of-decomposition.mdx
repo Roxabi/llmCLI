@@ -1,0 +1,84 @@
+---
+title: "ADR-006: Axis of Decomposition"
+description: Primary axis chosen for system variation — prevents N×M drift across engines and lifecycle stages
+axial: true
+---
+
+## Status
+
+Accepted
+
+## Context
+
+llmCLI varies along 2 axes:
+
+| Axis | Instances (now) | Growth (12m) |
+|------|-----------------|--------------|
+| Engine backends | `llamacpp`, `llamacpp_tq3`, `vllm` | +1–2 (e.g. mlx, tensorrt-llm) |
+| Lifecycle stages | `start`, `health-wait`, `swap`, `status`, `stop` | +1–2 (e.g. `bench`, `migrate`) |
+
+Without an explicit primary axis, code drifts along the wrong dimension: each new engine re-implements stage logic (health polling, wait-ready, swap), producing an engines × stages duplication matrix. The existing `engines/_common.py` (`_wait_ready`, `default_health`) and NATS mixins (`LifecycleMixin`, `GenerationMixin`, `NatsAdapterBase`) represent early stage-primary discipline — this ADR makes it explicit and revisitable.
+
+CLI-only operations (`pull`, `register-proxy`, `reload-catalog`) are configuration, not runtime stages — not part of the composition surface.
+
+The lifecycle_stages row spans two distinct abstraction layers:
+- **Engine-Protocol surface:** `start`, `stop`, `health` — synchronous, process-local (mandated by `src/llmcli/engine.py`)
+- **NATS-dispatcher commands:** `swap`, `stop`, `status`, `list`, `reload_catalog` — async, network (handled by `NatsAdapterBase`)
+
+Reference: `shared/references/axial-decomposition.md`.
+
+## Options Considered
+
+### Option: `engine_backends` as primary
+
+Decompose by backend. Each engine owns the full stack — its stages, its NATS handling, its health logic.
+
+- **Pros:** Engine isolation is total; adding a new engine is self-contained
+- **Cons:** Every stage concern (health polling, swap, status formatting) is duplicated per engine; the 3-engine × 6-stage = 18-cell matrix drifts independently; cross-engine bugfixes must be applied N times
+- **Drift signature:** Stage logic (health, poll, swap) re-implemented inside `engines/llamacpp.py`, `engines/vllm.py`, etc. with subtle per-engine divergence
+
+### Option: `lifecycle_stages` as primary
+
+Stage primitives are the building blocks. Engines are thin leaves that override only what differs.
+
+- **Pros:** Adding engine N = +1 file composing existing primitives; stage bugfix propagates to all engines automatically; NATS adapter layer is shared; growth is O(engines + stages), not O(engines × stages)
+- **Cons:** Per-engine stage overrides (vllm swap is a no-op; llamacpp swap requires restart) require an override protocol; new mandatory stage forces touching all engine leaves; vllm lifecycle differs enough that some stage abstractions leak
+- **Drift signature:** Stage methods re-defined inside individual engine files — see Anti-pattern signal below
+
+## Decision
+
+**Primary axis:** `lifecycle_stages`
+**Reason category:** Composition + Stability
+**Rationale:** Stage primitives (`_wait_ready`, `default_health`, `LifecycleMixin`, `GenerationMixin`) compose to express any engine instance. Adding a new engine (e.g. mlx) = +1 thin file in `engines/`, delegating to shared stage primitives — does NOT duplicate stage logic. Adding a new stage = +1 primitive in `_common.py` or a new mixin, automatically available to all engines. Stages (`start`, `stop`, `health`) change rarely and are mandated by the Engine Protocol (stability); stage primitives compose to express any engine instance (composition).
+
+When extending the system:
+- New `lifecycle_stages` instance → grows by 1 shared primitive; all engines compose it via `_common.py` or mixin
+- New engine backend → +1 leaf file composing existing stage primitives; does NOT re-implement them
+
+## Consequences
+
+### Positive
+- Engine count grows independently of stage count: O(E + S), not O(E × S)
+- Stage bugfixes (health polling, wait-ready timeout) propagate to all engines automatically
+- NATS adapter (`LifecycleMixin + GenerationMixin + NatsAdapterBase`) is written once, not per-engine
+- New engine onboarding is bounded: implement only the overrides that differ, delegate the rest
+- Composition discipline already present in codebase (`_common.py`, NATS mixins) is formalized
+
+### Negative (Expected Debt)
+- Per-engine stage overrides (vllm `swap` = no-op; llamacpp `swap` = process restart) require an explicit override protocol in `_common.py` — Mitigation: document override contract; enforce ≤10 LOC per engine override
+- New mandatory stage forces all engine leaf files to update (or use `NotImplementedError` default) — Mitigation: new stages default to `NotImplementedError`; gate in `NatsAdapterBase` before routing
+- vllm lifecycle differs enough that some stage abstractions leak (no persistent process, HTTP-only, no VRAM query) — Mitigation: thin `VllmStageAdapter` shim; document leakage boundary explicitly
+
+### Anti-pattern signal
+Grep pattern: `engines/(llamacpp|llamacpp_tq3|vllm).*def.*(wait|poll|ready)` in `src/llmcli/engines/`.
+If this pattern appears, stage logic is being re-implemented inside an engine leaf instead of delegating to `_common.py`. That is the canonical drift signal for this axis.
+
+`health` is intentionally excluded — the `Engine` Protocol (`src/llmcli/engine.py`) requires it; drift would appear in the body, not the declaration. Re-introduce a body-level check only if a `def health` body diverges from `return default_health(...)`.
+
+**Secondary signal:** `dispatch-on-type` — `if.*engine_type.*(vllm|llamacpp)` in `src/llmcli/nats/` or `src/llmcli/cli/`. Indicates stage logic being conditioned on engine type rather than delegated via the `Engine` Protocol. Currently clean (3 engines, ¬match).
+
+### Revisit triggers
+- Sibling-fix rate > 3/week on any single stage concern (proxy: ≥3 engine files each containing a 'def' for the same non-Protocol stage method name — the three-strikes criterion below, grep-checkable by axial-adr-review)
+- 6-monthly axial review (next: 2026-11)
+- Three-strikes rule: ≥3 engines each redefining the same stage method → mandatory extraction
+- New engine class that cannot be expressed as stage composition within 2 days of effort → re-open this ADR
