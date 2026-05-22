@@ -50,3 +50,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: axial-drift
+        name: axial decomposition drift check
+        entry: tools/check_axial_drift.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
