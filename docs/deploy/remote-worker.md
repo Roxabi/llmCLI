@@ -47,6 +47,29 @@ systemctl --user daemon-reload
 systemctl --user start llmcli-nats-worker
 ```
 
+## Operator CLI NATS config
+
+The worker daemon above reads `LLMCLI_NATS_URL` from `~/.roxabi/llmcli/worker.env`
+(injected via the `EnvironmentFile=` in the Quadlet). The operator CLI — `llmcli swap`,
+`llmcli stop`, `llmcli status`, `llmcli list`, `llmcli reload-catalog` — runs outside
+the container and needs to know the NATS URL separately.
+
+Set `[nats].url` in `~/.roxabi/llmcli/llmcli.toml`:
+
+```toml
+[nats]
+# Operator CLI uses this to connect to the NATS broker for remote commands.
+# Worker daemon uses LLMCLI_NATS_URL from env/worker.env (separate path).
+url = "nats://<hub-tailnet-ip>:4222"
+```
+
+`LLMCLI_NATS_URL` in the environment takes precedence over the toml entry — useful
+for CI or ad-hoc host overrides without editing the catalog.
+
+Without either, the operator CLI falls back to `nats://localhost:4222`. On a remote
+worker host this will silently target the wrong broker (see [Tailnet IP vs FQDN inside
+container](#tailnet-ip-vs-fqdn-inside-container) for the correct IP to use).
+
 ## Verification
 
 ```bash

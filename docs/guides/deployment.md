@@ -167,6 +167,31 @@ $EDITOR ~/.roxabi/llmcli/env/worker.env   # llm-worker hosts only
 # Fill in: LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222
 ```
 
+### 4.4 Operator CLI NATS config (llm-worker hosts)
+
+The worker container reads `LLMCLI_NATS_URL` from `env/worker.env` (step 4.3 above).
+The operator CLI — `llmcli swap`, `llmcli stop`, `llmcli status`, `llmcli list`,
+`llmcli reload-catalog` — runs on the host, outside the container, and needs the NATS
+URL set separately.
+
+Add a `[nats]` section to `~/.roxabi/llmcli/llmcli.toml`:
+
+```toml
+[nats]
+# Operator CLI uses this to locate the NATS broker for remote commands.
+# Worker daemon uses LLMCLI_NATS_URL from env/worker.env (separate, container-injected).
+# LLMCLI_NATS_URL env var takes precedence over this entry.
+url = "nats://<hub-tailnet-ip>:4222"
+```
+
+Use the hub's tailnet IP (not its FQDN) — rootless Podman bridge networking cannot
+resolve `*.ts.net` hostnames, and the same constraint applies to the operator CLI
+when dialling out over the tailnet from the worker host. Run
+`tailscale status | awk '/roxabituwer/{print $1}'` on the hub to get the IP.
+
+Without either `[nats].url` or `LLMCLI_NATS_URL`, the operator CLI silently falls back
+to `nats://localhost:4222`, which targets the wrong broker on a remote worker host.
+
 ---
 
 ## 5. First Run and Health Check
