@@ -23,10 +23,12 @@ async def lifecycle_nats_request(
     timeout: float,
     *,
     model_name: str | None = None,
+    allow_anonymous: bool = False,
 ):
     """Send a LifecycleRequest via NATS and return the LifecycleResponse.
 
     On timeout or no-reply, prints a warning and raises typer.Exit(1).
+    Pass allow_anonymous=True to skip the operator creds check (CI/dev only).
     """
     from nats.aio.client import Client as NATS  # type: ignore[import]
     from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
@@ -34,16 +36,13 @@ async def lifecycle_nats_request(
     nc = NATS()
     creds_path = Path("~/.config/llmcli/nkeys/operator.creds").expanduser()
     nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
-    # Fail-closed: missing creds connects anonymously against permissive brokers.
-    # CI / pre-Slice-0 dev set LLMCLI_NATS_SKIP_CREDS=1 to opt in explicitly.
-    if not creds_path.exists() and os.environ.get("LLMCLI_NATS_SKIP_CREDS", "").lower() not in (
-        "1",
-        "true",
-    ):
+    # Fail-closed: missing creds requires explicit --allow-anonymous flag to connect.
+    # Use --allow-anonymous for CI/dev only — do not use in production.
+    if not creds_path.exists() and not allow_anonymous:
         err_console.print(
             f"[red]NATS operator credentials not found at {creds_path}. "
-            f"Run lyra-acl genkeys (Slice 0) or export "
-            f"LLMCLI_NATS_SKIP_CREDS=1 to allow anonymous connect (dev/CI only).[/red]"
+            f"Run lyra-acl genkeys (Slice 0) or pass "
+            f"--allow-anonymous to connect without credentials (CI/dev only).[/red]"
         )
         raise typer.Exit(code=1)
     await nc.connect(

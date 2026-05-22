@@ -170,7 +170,9 @@ class TestSwapNatsHappyPath:
 
         with _nats_class_patch(nats_client):
             # Act
-            result = runner.invoke(app, ["swap", "qwen3-8b"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["swap", "qwen3-8b", "--allow-anonymous"], catch_exceptions=False
+            )
 
         # Assert — published on the lifecycle_swap subject
         assert nats_client.published_subject == SUBJECTS.lifecycle_swap, (
@@ -190,7 +192,7 @@ class TestSwapNatsHappyPath:
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            runner.invoke(app, ["swap", "qwen3-8b"], catch_exceptions=False)
+            runner.invoke(app, ["swap", "qwen3-8b", "--allow-anonymous"], catch_exceptions=False)
 
         # Assert — payload can be parsed as LifecycleRequest
         assert nats_client.published_payload is not None, "nc.request was never called"
@@ -211,7 +213,9 @@ class TestSwapNatsHappyPath:
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            result = runner.invoke(app, ["swap", "qwen3-8b"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["swap", "qwen3-8b", "--allow-anonymous"], catch_exceptions=False
+            )
 
         # Assert
         assert "qwen3-8b" in result.output, f"Expected model name in output, got: {result.output!r}"
@@ -226,7 +230,9 @@ class TestSwapNatsHappyPath:
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            result = runner.invoke(app, ["swap", "qwen3-8b"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["swap", "qwen3-8b", "--allow-anonymous"], catch_exceptions=False
+            )
 
         assert "8091" in result.output or "port" in result.output.lower(), (
             f"Expected port in output, got: {result.output!r}"
@@ -245,7 +251,9 @@ class TestSwapNatsHappyPath:
 
         with _nats_class_patch(nats_client):
             runner.invoke(
-                app, ["swap", "qwen3-8b", "--host", "roxabituwer"], catch_exceptions=False
+                app,
+                ["swap", "qwen3-8b", "--host", "roxabituwer", "--allow-anonymous"],
+                catch_exceptions=False,
             )
 
         assert nats_client.published_payload is not None
@@ -268,7 +276,7 @@ class TestSwapNatsErrorPath:
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            result = runner.invoke(app, ["swap", "qwen3-8b"])
+            result = runner.invoke(app, ["swap", "qwen3-8b", "--allow-anonymous"])
 
         assert result.exit_code != 0, (
             f"Expected non-zero exit on error reply, got {result.exit_code}. "
@@ -287,7 +295,7 @@ class TestSwapNatsErrorPath:
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            result = runner.invoke(app, ["swap", "qwen3-8b"])
+            result = runner.invoke(app, ["swap", "qwen3-8b", "--allow-anonymous"])
 
         combined = result.output + (result.stderr or "")
         assert "llm.lifecycle_rejected" in combined or "vram" in combined.lower(), (
@@ -307,7 +315,7 @@ class TestSwapNatsFlag:
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
 
         with _nats_class_patch(nats_client):
-            result = runner.invoke(app, ["swap", "ghost-model"])
+            result = runner.invoke(app, ["swap", "ghost-model", "--allow-anonymous"])
 
         assert result.exit_code != 0, (
             f"Unknown model must exit non-zero before NATS publish, got {result.exit_code}"
@@ -316,29 +324,28 @@ class TestSwapNatsFlag:
             "nc.request must NOT be called for unknown model (catalog pre-validation)"
         )
 
-    def test_missing_creds_without_skip_exits_before_nats(
+    def test_missing_creds_without_allow_anonymous_exits_before_nats(
         self, fake_catalog, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        """B7: fail-closed when operator.creds is missing and SKIP env var is unset.
+        """B2: fail-closed when operator.creds is missing and --allow-anonymous is not passed.
 
         Anonymous-by-default would let a misconfigured client publish lifecycle ops
         against a permissive broker without identity. Force an explicit opt-in.
         """
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
-        # Override the conftest autouse: this test exercises the fail-closed path.
-        monkeypatch.delenv("LLMCLI_NATS_SKIP_CREDS", raising=False)
         # Point HOME at an empty tmp path so the default ~/.config/llmcli/nkeys/...
         # resolves to a non-existent file.
         monkeypatch.setenv("HOME", str(tmp_path))
 
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
 
+        # Invoke WITHOUT --allow-anonymous (no env-var bypass either)
         with _nats_class_patch(nats_client):
             result = runner.invoke(app, ["swap", "qwen3-8b"])
 
         assert result.exit_code != 0, (
-            f"Missing creds + skip unset must exit non-zero, got {result.exit_code}"
+            f"Missing creds + no --allow-anonymous must exit non-zero, got {result.exit_code}"
         )
         assert nats_client.published_subject is None, (
-            "nc.request must NOT be called when creds are missing without explicit opt-in"
+            "nc.request must NOT be called when creds are missing without --allow-anonymous"
         )

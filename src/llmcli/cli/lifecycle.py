@@ -54,8 +54,14 @@ def stop(
         help="Target hostname; default = local hostname",
     ),
     timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
+    allow_anonymous: bool = typer.Option(
+        False,
+        "--allow-anonymous",
+        help="Connect to NATS without operator credentials. CI/dev only — do not use in production.",
+        hidden=True,
+    ),
 ) -> None:
-    """Stop the daemon and any running engine."""
+    """Stop the running engine on the target host (via NATS)."""
     from roxabi_contracts.llm.subjects import SUBJECTS
 
     resp = asyncio.run(
@@ -64,6 +70,7 @@ def stop(
             "stop",
             host or socket.gethostname(),
             timeout,
+            allow_anonymous=allow_anonymous,
         )
     )
     if not resp.ok:
@@ -89,6 +96,12 @@ def status(
         help="Target hostname; default = local hostname",
     ),
     timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
+    allow_anonymous: bool = typer.Option(
+        False,
+        "--allow-anonymous",
+        help="Connect to NATS without operator credentials. CI/dev only — do not use in production.",
+        hidden=True,
+    ),
 ) -> None:
     """Show engine status, ports, VRAM, uptime."""
     from roxabi_contracts.llm.subjects import SUBJECTS
@@ -99,6 +112,7 @@ def status(
             "status",
             host or socket.gethostname(),
             timeout,
+            allow_anonymous=allow_anonymous,
         )
     )
     if not resp.ok:

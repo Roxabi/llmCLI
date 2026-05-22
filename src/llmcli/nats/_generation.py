@@ -94,10 +94,8 @@ class GenerationMixin:
             else:
                 await self._blocking_response(msg, payload, body, t0)
             return
-        except httpx.TimeoutException as exc:
-            we = self._make_worker_error(
-                "worker.timeout", str(exc) or "upstream timeout", retryable=True
-            )
+        except httpx.TimeoutException:
+            we = self._make_worker_error("worker.timeout", "upstream timeout", retryable=True)
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if status >= 500:
@@ -107,18 +105,14 @@ class GenerationMixin:
             else:
                 code, retry = "upstream.unavailable", False  # 4xx client error — non-retryable
             we = self._make_worker_error(code, f"upstream {status}", retryable=retry)
-        except httpx.ConnectError as exc:
+        except httpx.ConnectError:
             we = self._make_worker_error(
-                "upstream.unavailable", str(exc) or "upstream unavailable", retryable=True
+                "upstream.unavailable", "upstream unavailable", retryable=True
             )
-        except json.JSONDecodeError as exc:
-            we = self._make_worker_error(
-                "transport.parse", str(exc) or "invalid SSE chunk", retryable=False
-            )
-        except Exception as exc:  # noqa: BLE001
-            we = self._make_worker_error(
-                "worker.internal", str(exc) or "internal error", retryable=False
-            )
+        except json.JSONDecodeError:
+            we = self._make_worker_error("transport.parse", "invalid SSE chunk", retryable=False)
+        except Exception:  # noqa: BLE001
+            we = self._make_worker_error("worker.internal", "internal error", retryable=False)
 
         log.error(
             "llm_adapter: generation error request_id=%s code=%s: %s",
