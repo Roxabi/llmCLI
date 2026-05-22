@@ -49,7 +49,8 @@ async def lifecycle_nats_request(
         raise typer.Exit(code=1)
     await nc.connect(
         nats_url,
-        user_credentials=str(creds_path) if creds_path.exists() else None,
+        nkeys_seed_str=creds_path.read_text().strip() if creds_path.exists() else None,
+        inbox_prefix="_inbox.llm-operator",
     )
     try:
         req = LifecycleRequest(
