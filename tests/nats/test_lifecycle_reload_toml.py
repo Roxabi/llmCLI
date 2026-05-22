@@ -52,7 +52,7 @@ class _TestAdapter(LifecycleMixin):
     def __init__(self, initial_catalog=None) -> None:
         self.__init_lifecycle__()
         self._sem = asyncio.Semaphore(2)
-        self._drain_timeout = 5.0
+        self.drain_timeout = 5.0
         self._instances: dict = {}
         # Use a sentinel catalog to verify it remains unchanged after a failed reload
         self._catalog = initial_catalog or MagicMock()

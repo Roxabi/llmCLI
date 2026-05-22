@@ -3,7 +3,7 @@
 Handles swap/stop/status/list/reload-catalog on broadcast subjects.
 MRO: LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase).
 
-Host class must expose: _catalog, _instances, _sem, _drain_timeout,
+Host class must expose: _catalog, _instances, _sem, drain_timeout,
 _engine_for_spec(spec). Call __init_lifecycle__() after super().__init__().
 """
 
@@ -22,6 +22,19 @@ from roxabi_contracts.errors import WorkerError
 from llmcli.config import check_vram_budget, load as load_catalog
 
 log = logging.getLogger(__name__)
+
+# B3: wire-safe error messages keyed by exception class name.
+# str(exc) is never sent on the wire — it may contain file paths, addresses,
+# or internal state that operators should not expose to callers.
+_CRASH_MESSAGES: dict[str, str] = {
+    "FileNotFoundError": "model file not found",
+    "PermissionError": "permission denied",
+    "TimeoutError": "engine startup timed out",
+    "ConnectionError": "engine connection failed",
+    "TOMLDecodeError": "catalog parse error",
+    "ValueError": "invalid configuration",
+}
+_CRASH_FALLBACK = "engine start failed"
 
 LIFECYCLE_SUBJECTS = (
     "lyra.llm.lifecycle.swap",
@@ -164,10 +177,6 @@ class LifecycleMixin:
                 retryable=False,
             )
             return
-        except TypeError:
-            # host/spec attrs are MagicMocks in tests — skip dynamic check
-            pass
-
         instances: dict = self._instances  # type: ignore[attr-defined]
         if model_name in instances:
             inst = instances[model_name]
@@ -200,7 +209,7 @@ class LifecycleMixin:
             try:
                 await asyncio.wait_for(
                     self._wait_sem_idle(),
-                    timeout=self._drain_timeout,  # type: ignore[attr-defined]
+                    timeout=self.drain_timeout,
                 )
             except asyncio.TimeoutError:
                 log.warning("lifecycle.swap: drain timeout — hard-cutting in-flight")
@@ -213,13 +222,9 @@ class LifecycleMixin:
             new_engine = self._engine_for_spec(spec)  # type: ignore[attr-defined]
             new_inst = await loop.run_in_executor(executor, new_engine.start, spec)
         except Exception as exc:  # noqa: BLE001
-            await self._reply_err(msg, req, "worker.crash", str(exc), retryable=True)
-            log.info(
-                "lifecycle.swap: failed trace_id=%s model=%s exc=%s",
-                req.trace_id,
-                model_name,
-                exc,
-            )
+            wire_msg = _CRASH_MESSAGES.get(type(exc).__name__, _CRASH_FALLBACK)
+            await self._reply_err(msg, req, "worker.crash", wire_msg, retryable=True)
+            log.exception("worker.crash on swap to %s", model_name)
             return
         finally:
             self._draining.clear()

@@ -75,7 +75,7 @@ class _CrashRecoveryAdapter(LifecycleMixin):
         self.__init_lifecycle__()
         self._sem = asyncio.Semaphore(2)
         self._max_concurrent = 2
-        self._drain_timeout = 5.0
+        self.drain_timeout = 5.0
         self._instances: dict = initial_instances or {}
         self._nc = MagicMock()
         self._nc.publish = AsyncMock()
