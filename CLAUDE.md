@@ -25,12 +25,14 @@ Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp`
 
 ## Host Topology
 
-| Host | GPU | VRAM | Role | Model budget |
+| Host | GPU | VRAM | LLM role | Providers |
 |---|---|---|---|---|
-| `roxabitower` (local, dev) | RTX 5070 Ti | 16 GB | on-demand | Qwen3.6-35B-A3B-TQ3_4S (12.4 GiB), 14B Q5, 32B quants |
-| `roxabituwer` (prod) | RTX 3080 | 10 GB | always-on | Qwen3-8B-Q4, Qwen3-4B, Gemma-3-4B |
+| `roxabituwer` (M₁, prod 24/7) | RTX 3080 | 10 GB (saturée voiceCLI STT+TTS) | **LiteLLM proxy cloud passthrough uniquement** — ¬local inference, ¬`llm-worker` | Kimi K2.6 (Fireworks), DeepSeek V4-Pro (NVIDIA NIM), Claude Sonnet 4.6 (Anthropic) |
+| `roxabitower` (M₂, dev on-demand) | RTX 5070 Ti | 16 GB | LiteLLM proxy + NATS worker local inference (`llm-worker`) | local llama.cpp (qwen3-4b small test pour l'instant) + cloud passthrough |
 
-Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. Local catalog holds heavy models; prod pins smaller always-on models and is the LiteLLM fallback.
+**Architecture HA**: M₁ doit toujours répondre (24/7 cloud relay). M₂ est dev/on-demand — off-able sans préavis. Agents Lyra appellent toujours `llmcli proxy :18091` (sur n'importe quel host) → LiteLLM route cloud par défaut; fallback local M₂ uniquement si configuré et up.
+
+Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. M₁ catalog = cloud specs (engine="remote"). M₂ catalog = mix cloud + local llama.cpp specs.
 
 ## Project Layout
 
