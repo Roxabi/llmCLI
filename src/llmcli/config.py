@@ -207,3 +207,40 @@ def check_vram_budget(spec: ModelSpec, host: HostSettings) -> None:
             f"(desktop/other processes holding {held_gib:.2f} GiB). "
             "Free VRAM or pick a smaller model."
         )
+
+
+_KNOWN_NATS: dict[str, type] = {"url": str}
+
+
+def load_nats_config(config: Path | None = None) -> dict:
+    """Load the ``[nats]`` table from llmcli.toml.
+
+    Returns ``{}`` when no config is found or the table is absent.
+    """
+    path = config if config is not None else DEFAULT_CONFIG_PATH
+    if path is None or not path.exists():
+        return {}
+    with path.open("rb") as f:
+        data = tomllib.load(f)
+    raw = data.get("nats", {})
+    result: dict = {}
+    for key, expected_type in _KNOWN_NATS.items():
+        if key in raw:
+            try:
+                result[key] = expected_type(raw[key])
+            except (ValueError, TypeError):
+                pass
+    return result
+
+
+def apply_nats_env_from_config(config: Path | None = None) -> None:
+    """Populate ``LLMCLI_NATS_URL`` from ``[nats]`` toml when env is unset.
+
+    Env var takes precedence — wrappers, CI, and ad-hoc overrides keep working.
+    Call at the entrypoint of any NATS-using command before reading ``os.environ``.
+    """
+    cfg = load_nats_config(config)
+    if "LLMCLI_NATS_URL" not in os.environ:
+        url = cfg.get("url")
+        if isinstance(url, str) and url:
+            os.environ["LLMCLI_NATS_URL"] = url
