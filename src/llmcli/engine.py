@@ -42,3 +42,9 @@ class Engine(Protocol):
     def stop(self, instance: EngineInstance) -> None: ...
 
     def health(self, instance: EngineInstance) -> bool: ...
+
+    def supports_swap(self) -> bool:
+        return True
+
+    def supports_hot_reload(self) -> bool:
+        return True

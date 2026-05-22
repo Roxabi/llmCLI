@@ -74,6 +74,9 @@ class VLLMEngine:
             started_at=time.time(),
         )
 
+    def supports_swap(self) -> bool:
+        return False
+
     def health(self, instance: EngineInstance) -> bool:
         """Return True iff the vllm /health endpoint responds 2xx."""
         return default_health(instance.base_url)
