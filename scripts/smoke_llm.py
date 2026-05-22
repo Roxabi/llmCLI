@@ -47,6 +47,18 @@ NO_THINK_PROMPT = "/no_think Say hello in 5 short words."
 NO_THINK_PROMPT_STREAM = "/no_think Count from one to five, one number per line."
 
 
+def _subjects():
+    # Lazy import: keeps --help working without the optional `nats` extra installed.
+    from roxabi_contracts.llm import SUBJECTS
+
+    return SUBJECTS
+
+
+def _safe_evidence_body(body: dict) -> dict:
+    # Allowlist response fields to prevent leaking arbitrary worker payloads into CI logs.
+    return {k: body.get(k) for k in ("ok", "error", "worker_error", "duration_ms") if k in body}
+
+
 @dataclass
 class SmokeResult:
     name: str
@@ -81,32 +93,50 @@ def _build_request(*, model: str, stream: bool, prompt: str, max_tokens: int) ->
     ).encode()
 
 
-async def _connect(args: argparse.Namespace):
-    # Imported lazily so --help works without the `nats` optional extra installed.
-    from nats.aio.client import Client as NATS
+def _resolve_credential(args: argparse.Namespace) -> dict[str, str]:
+    """Resolve NATS credential kwargs.
 
-    seed_path = Path(args.nkey_seed).expanduser() if args.nkey_seed else None
+    A path supplied explicitly (flag or env) MUST exist — silently falling
+    through to anonymous when a configured path is missing would mask
+    misconfiguration. The well-known default seed is tried only when the user
+    supplied nothing.
+    """
     creds_path = Path(args.creds).expanduser() if args.creds else None
+    seed_path = Path(args.nkey_seed).expanduser() if args.nkey_seed else None
+
+    if creds_path is not None:
+        if not creds_path.exists():
+            raise SystemExit(f"--creds path not found: {creds_path}")
+        return {"user_credentials": str(creds_path)}
+    if seed_path is not None:
+        if not seed_path.exists():
+            raise SystemExit(f"--nkey-seed path not found: {seed_path}")
+        return {"nkeys_seed": str(seed_path)}
+
+    default_seed = Path(DEFAULT_SEED_PATH).expanduser()
+    if default_seed.exists():
+        return {"nkeys_seed": str(default_seed)}
+    if args.allow_anonymous:
+        return {}
+    raise SystemExit(
+        f"No NATS credential. Default seed {default_seed} not found. "
+        "Pass --nkey-seed, --creds, or --allow-anonymous (dev/CI only)."
+    )
+
+
+async def _connect(args: argparse.Namespace):
+    # Lazy import: keeps --help working without the `nats` optional extra installed.
+    from nats.aio.client import Client as NATS
 
     connect_kwargs: dict[str, Any] = {
         "servers": args.nats_url,
+        # nats-py ≥2.3 accepts bytes or str; bytes avoids re-encode on every publish.
         "inbox_prefix": args.inbox_prefix.encode(),
         "name": "smoke_llm",
         "connect_timeout": args.connect_timeout,
         "max_reconnect_attempts": 0,
+        **_resolve_credential(args),
     }
-    if creds_path and creds_path.exists():
-        connect_kwargs["user_credentials"] = str(creds_path)
-    elif seed_path and seed_path.exists():
-        connect_kwargs["nkeys_seed"] = str(seed_path)
-    elif args.allow_anonymous:
-        pass
-    else:
-        raise SystemExit(
-            f"No NATS credential: seed={seed_path} creds={creds_path}. "
-            "Pass --allow-anonymous to connect without auth (dev/CI only)."
-        )
-
     nc = NATS()
     await nc.connect(**connect_kwargs)
     return nc
@@ -118,7 +148,7 @@ async def smoke_1_request_reply(nc, args) -> SmokeResult:
         model=args.model, stream=False, prompt=NO_THINK_PROMPT, max_tokens=args.max_tokens
     )
     try:
-        msg = await nc.request("lyra.llm.generate.request", payload, timeout=args.request_timeout)
+        msg = await nc.request(_subjects().generate_request, payload, timeout=args.request_timeout)
     except Exception as exc:  # noqa: BLE001
         dt = int((time.monotonic() - t0) * 1000)
         return SmokeResult("smoke-1-request-reply", False, dt, f"request failed: {exc!r}")
@@ -144,7 +174,7 @@ async def smoke_1_request_reply(nc, args) -> SmokeResult:
             False,
             dt,
             f"ok={ok} text_len={len(text)} error={err!r}",
-            evidence={"body": body},
+            evidence={"body": _safe_evidence_body(body)},
         )
     return SmokeResult(
         "smoke-1-request-reply",
@@ -169,10 +199,11 @@ async def smoke_2_streaming(nc, args) -> SmokeResult:
         if chunks and chunks[-1].get("done"):
             done_evt.set()
 
+    timed_out = False
     sub = await nc.subscribe(inbox, cb=on_chunk)
     try:
         await nc.publish(
-            "lyra.llm.generate.request",
+            _subjects().generate_request,
             _build_request(
                 model=args.model,
                 stream=True,
@@ -184,15 +215,20 @@ async def smoke_2_streaming(nc, args) -> SmokeResult:
         try:
             await asyncio.wait_for(done_evt.wait(), timeout=args.stream_timeout)
         except asyncio.TimeoutError:
-            pass
+            timed_out = True
     finally:
         await sub.unsubscribe()
+        # Drain one event-loop tick so any callback already queued by nats-py
+        # completes before we snapshot — unsubscribe is cooperative, not synchronous.
+        await asyncio.sleep(0)
 
+    # Snapshot to a local list — frozen view, immune to late callbacks racing with reads below.
+    final_chunks = list(chunks)
     dt = int((time.monotonic() - t0) * 1000)
-    delta_chunks = [c for c in chunks if c.get("delta")]
-    terminator = next((c for c in chunks if c.get("done")), None)
-    err_chunks = [c for c in chunks if c.get("is_error")]
 
+    # Check error chunks first — they may also carry a `delta` field, and we want them
+    # to short-circuit ahead of the delta-count branch. Order is intentional.
+    err_chunks = [c for c in final_chunks if c.get("is_error")]
     if err_chunks:
         return SmokeResult(
             "smoke-2-streaming",
@@ -201,21 +237,36 @@ async def smoke_2_streaming(nc, args) -> SmokeResult:
             f"is_error chunk(s): {len(err_chunks)}",
             evidence={"errors": err_chunks[:3]},
         )
+
+    delta_chunks = [c for c in final_chunks if c.get("delta")]
+    terminator = next((c for c in final_chunks if c.get("done")), None)
+
     if not delta_chunks:
+        detail = (
+            f"stream timeout after {args.stream_timeout}s, no delta chunks"
+            if timed_out
+            else f"no delta chunks (total={len(final_chunks)})"
+        )
         return SmokeResult(
             "smoke-2-streaming",
             False,
             dt,
-            f"no delta chunks (total={len(chunks)})",
-            evidence={"chunks_preview": chunks[:3]},
+            detail,
+            evidence={"timed_out": timed_out, "chunks_preview": final_chunks[:3]},
         )
     if terminator is None:
+        detail = (
+            f"stream timeout after {args.stream_timeout}s, "
+            f"no terminator (delta_chunks={len(delta_chunks)})"
+            if timed_out
+            else f"no terminator (delta_chunks={len(delta_chunks)})"
+        )
         return SmokeResult(
             "smoke-2-streaming",
             False,
             dt,
-            f"no terminator (delta_chunks={len(delta_chunks)})",
-            evidence={"last_chunk": chunks[-1] if chunks else None},
+            detail,
+            evidence={"timed_out": timed_out, "last_chunk": final_chunks[-1]},
         )
     return SmokeResult(
         "smoke-2-streaming",
@@ -229,46 +280,57 @@ async def smoke_2_streaming(nc, args) -> SmokeResult:
 async def smoke_3_heartbeat(nc, args) -> SmokeResult:
     t0 = time.monotonic()
     received: list[dict] = []
+    enough_evt = asyncio.Event()
 
     async def on_hb(msg):
         try:
             received.append(json.loads(msg.data.decode()))
         except json.JSONDecodeError:
             received.append({"_raw": msg.data[:200].decode(errors="replace")})
+        if len(received) >= 2:
+            enough_evt.set()
 
-    sub = await nc.subscribe("lyra.llm.heartbeat", cb=on_hb)
+    sub = await nc.subscribe(_subjects().heartbeat, cb=on_hb)
     try:
-        await asyncio.sleep(args.heartbeat_seconds)
+        # Exit early once ≥2 heartbeats land — the time budget is a ceiling, not a fixed wait.
+        try:
+            await asyncio.wait_for(enough_evt.wait(), timeout=args.heartbeat_seconds)
+        except asyncio.TimeoutError:
+            pass
     finally:
         await sub.unsubscribe()
+        await asyncio.sleep(0)
 
+    final = list(received)
     dt = int((time.monotonic() - t0) * 1000)
-    if len(received) < 2:
+    if len(final) < 2:
         return SmokeResult(
             "smoke-3-heartbeat",
             False,
             dt,
-            f"got {len(received)} heartbeat(s), expected ≥2 within {args.heartbeat_seconds}s",
-            evidence={"first": received[0] if received else None},
+            f"got {len(final)} heartbeat(s), expected ≥2 within {args.heartbeat_seconds}s",
+            evidence={"first": final[0] if final else None},
         )
-    missing_fields: list[str] = []
-    sample = received[0]
-    for fld in ("model_loaded", "vram_used_mb"):
-        if fld not in sample:
-            missing_fields.append(fld)
-    if missing_fields:
-        return SmokeResult(
-            "smoke-3-heartbeat",
-            False,
-            dt,
-            f"heartbeat missing fields: {missing_fields}",
-            evidence={"sample": sample},
-        )
+
+    required = ("model_loaded", "vram_used_mb")
+    # Validate every heartbeat — the first may be partial (model still loading), or stale
+    # fields may surface mid-run; a single-sample check would mask either failure mode.
+    for idx, hb in enumerate(final):
+        missing = [fld for fld in required if fld not in hb]
+        if missing:
+            return SmokeResult(
+                "smoke-3-heartbeat",
+                False,
+                dt,
+                f"heartbeat[{idx}] missing fields: {missing}",
+                evidence={"sample": hb, "index": idx, "total": len(final)},
+            )
+    sample = final[-1]
     return SmokeResult(
         "smoke-3-heartbeat",
         True,
         dt,
-        f"heartbeats={len(received)} model_loaded={sample.get('model_loaded')!r} "
+        f"heartbeats={len(final)} model_loaded={sample.get('model_loaded')!r} "
         f"vram_used_mb={sample.get('vram_used_mb')}",
         evidence={"sample": sample},
     )
@@ -352,7 +414,13 @@ def main() -> int:
     p.add_argument("--connect-timeout", type=float, default=5.0)
     p.add_argument("--request-timeout", type=float, default=15.0)
     p.add_argument("--stream-timeout", type=float, default=15.0)
-    p.add_argument("--heartbeat-seconds", type=float, default=11.0)
+    p.add_argument(
+        "--heartbeat-seconds",
+        type=float,
+        default=13.0,
+        help="Time budget for ≥2 heartbeats. Worker emits every 5s; 13s = 2×5s + 3s margin. "
+        "Smoke exits early as soon as 2 land.",
+    )
     p.add_argument(
         "--only",
         help="Comma-separated smoke ids to run (e.g. 1,3). Default: all.",

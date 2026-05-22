@@ -111,8 +111,9 @@ In a separate shell:
 nats --creds=/path/to/hub.creds sub lyra.llm.heartbeat
 ```
 
-**Assert (within ~10 s):**
-- [ ] At least one heartbeat received.
+**Assert (within ~13 s):**
+- [ ] At least **two** heartbeats received (worker emits every 5 s — matches the
+      `scripts/smoke_llm.py` ≥2 check).
 - [ ] Payload contains: `worker_id`, `model_loaded == "qwen3-8b"`,
       `vram_used_mb` > 0, `vram_free_mb` >= 0, `active_requests`
       (likely 0 if no in-flight req at that moment).
