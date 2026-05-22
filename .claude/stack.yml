@@ -47,7 +47,7 @@ standards:
 
 lsp:
   enabled: true
-  server: pyright
+  server: pyright  # NOTE: pre-commit `typecheck` hook uses `ruff --select=PYI` (lint-only); full pyright wiring TBD
 
 # Quality gates — Python code-hygiene contracts (opt-in).
 # When section is absent: all gates OFF (backwards-compatible).

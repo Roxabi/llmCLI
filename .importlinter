@@ -1,6 +1,6 @@
 [importlinter]
-root_packages =
-    llmcli
+root_package = llmcli
+source_root = src
 include_external_packages = True
 
 # Layer model post-ADR-004 (top → bottom): higher layers may import lower; reverse is forbidden.
