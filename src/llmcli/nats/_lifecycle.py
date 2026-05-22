@@ -189,78 +189,29 @@ class LifecycleMixin:
                 retryable=False,
             )
             return
-        instances: dict = self._instances  # type: ignore[attr-defined]
-        if model_name in instances:
-            inst = instances[model_name]
-            await self._reply_ok(
-                msg,
-                req,
-                data={
-                    "model": model_name,
-                    "port": inst.port,
-                    "vram_used_mb": 0,
-                },
-            )
-            log.info(
-                "lifecycle.swap: noop trace_id=%s model=%s (same model)",
-                req.trace_id,
-                model_name,
-            )
-            return
 
-        loop = asyncio.get_running_loop()
-        executor = getattr(self, "_executor", None)
+        await self._swap_drain_and_replace(msg, req, model_name, spec, _cap_engine)
 
-        # Drain pattern: set flag, wait for semaphore idle (with timeout), then
-        # stop-before-start. Sync engine ops run in executor so the event loop
-        # keeps spinning. The whole stop+start sequence shares one try/finally
-        # so _draining is always cleared even if engine.stop() raises.
-        self._draining.set()
-        new_inst = None
-        try:
-            try:
-                await asyncio.wait_for(
-                    self._wait_sem_idle(),
-                    timeout=self.drain_timeout,
-                )
-            except asyncio.TimeoutError:
-                log.warning("lifecycle.swap: drain timeout — hard-cutting in-flight")
+    async def _swap_drain_and_replace(
+        self,
+        msg,
+        req: LifecycleRequest,
+        model_name: str,
+        spec,
+        _cap_engine,
+    ) -> None:
+        """Drain active requests, stop old instances, start new one, and reply."""
+        from llmcli.nats._swap import _swap_drain_and_replace as _swap_impl
 
-            for old_name, old_inst in list(instances.items()):
-                old_engine = self._engine_for_spec(catalog.models[old_name])  # type: ignore[attr-defined]
-                await loop.run_in_executor(executor, old_engine.stop, old_inst)
-                del instances[old_name]
-
-            new_inst = await loop.run_in_executor(executor, _cap_engine.start, spec)
-        except Exception as exc:  # noqa: BLE001
-            wire_msg = _CRASH_MESSAGES.get(type(exc).__name__, _CRASH_FALLBACK)
-            await self._reply_err(msg, req, "worker.crash", wire_msg, retryable=True)
-            log.exception("worker.crash on swap to %s", model_name)
-            return
-        finally:
-            self._draining.clear()
-
-        instances[model_name] = new_inst
-        vram_used_mb = 0
-        vram_monitor = getattr(self, "_vram_monitor", None)
-        if vram_monitor is not None:
-            _, vram_used_mb = vram_monitor.sample()
-            vram_used_mb = int(vram_used_mb)
-        await self._reply_ok(
+        await _swap_impl(
+            self,
             msg,
             req,
-            data={
-                "model": model_name,
-                "port": new_inst.port,
-                "vram_used_mb": vram_used_mb,
-            },
-        )
-        log.info(
-            "lifecycle.swap: done trace_id=%s model=%s port=%s vram_used_mb=%d",
-            req.trace_id,
             model_name,
-            new_inst.port,
-            vram_used_mb,
+            spec,
+            _cap_engine,
+            crash_messages=_CRASH_MESSAGES,
+            crash_fallback=_CRASH_FALLBACK,
         )
 
     async def _do_status(self, msg, req: LifecycleRequest) -> None:
