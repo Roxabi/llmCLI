@@ -24,7 +24,7 @@ async def _swap_via_nats(name: str, host: str, timeout: float, *, allow_anonymou
     from roxabi_contracts.llm.subjects import SUBJECTS
 
     nc = NATS()
-    creds_path = Path("~/.config/llmcli/nkeys/operator.creds").expanduser()
+    creds_path = Path("~/.roxabi/llmcli/nkeys/operator.creds").expanduser()
     nats_url = os.environ.get("NATS_URL", "nats://localhost:4222")
     # Fail-closed: missing creds requires explicit --allow-anonymous flag to connect.
     # Use --allow-anonymous for CI/dev only — do not use in production.
