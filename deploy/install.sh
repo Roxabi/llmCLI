@@ -7,7 +7,12 @@
 # Flags:
 #   --dry-run       Print what would be done, make no changes
 #   --secrets-only  Only check/report on required secrets, skip unit install
-#   --force         Overwrite existing env stubs (default: preserve)
+#   --force         DESTRUCTIVE — overwrites existing env stubs (proxy.env,
+#                   worker.env) with empty templates. Provider keys
+#                   (FIREWORKS_API_KEY, NVIDIA_API_KEY, etc.) populated by the
+#                   operator will be lost. Only use on first install or when
+#                   you explicitly want to reset env files. To re-install only
+#                   the Quadlet units after a unit edit, omit --force.
 #
 # Prerequisites (no-ops if already present):
 #   - podman secret create llmcli-litellm-key  <value>
@@ -131,11 +136,19 @@ for unit in llmcli.container llmcli-nats-worker.container; do
 done
 
 # --- Env stubs ---
+# WARNING: --force overwrites existing env files with empty templates. Any
+# provider keys (FIREWORKS/NVIDIA/ANTHROPIC/OPENAI) populated by the operator
+# will be lost — they are not in podman secrets or any backup. Print a loud
+# warning before clobbering so the operator has a chance to abort.
 echo ""
 echo "--- Env stubs ---"
 
 PROXY_ENV="${ENV_DIR}/proxy.env"
 if [ ! -f "$PROXY_ENV" ] || "$FORCE"; then
+  if [ -f "$PROXY_ENV" ] && "$FORCE"; then
+    echo "  [WARNING] --force will OVERWRITE $PROXY_ENV with empty stub" >&2
+    echo "            (operator-populated provider keys will be lost)" >&2
+  fi
   run install -m 600 /dev/null "$PROXY_ENV"
   if ! "$DRY_RUN"; then
     printf '# proxy.env — chmod 600. Fill in keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$PROXY_ENV"
@@ -147,6 +160,10 @@ fi
 
 WORKER_ENV="${ENV_DIR}/worker.env"
 if [ ! -f "$WORKER_ENV" ] || "$FORCE"; then
+  if [ -f "$WORKER_ENV" ] && "$FORCE"; then
+    echo "  [WARNING] --force will OVERWRITE $WORKER_ENV with empty stub" >&2
+    echo "            (operator-populated LLMCLI_NATS_URL will be lost)" >&2
+  fi
   run install -m 600 /dev/null "$WORKER_ENV"
   if ! "$DRY_RUN"; then
     printf '# worker.env — chmod 600. Set LLMCLI_NATS_URL before starting.\n# LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222\nLLMCLI_NATS_URL=\n' >> "$WORKER_ENV"

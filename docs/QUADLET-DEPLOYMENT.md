@@ -48,6 +48,14 @@ This:
 - Creates stub env files at `~/.roxabi/llmcli/env/{proxy,worker}.env`
 - Runs `systemctl --user daemon-reload`
 
+> ⚠ **`--force` is destructive.** Re-running with `--force` overwrites
+> existing env files (`proxy.env`, `worker.env`) with empty stubs — any
+> provider keys (FIREWORKS/NVIDIA/ANTHROPIC/OPENAI) populated by the
+> operator are **lost** (not in podman secrets, no backup). Use plain
+> `./deploy/install.sh` to re-sync Quadlet units after editing them; only
+> use `--force` on first install or when you explicitly want to reset env
+> files.
+
 ### 1.3 Populate env files
 
 ```bash
