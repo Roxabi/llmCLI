@@ -19,7 +19,7 @@ build:
 
 testing:
   unit: pytest
-  secrets: trufflehog
+  secrets: gitleaks
 
 deploy:
   platform: none

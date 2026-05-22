@@ -195,4 +195,3 @@ Agents: Sonnet = all agents (frontend-dev, backend-dev, devops, doc-writer, fixe
 ## Gotchas
 
 <!-- Add project-specific gotchas here -->
-
