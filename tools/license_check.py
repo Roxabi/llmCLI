@@ -133,7 +133,7 @@ def _split_compound_spdx(license_str: str) -> list[str]:
       - pip-licenses semicolon separator: 'Apache Software License; MIT License'
     """
     parts = re.split(r"\s+AND\s+|\s+OR\s+|;\s*", license_str)
-    return [p.strip() for p in parts if p.strip() and p.strip() not in NOISE_TOKENS]
+    return [s for p in parts if (s := p.strip()) and s not in NOISE_TOKENS]
 
 
 def is_compliant(name: str, license_str: str, policy: dict) -> bool:

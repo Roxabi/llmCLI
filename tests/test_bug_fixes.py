@@ -462,7 +462,8 @@ class TestIsCompliantNoiseTokens:
         assert not _is_compliant("pkg", "DFSG approved", {})
 
     def test_unknown_compound_is_not_compliant(self) -> None:
-        assert not _is_compliant("pkg", "GPL-3.0; MIT License", {})
+        # "DFSG approved" is filtered by NOISE_TOKENS; remaining "GPL-3.0" is not in SAFE_LICENSES
+        assert not _is_compliant("pkg", "DFSG approved; GPL-3.0", {})
 
     def test_plain_mit_still_compliant(self) -> None:
         assert _is_compliant("pkg", "MIT", {})
