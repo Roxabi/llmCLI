@@ -1,0 +1,274 @@
+---
+title: "Plan: feat(nats) — Slice 6 cutover (delete AF_UNIX daemon, flip flag default)"
+issue: 34
+parent_plan: artifacts/plans/34-nats-lifecycle-fold-plan.mdx
+spec: artifacts/specs/34-nats-lifecycle-fold-spec.mdx
+analysis: artifacts/analyses/34-nats-lifecycle-fold-analysis.mdx
+consensus: artifacts/analyses/34-nats-lifecycle-fold-consensus.mdx
+complexity: 3/10
+tier: S
+generated: 2026-05-22
+slice: "6"
+slice_tag: V6
+pr1_merged: "2026-05-21T22:22Z"
+---
+
+## Summary
+
+Slice 6 is the cutover PR for issue #34. PR-1 (Slices 0-5, merged 2026-05-21) ships the full
+NATS lifecycle path behind `LLMCLI_LIFECYCLE_VIA_NATS=1`. Slice 6 removes the transition
+scaffolding: delete `daemon.py` + its tests, strip every AF_UNIX branch and the flag helper,
+and flip ADR-004 status from "Proposed" to "Accepted".
+
+This closes AC-9 (the only spec AC deferred from PR-1). AC-1 through AC-8 and AC-10 through
+AC-12 are already satisfied by PR-1 — confirmed in the PR-1 plan Consistency Report.
+
+Pre-condition: operator confirms ≥1 cycle of M₁ + M₂ smoke green after PR-1 merge.
+
+---
+
+## Invariants after merge
+
+Source: spec `## Expected Behavior` (lines 31-40) and `E1` (line 210).
+
+1. **No AF_UNIX socket.** `src/llmcli/daemon.py` deleted. `~/.local/state/llmcli/llmcli.sock`
+   never created. `LLMCLI_SOCKET` env var no longer read anywhere in `src/`.
+2. **Single transport.** All 5 lifecycle ops publish on `lyra.llm.lifecycle.<op>`. No CLI
+   command writes to a socket.
+3. **No rollback path.** After Slice 6 merges, the AF_UNIX path is gone (spec E1).
+4. **ADR-004 Accepted.** `docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx`
+   status field reads "Accepted" (spec line 40: "AC-9: ADR-004 status → Accepted").
+
+---
+
+## Change surface
+
+All grep hits consolidated into a single action table. Relative paths are rooted at the
+worktree (`/home/mickael/projects/llmCLI/.claude/worktrees/34-slice6-cutover`).
+
+| File | What's there | Action |
+|---|---|---|
+| `src/llmcli/daemon.py` | Full AF_UNIX daemon (303+ lines, `Daemon`, `daemon_request`, `LLMCLI_SOCKET`) | **Delete file** |
+| `tests/test_daemon_socket.py` | 693-line socket test suite (`from llmcli.daemon import Daemon`) | **Delete file** |
+| `tests/test_daemon_serve_model.py` | 312-line serve/model test suite (imports `daemon`) | **Delete file** |
+| `src/llmcli/cli/__init__.py` line 7, 20 | Re-exports `daemon_request`, `Daemon` from `llmcli.daemon` | **Strip** both lines; update docstring on line 7 |
+| `src/llmcli/cli/_lifecycle_nats.py` lines 19-21 | `_use_nats_lifecycle()` — always returns True after cutover | **Delete function**; all callers become unconditional |
+| `src/llmcli/cli/lifecycle.py` lines 107-112, 166-170 | AF_UNIX fallback branches (`if _use_nats_lifecycle(): … else: daemon_request(…)`) | **Strip** else branches + `_use_nats_lifecycle()` calls; inline NATS path as default |
+| `src/llmcli/cli/lifecycle.py` lines 31-66 | `serve` command — calls `_cli.Daemon(catalog).serve(model_name)` | **Strip** daemon instantiation; replace body with `NATS nats-serve` delegation note or remove command (see T3 note) |
+| `src/llmcli/cli/lifecycle_extra.py` lines 4-5, 76-80, 110, 126, 131-132 | AF_UNIX fallback for `list`; "reload-catalog requires flag" guard | **Strip** AF_UNIX branch in `list`; remove flag-check guard in `reload_catalog`; update module docstring |
+| `src/llmcli/cli/swap.py` lines 114, 118-129 | AF_UNIX fallback branch + E1 rollback comment | **Strip** else branch + comments; inline NATS path as default |
+| `src/llmcli/cli/catalog.py` line 11-12 | Comment referencing `LLMCLI_LIFECYCLE_VIA_NATS` | **Strip** comment |
+| `src/llmcli/cli/chat.py` line 33 | `daemon_request("STATUS")` in `chat` to discover port | **Rewire**: replace with direct NATS status query or catalog port lookup |
+| `src/llmcli/cli_nats.py` lines 30-32, 49 | `--socket-path` / `LLMCLI_SOCKET` option; "Requires a running llmcli daemon" help text | **Strip** `--socket-path` option and `LLMCLI_SOCKET` env ref; update help text |
+| `tests/cli/test_swap_nats.py` lines 293-319 | Two tests that assert NATS path NOT called when flag is `0`/unset | **Delete** those two test cases (flag no longer exists); keep all others |
+| `docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx` line 9 | `Proposed` | **Flip** to `Accepted` |
+| `CLAUDE.md` (main repo) lines 43, 73, 97 | `daemon.py` in layout table; two pre-cutover flag blurbs | **Update**: remove `daemon.py` row; delete both pre-cutover paragraphs |
+
+**Not in scope** (deploy/ directory): grep found zero hits for `LLMCLI_LIFECYCLE_VIA_NATS` or
+socket refs in `deploy/`. The `LLMCLI_SOCKET` bind-mount comment was already removed in PR-1
+T31. No deploy changes needed.
+
+**Stale ref in `docs/QUADLET-DEPLOYMENT.md`**: grep found only `daemon-reload` (systemd
+command, unrelated). No flag or socket refs. No change needed.
+
+---
+
+## Wave structure
+
+Single wave, single agent. Slice 6 is mechanical deletion — no cross-domain coordination.
+
+| Wave | Agent | Tasks |
+|------|-------|-------|
+| 1 | `backend-dev` | T1 → T2 → T3 → T4 → T5 → T6 → T7 |
+
+`doc-writer` is not a separate agent: CLAUDE.md and ADR edits are two lines each — assigned
+to `backend-dev` as T6 and T7 to avoid coordination overhead.
+
+---
+
+## Micro-tasks
+
+### T1 — Delete daemon + test files
+
+**Files:**
+- `src/llmcli/daemon.py`
+- `tests/test_daemon_socket.py`
+- `tests/test_daemon_serve_model.py`
+
+**Action:** `git rm` all three files.
+
+**Spec trace:** AC-9 sub-bullet 1 ("src/llmcli/daemon.py + tests/test_daemon.py deleted").
+Note: PR-1 plan used "test_daemon.py" as shorthand; actual files in worktree are
+`test_daemon_socket.py` + `test_daemon_serve_model.py` — both deleted.
+
+**Acceptance check:** `git ls-files src/llmcli/daemon.py tests/test_daemon_socket.py tests/test_daemon_serve_model.py` returns empty.
+
+---
+
+### T2 — Strip `cli/__init__.py` daemon re-exports
+
+**File:** `src/llmcli/cli/__init__.py`
+
+**Action:** Remove `from llmcli.daemon import Daemon, daemon_request  # noqa: F401` (line 20)
+and remove `daemon_request`, `Daemon` from the module docstring export list (line 7).
+
+**Spec trace:** AC-9 sub-bullet 1 ("Delete daemon_request, Daemon, LLMCLI_SOCKET from cli/__init__.py re-exports").
+
+**Acceptance check:** `python -c "import llmcli.cli as _cli; assert not hasattr(_cli, 'Daemon')"` exits 0.
+
+---
+
+### T3 — Strip AF_UNIX branches from CLI commands
+
+**Files:**
+- `src/llmcli/cli/lifecycle.py` — strip `_use_nats_lifecycle()` import + both else branches (stop lines 107-112, status lines 166-170); strip `serve` daemon body (lines 31-66) or remove the `serve` command entirely (see note)
+- `src/llmcli/cli/lifecycle_extra.py` — strip AF_UNIX branch in `list` (lines 76-80); remove flag guard in `reload_catalog` (lines 126-132); update module docstring (lines 4-5)
+- `src/llmcli/cli/swap.py` — strip else branch (lines 114-129); make NATS path unconditional; strip E1 rollback comment
+- `src/llmcli/cli/catalog.py` — strip comment at lines 11-12
+- `src/llmcli/cli/_lifecycle_nats.py` — delete `_use_nats_lifecycle()` function (lines 19-21); keep `lifecycle_nats_request` helper intact
+
+**Note on `serve` command:** `serve` calls `_cli.Daemon(catalog).serve(model_name)`. After
+daemon deletion the command has no implementation. Options: (a) remove the command — operators
+use `systemctl --user start llmcli-nats-worker` instead; (b) replace with a stub that prints
+"Use systemctl --user start llmcli-nats-worker on the worker host". Option (a) is cleaner;
+option (b) preserves discoverability. Decision deferred to backend-dev (either is acceptable —
+not a spec-traced AC). Record choice in a code comment.
+
+**Spec trace:** AC-9 sub-bullet 2 ("feature flag env var no longer read by cli/").
+
+**Acceptance check:** `grep -rn "_use_nats_lifecycle\|LLMCLI_LIFECYCLE_VIA_NATS\|daemon_request" src/llmcli/cli/` returns empty.
+
+---
+
+### T4 — Strip `cli_nats.py` socket option + update `chat.py`
+
+**Files:**
+- `src/llmcli/cli_nats.py` — remove `--socket-path` / `LLMCLI_SOCKET` option (lines 30-32); update help text (line 49)
+- `src/llmcli/cli/chat.py` — replace `_cli.daemon_request("STATUS")` (line 33) with catalog-based port lookup (the `else` fallback already exists on the next lines; make it the only path)
+
+**Spec trace:** AC-9 sub-bullet 1 (LLMCLI_SOCKET removed); general invariant 1 (no AF_UNIX socket reads).
+
+**Acceptance check:** `grep -rn "LLMCLI_SOCKET\|daemon_request" src/llmcli/` returns empty.
+
+---
+
+### T5 — Remove flag-specific test cases from `test_swap_nats.py`
+
+**File:** `tests/cli/test_swap_nats.py`
+
+**Action:** Delete the two test methods that assert the AF_UNIX path is used when the flag is
+`0` or unset (lines 293-304 and 309-319). All other test cases remain (they set the flag to
+`1` — after cutover these become unconditional; the `monkeypatch.setenv` calls become no-ops
+and should be cleaned up too, but that is cosmetic — backend-dev decides).
+
+**Spec trace:** AC-9 (test surface consistent with deleted flag).
+
+**Acceptance check:** `uv run pytest tests/cli/test_swap_nats.py -v` exits 0.
+
+---
+
+### T6 — Flip ADR-004 status to Accepted
+
+**File:** `docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx`
+
+**Action:** Change `Proposed` (line 9) to `Accepted`. Update the existing banner (line 6)
+to reference the Slice 6 cutover PR number.
+
+**Spec trace:** AC-9 sub-bullet 4 ("ADR-004 status → Accepted"); spec line 40.
+
+**Acceptance check:** `grep "^Accepted" docs/architecture/adr/004-lifecycle-control-plane-nats-over-af-unix.mdx` returns a match.
+
+---
+
+### T7 — Update `CLAUDE.md` (main repo)
+
+**File:** `/home/mickael/projects/llmCLI/CLAUDE.md`
+
+**Action:**
+- Line 43: remove `daemon.py — AF_UNIX management socket; …` from the project layout table.
+- Line 73: delete the entire pre-cutover transition paragraph (starts "**Pre-cutover transition (PR-1 window):**").
+- Line 97: delete the entire `> **Pre-cutover (PR-1 timeframe):**` callout in the Consumers section.
+
+**Spec trace:** AC-9 sub-bullet 3 ("flag default removed"); AC-12 ("CLAUDE.md tables updated").
+
+**Acceptance check:** `grep -n "LLMCLI_LIFECYCLE_VIA_NATS\|AF_UNIX socket path\|Pre-cutover" /home/mickael/projects/llmCLI/CLAUDE.md` returns empty.
+
+---
+
+## Consistency report
+
+| AC | Status | Tasks |
+|---|---|---|
+| AC-1 through AC-8 | Already satisfied by PR-1 | — (PR-1 plan Consistency Report, all checked) |
+| AC-9 sub-bullet 1: daemon.py + test files deleted | T1 |
+| AC-9 sub-bullet 1: daemon_request, Daemon, LLMCLI_SOCKET removed | T2, T4 |
+| AC-9 sub-bullet 2: flag default removed / flag no longer read | T3, T5 |
+| AC-9 sub-bullet 4: ADR-004 → Accepted | T6 |
+| AC-9 sub-bullet 3: flag removed from worker.env | Not a code change — operator removes `LLMCLI_LIFECYCLE_VIA_NATS=1` line from `~/.roxabi/llmcli/worker.env` before or after merge; document in PR body |
+| AC-10 through AC-12 | Already satisfied by PR-1 (AC-12 partially — CLAUDE.md flag blurbs remain; T7 closes the remainder) |
+
+---
+
+## Risks
+
+### Stale references in `CLAUDE.md` (main repo)
+
+Confirmed stale lines with line numbers (grep run on main checkout):
+
+- **Line 43:** `daemon.py — AF_UNIX management socket; tracks dict[str, EngineInstance]` in project layout table. Must be removed (T7).
+- **Line 73:** Pre-cutover transition paragraph mentioning `LLMCLI_LIFECYCLE_VIA_NATS=1`. Must be removed (T7).
+- **Line 97:** Pre-cutover callout in Consumers section. Must be removed (T7).
+
+`docs/QUADLET-DEPLOYMENT.md` — no stale refs found. The two `daemon-reload` hits are
+`systemctl --user daemon-reload` (systemd idiom, unrelated).
+
+### `serve` command becomes a dead stub
+
+`llmcli serve` directly instantiates `Daemon`. After T1 + T3, it has no backend.
+Scope: local, bounded. Decision delegated to backend-dev in T3 — either remove or replace
+with a helpful stub. Not a blocking risk; `serve` is superseded by `systemctl --user start
+llmcli-nats-worker`.
+
+### `chat.py` daemon_request fallback
+
+`cli/chat.py` line 33 calls `_cli.daemon_request("STATUS")` to discover the port; line 34+
+falls back to catalog port if that fails. After T1 the fallback path is already sufficient.
+T4 removes the try block and makes the catalog path direct. Risk: low — the fallback was
+always the production path on worker hosts where the daemon was not running.
+
+### Consumer doc update (lyra-side)
+
+`~/projects/lyra` may reference `LLMCLI_LIFECYCLE_VIA_NATS` in lyra's own docs or
+consumer configs. Grep of lyra is out of scope for this PR. Note in the PR body:
+"Consumer doc update: verify `~/projects/lyra` has no references to
+`LLMCLI_LIFECYCLE_VIA_NATS` before merging."
+
+---
+
+## Rollback
+
+Per spec E1 (line 210): no rollback path after Slice 6 merges. Pre-merge: revert the PR.
+
+---
+
+## Validation window note
+
+PR-1 merged `2026-05-21T22:22Z`. Today is `2026-05-22`. The spec says "1-cycle PR-1
+validation window" (spec Slices table, Slice 6 "Depends on" column). **One full
+M₁ + M₂ smoke cycle must confirm green before this PR is merged.** If the cycle has not
+yet completed as of today, hold the merge until it does. Recommended pre-merge checklist
+item in the PR body: "☐ M₁ smoke (qwen3-8b swap/status/stop round-trip) green post PR-1".
+
+---
+
+## Deferred / out of scope
+
+- `cli/_nats_client.py` extraction — deferred to v2 child issue per consensus DP2 (inline
+  pattern stays in PR-1; extraction earns its abstraction once there are two concrete use
+  sites). Do not pull into this PR.
+- `--fleet` flag — v2 child issue.
+- Cosmetic cleanup of `monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")` in surviving
+  test cases — the setenv becomes a no-op after cutover; harmless. Remove only if
+  backend-dev deems it worth the churn.
+- `llmcli serve` reimplementation as a proper NATS-backed command — out of scope; the
+  quadlet deploy model supersedes `llmcli serve` for production use.
