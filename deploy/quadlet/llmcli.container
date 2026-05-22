@@ -7,6 +7,11 @@ StartLimitBurst=5
 Image=ghcr.io/roxabi/llmcli:staging
 Label=io.containers.autoupdate=registry
 ContainerName=llmcli
+# Bridge membership enables container-to-container DNS routing (closes #60):
+# other services on roxabi.network reach this proxy as `http://llmcli:18091`
+# instead of hardcoded LAN IPs. PublishPort below keeps host-side clients
+# (Claude Code aliases, ssh/tailnet) reaching :18091 via loopback.
+Network=roxabi.network
 PublishPort=18091:18091
 Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
 EnvironmentFile=%h/.roxabi/llmcli/env/proxy.env
