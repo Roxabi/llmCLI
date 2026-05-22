@@ -3,6 +3,16 @@
 End-to-end verification on `roxabituwer` (M₁) gating the coordinated merge.
 Pass criteria gate the merge window; failure aborts the bundle.
 
+> **Automated harness:** `scripts/smoke_llm.py` codifies smokes 1–3 below
+> (request-reply, streaming, heartbeat). Run from any tailnet member:
+>
+> ```bash
+> uv run --extra nats python scripts/smoke_llm.py --nats-url nats://roxabituwer:4222
+> ```
+>
+> Exit 0 = all green; the manual `nats-cli` recipes below remain authoritative
+> for diagnostics when a smoke fails.
+
 ## Prerequisites
 
 - [ ] lyra#1104 deployed: `deploy/nats/auth.conf` regenerated with canonical
@@ -84,9 +94,9 @@ nats --creds=/path/to/hub.creds request lyra.llm.generate.request \
   }'
 ```
 
-(Streaming requires a small consumer that subscribes to a private inbox and
-prints each chunk; if `nats request --raw` doesn't fit, use the
-`scripts/smoke_llm.py` harness in lyra or call from within the hub.)
+(Streaming requires a consumer that subscribes to a private inbox and prints
+each chunk. Use `scripts/smoke_llm.py --only 2` — `nats request --raw` only
+prints the first reply.)
 
 **Assert:**
 - [ ] At least **1** `LlmChunkEvent` with `delta` populated, then
