@@ -57,7 +57,7 @@ class _TestAdapter(LifecycleMixin):
         self.__init_lifecycle__()
         self._sem = asyncio.Semaphore(2)
         self._max_concurrent = 2
-        self._drain_timeout = 5.0
+        self.drain_timeout = 5.0
         self._instances: dict = instances or {}
         self._nc = MagicMock()
         self._nc.publish = AsyncMock()
@@ -79,10 +79,15 @@ class _TestAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
     def _engine_for_spec(self, spec):
         engine = MagicMock()
@@ -119,9 +124,7 @@ class TestDoStatus:
             f"Expected one _reply_ok call, got {len(adapter._reply_ok_calls)}"
         )
         data = adapter._reply_ok_calls[0]["data"]
-        assert data == {"model": None}, (
-            f"Expected {{model: None}} when no instances, got: {data}"
-        )
+        assert data == {"model": None}, f"Expected {{model: None}} when no instances, got: {data}"
 
     @pytest.mark.asyncio
     async def test_status_with_running_model_returns_model_port_vram(self) -> None:
@@ -500,9 +503,7 @@ class TestDispatchRouting:
         await adapter._dispatch_lifecycle_op("definitely-unknown-op", msg, req)
 
         # Assert — no reply
-        assert adapter._reply_ok_calls == [], (
-            "Unknown op must not trigger _reply_ok"
-        )
+        assert adapter._reply_ok_calls == [], "Unknown op must not trigger _reply_ok"
         assert adapter._reply_err_calls == [], (
             "Unknown op must not trigger _reply_err (silent drop, not an error reply)"
         )

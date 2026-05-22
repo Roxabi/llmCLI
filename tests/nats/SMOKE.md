@@ -3,6 +3,16 @@
 End-to-end verification on `roxabituwer` (M₁) gating the coordinated merge.
 Pass criteria gate the merge window; failure aborts the bundle.
 
+> **Automated harness:** `scripts/smoke_llm.py` codifies smokes 1–3 below
+> (request-reply, streaming, heartbeat). Run from any tailnet member:
+>
+> ```bash
+> uv run --extra nats python scripts/smoke_llm.py --nats-url nats://roxabituwer:4222
+> ```
+>
+> Exit 0 = all green; the manual `nats-cli` recipes below remain authoritative
+> for diagnostics when a smoke fails.
+
 ## Prerequisites
 
 - [ ] lyra#1104 deployed: `deploy/nats/auth.conf` regenerated with canonical
@@ -84,9 +94,9 @@ nats --creds=/path/to/hub.creds request lyra.llm.generate.request \
   }'
 ```
 
-(Streaming requires a small consumer that subscribes to a private inbox and
-prints each chunk; if `nats request --raw` doesn't fit, use the
-`scripts/smoke_llm.py` harness in lyra or call from within the hub.)
+(Streaming requires a consumer that subscribes to a private inbox and prints
+each chunk. Use `scripts/smoke_llm.py --only 2` — `nats request --raw` only
+prints the first reply.)
 
 **Assert:**
 - [ ] At least **1** `LlmChunkEvent` with `delta` populated, then
@@ -101,8 +111,9 @@ In a separate shell:
 nats --creds=/path/to/hub.creds sub lyra.llm.heartbeat
 ```
 
-**Assert (within ~10 s):**
-- [ ] At least one heartbeat received.
+**Assert (within ~13 s):**
+- [ ] At least **two** heartbeats received (worker emits every 5 s — matches the
+      `scripts/smoke_llm.py` ≥2 check).
 - [ ] Payload contains: `worker_id`, `model_loaded == "qwen3-8b"`,
       `vram_used_mb` > 0, `vram_free_mb` >= 0, `active_requests`
       (likely 0 if no in-flight req at that moment).

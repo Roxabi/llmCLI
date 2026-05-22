@@ -27,8 +27,7 @@ def test_extra_subjects_super_chain():
         def _extra_subjects(self) -> list[str]:
             return ["stub.subject"]
 
-    class A(LifecycleMixin, StubMixin, NatsAdapterBase):
-        ...
+    class A(LifecycleMixin, StubMixin, NatsAdapterBase): ...
 
     a = A(subject="x", queue_group="y", envelope_name="z", schema_version=1)
 
@@ -52,8 +51,7 @@ def test_heartbeat_payload_merges():
     causes the lifecycle_draining key to be absent or the base payload keys to vanish.
     """
 
-    class A(LifecycleMixin, NatsAdapterBase):
-        ...
+    class A(LifecycleMixin, NatsAdapterBase): ...
 
     a = A(subject="x", queue_group="y", envelope_name="z", schema_version=1)
     # Initialise lifecycle state so _draining.is_set() is callable

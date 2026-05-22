@@ -74,11 +74,13 @@ async def test_drain_in_flight_completes_then_swap():
             self.__init_lifecycle__()
             self._max_concurrent = 2
             self._sem = asyncio.Semaphore(self._max_concurrent)
-            self._drain_timeout = 5.0
+            self.drain_timeout = 5.0
             self._instances: dict = {}
             self._catalog = MagicMock()
-            self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp")}
-            self._catalog.host = MagicMock()
+            self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp", vram_gib=4.0)}
+            # B5: real HostSettings-shaped object so check_vram_budget can compare
+            # numerics without TypeError. Drain tests are not exercising the budget.
+            self._catalog.host = SimpleNamespace(vram_budget_gib=None)
 
         def _engine_for_spec(self, spec):
             engine = MagicMock()
@@ -138,11 +140,13 @@ async def test_drain_timeout_force_cuts():
             self.__init_lifecycle__()
             self._max_concurrent = 2
             self._sem = asyncio.Semaphore(self._max_concurrent)
-            self._drain_timeout = 0.01  # force timeout
+            self.drain_timeout = 0.01  # force timeout
             self._instances: dict = {}
             self._catalog = MagicMock()
-            self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp")}
-            self._catalog.host = MagicMock()
+            self._catalog.models = {"qwen3-8b": MagicMock(engine="llamacpp", vram_gib=4.0)}
+            # B5: real HostSettings-shaped object so check_vram_budget can compare
+            # numerics without TypeError. Drain tests are not exercising the budget.
+            self._catalog.host = SimpleNamespace(vram_budget_gib=None)
 
         def _engine_for_spec(self, spec):
             engine = MagicMock()

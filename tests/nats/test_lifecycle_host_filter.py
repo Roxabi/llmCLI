@@ -52,7 +52,7 @@ class _TestAdapter(LifecycleMixin):
     def __init__(self) -> None:
         self.__init_lifecycle__()
         self._sem = asyncio.Semaphore(2)
-        self._drain_timeout = 5.0
+        self.drain_timeout = 5.0
         self._instances: dict = {}
         self._catalog = MagicMock()
         self._catalog.models = {}
@@ -66,10 +66,15 @@ class _TestAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
     def _engine_for_spec(self, spec):
         return MagicMock()
