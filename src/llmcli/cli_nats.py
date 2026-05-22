@@ -1,6 +1,6 @@
 """NATS serve sub-app — LLM satellite CLI command."""
 
-from typing import Annotated, Optional
+from typing import Annotated
 
 import typer
 
@@ -27,14 +27,10 @@ def nats_serve_llm(
     drain_timeout: Annotated[
         float, typer.Option("--drain-timeout", envvar="LLMCLI_DRAIN_TIMEOUT")
     ] = 30.0,
-    socket_path: Annotated[
-        Optional[str],
-        typer.Option("--socket-path", envvar="LLMCLI_SOCKET", help="Override daemon socket path."),
-    ] = None,
     litellm_url: Annotated[
         str,
         typer.Option("--litellm-url", envvar="LLMCLI_LITELLM_URL", help="LiteLLM proxy base URL."),
-    ] = "http://localhost:4000/v1",
+    ] = "http://localhost:18091/v1",
     litellm_key: Annotated[
         str,
         typer.Option(
@@ -46,13 +42,11 @@ def nats_serve_llm(
 ) -> None:
     """Subscribe to lyra.llm.generate.request and serve LLM completions.
 
-    Requires a running llmcli daemon (llmcli serve) on the same host.
     Reads NATS_URL from the environment.
     """
     import asyncio
     import logging
     import os
-    from pathlib import Path
 
     from llmcli.nats.llm_adapter import LlmNatsAdapter
 
@@ -69,8 +63,6 @@ def nats_serve_llm(
         log.error("LLMCLI_LITELLM_API_KEY env var (or --litellm-key) is required")
         raise typer.Exit(2)
 
-    sock = Path(socket_path) if socket_path else None
-
     log.info(
         "Starting LLM NATS adapter: model=%s max_concurrent=%d litellm_url=%s",
         model,
@@ -82,7 +74,6 @@ def nats_serve_llm(
         model_name=model,
         litellm_url=litellm_url,
         litellm_key=litellm_key,
-        socket_path=sock,
         max_concurrent=max_concurrent,
         reject_when_full=reject_when_full,
         heartbeat_interval=heartbeat_interval,

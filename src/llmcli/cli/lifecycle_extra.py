@@ -1,7 +1,6 @@
-"""CLI lifecycle commands: serve, stop, status.
+"""CLI lifecycle extra commands: list, reload-catalog (T25, T26).
 
-list and reload-catalog live in lifecycle_extra.py (split for 300-line cap).
-NATS request helper: _lifecycle_nats.py.
+New NATS-aware commands split from lifecycle.py for 300-line cap.
 AF_UNIX daemon path removed in Slice 6 cutover (#34).
 """
 
@@ -19,35 +18,13 @@ from llmcli.cli._lifecycle_nats import lifecycle_nats_request
 
 
 # ---------------------------------------------------------------------------
-# serve
+# list (T25)
+# PR-1: single-host view. Fleet broadcast + aggregate response → v2 (#61).
 # ---------------------------------------------------------------------------
 
 
-@app.command()
-def serve(
-    name: Optional[str] = typer.Option(None, "--name", help="Model name to serve"),
-) -> None:
-    """[Removed] llmcli serve is no longer available.
-
-    # T3 (Slice 6 cutover, #34): option (b) — stub for discoverability.
-    # The AF_UNIX daemon is gone; operators start the NATS worker via systemd.
-    """
-    _ = name  # unused; keep parameter so CLI signature is backward-compatible
-    err_console.print(
-        "[yellow]llmcli serve has been removed.[/yellow]\n"
-        "Start the NATS worker with:\n"
-        "  [bold]systemctl --user start llmcli-nats-worker[/bold]"
-    )
-    raise typer.Exit(code=1)
-
-
-# ---------------------------------------------------------------------------
-# stop (T24)
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def stop(
+@app.command(name="list")
+def list_models(
     host: Optional[str] = typer.Option(
         None,
         "--host",
@@ -61,13 +38,14 @@ def stop(
         hidden=True,
     ),
 ) -> None:
-    """Stop the running engine on the target host (via NATS)."""
+    """Show catalog models + running state + VRAM."""
     from roxabi_contracts.llm.subjects import SUBJECTS
 
+    # PR-1: single-host list. Fleet broadcast + aggregate → v2 (Roxabi/llmCLI#61).
     resp = asyncio.run(
         lifecycle_nats_request(
-            SUBJECTS.lifecycle_stop,
-            "stop",
+            SUBJECTS.lifecycle_list,
+            "list",
             host or socket.gethostname(),
             timeout,
             allow_anonymous=allow_anonymous,
@@ -78,61 +56,72 @@ def stop(
         if we:
             err_console.print(f"[red]{we.code}: {we.message}[/red]")
         else:
-            err_console.print(f"[red]stop failed: {resp.error}[/red]")
-        raise typer.Exit(code=1)
-    console.print("OK stopped")
-
-
-# ---------------------------------------------------------------------------
-# status (T23)
-# ---------------------------------------------------------------------------
-
-
-@app.command()
-def status(
-    host: Optional[str] = typer.Option(
-        None,
-        "--host",
-        help="Target hostname; default = local hostname",
-    ),
-    timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
-    allow_anonymous: bool = typer.Option(
-        False,
-        "--allow-anonymous",
-        help="Connect to NATS without operator credentials. CI/dev only — do not use in production.",
-        hidden=True,
-    ),
-) -> None:
-    """Show engine status, ports, VRAM, uptime."""
-    from roxabi_contracts.llm.subjects import SUBJECTS
-
-    resp = asyncio.run(
-        lifecycle_nats_request(
-            SUBJECTS.lifecycle_status,
-            "status",
-            host or socket.gethostname(),
-            timeout,
-            allow_anonymous=allow_anonymous,
-        )
-    )
-    if not resp.ok:
-        we = resp.worker_error
-        if we:
-            err_console.print(f"[red]{we.code}: {we.message}[/red]")
-        else:
-            err_console.print(f"[red]status failed: {resp.error}[/red]")
+            err_console.print(f"[red]list failed: {resp.error}[/red]")
         raise typer.Exit(code=1)
     data = resp.data or {}
-    if not data.get("model"):
-        console.print("No engines running.")
-        return
-    table = Table(title="Running engines")
-    table.add_column("model")
-    table.add_column("port")
-    table.add_column("vram_used_mb")
-    table.add_row(
-        str(data.get("model", "?")),
-        str(data.get("port", "?")),
-        str(data.get("vram_used_mb", 0)),
-    )
+    models = data.get("models", [])
+    table = Table(title="llmCLI models")
+    table.add_column("name", style="cyan")
+    table.add_column("engine")
+    table.add_column("vram_gib")
+    table.add_column("running?")
+    for m in models:
+        table.add_row(
+            m.get("name", "?"),
+            m.get("engine", "?"),
+            str(m.get("vram_gib", "?")),
+            "yes" if m.get("running") else "no",
+        )
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# reload-catalog (T26)
+# NATS-only: no AF_UNIX equivalent.
+# PR-1: single-host reload. Fleet broadcast + aggregate → v2 (Roxabi/llmCLI#61).
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="reload-catalog")
+def reload_catalog(
+    host: Optional[str] = typer.Option(
+        None,
+        "--host",
+        help="Target hostname; default = local hostname",
+    ),
+    timeout: float = typer.Option(30.0, "--timeout", help="Request timeout in seconds."),
+    allow_anonymous: bool = typer.Option(
+        False,
+        "--allow-anonymous",
+        help="Connect to NATS without operator credentials. CI/dev only — do not use in production.",
+        hidden=True,
+    ),
+) -> None:
+    """Trigger worker-side catalog reload (re-reads llmcli.toml).
+
+    PR-1: single-host reload. Fleet broadcast + aggregate → v2 (Roxabi/llmCLI#61).
+    """
+    from roxabi_contracts.llm.subjects import SUBJECTS
+
+    # Spec N5/U5: reload-catalog is a broadcast — host=None so every worker reloads.
+    # --host flag is accepted for CLI symmetry but intentionally ignored here.
+    resp = asyncio.run(
+        lifecycle_nats_request(
+            SUBJECTS.lifecycle_reload_catalog,
+            "reload-catalog",
+            None,
+            timeout,
+            allow_anonymous=allow_anonymous,
+        )
+    )
+    if not resp.ok:
+        we = resp.worker_error
+        if we:
+            err_console.print(f"[red]{we.code}: {we.message}[/red]")
+        else:
+            err_console.print(f"[red]reload-catalog failed: {resp.error}[/red]")
+        raise typer.Exit(code=1)
+
+    data = resp.data or {}
+    n = data.get("models_loaded", "?")
+    console.print(f"OK reloaded {n} models")

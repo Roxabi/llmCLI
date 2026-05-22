@@ -3,7 +3,7 @@
 
 # llmCLI
 
-Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp` (vanilla) and `turbo-tan/llama.cpp-tq3` (TurboQuant fork, required for TQ3_4S mixed-quant models). Consumed by **lyra** (LiteLLM library) and **claude-code** (via the shared LiteLLM proxy at `:4000`).
+Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp` (vanilla) and `turbo-tan/llama.cpp-tq3` (TurboQuant fork, required for TQ3_4S mixed-quant models). Consumed by **lyra** (LiteLLM library) and **claude-code** (via the shared LiteLLM proxy at `:18091`).
 
 ## Tech Stack
 
@@ -25,12 +25,14 @@ Unified CLI for local LLM serving. OpenAI-compatible HTTP on LAN via `llama.cpp`
 
 ## Host Topology
 
-| Host | GPU | VRAM | Role | Model budget |
+| Host | GPU | VRAM | LLM role | Providers |
 |---|---|---|---|---|
-| `roxabitower` (local, dev) | RTX 5070 Ti | 16 GB | on-demand | Qwen3.6-35B-A3B-TQ3_4S (12.4 GiB), 14B Q5, 32B quants |
-| `roxabituwer` (prod) | RTX 3080 | 10 GB | always-on | Qwen3-8B-Q4, Qwen3-4B, Gemma-3-4B |
+| `roxabituwer` (M₁, prod 24/7) | RTX 3080 | 10 GB (saturée voiceCLI STT+TTS) | **LiteLLM proxy cloud passthrough uniquement** — ¬local inference, ¬`llm-worker` | Kimi K2.6 (Fireworks), DeepSeek V4-Pro (NVIDIA NIM), Claude Sonnet 4.6 (Anthropic) |
+| `roxabitower` (M₂, dev on-demand) | RTX 5070 Ti | 16 GB | LiteLLM proxy + NATS worker local inference (`llm-worker`) | local llama.cpp (qwen3-4b small test pour l'instant) + cloud passthrough |
 
-Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. Local catalog holds heavy models; prod pins smaller always-on models and is the LiteLLM fallback.
+**Architecture HA**: M₁ doit toujours répondre (24/7 cloud relay). M₂ est dev/on-demand — off-able sans préavis. Agents Lyra appellent toujours `llmcli proxy :18091` (sur n'importe quel host) → LiteLLM route cloud par défaut; fallback local M₂ uniquement si configuré et up.
+
+Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. M₁ catalog = cloud specs (engine="remote"). M₂ catalog = mix cloud + local llama.cpp specs.
 
 ## Project Layout
 
@@ -40,45 +42,54 @@ src/llmcli/
   cli.py                  — Typer app: pull, serve, stop, status, swap, chat, list, register-proxy
   config.py               — TOML catalog loader (HostSettings + ModelSpec)
   engine.py               — Engine Protocol: start/stop/health/base_url + EngineInstance
-  daemon.py               — AF_UNIX management socket; tracks dict[str, EngineInstance]
   litellm_config.py       — reads catalog → writes namespaced block in ~/.litellm/config.yaml
   engines/
     llamacpp.py           — vanilla llama.cpp engine
     llamacpp_tq3.py       — TurboQuant fork engine (TQ3_4S)
-supervisor/
-  conf.d/llmcli_serve.conf  — single program, catalog-driven hot-swap
-  scripts/run_serve.sh    — wrapper that sources .env before exec llmcli serve
-Makefile                  — register, llm (start|reload|stop|status|logs|errlogs), install, lint, test
+deploy/
+  quadlet/llmcli.container            — LiteLLM proxy Quadlet (:18091)
+  quadlet/llmcli-nats-worker.container — NATS worker Quadlet (llm-worker hosts)
+  Dockerfile.llm                      — container image build
+  quadlet.toml                        — deployment manifest (components, host_roles, secrets)
+  install.sh                          — idempotent install script
+Makefile                  — install, install-quadlet, lint, test
 ```
 
 ## CLI Commands
 
 ```bash
-llmcli list                       # catalog + running state + VRAM
-llmcli pull <name>                # hf download into HF hub cache
-llmcli serve [name]               # start daemon + serve model (default from catalog)
-llmcli swap <name>                # hot-swap running model via daemon socket
-llmcli stop                       # stop daemon + engine
-llmcli status                     # engines, ports, VRAM, uptime
-llmcli chat <name> "..."          # one-shot OpenAI call (bypasses proxy)
-llmcli register-proxy             # refresh llmCLI block in ~/.litellm/config.yaml
+llmcli list [--host <hostname>]          # catalog + running state + VRAM (local or remote host)
+llmcli pull <name>                       # hf download into HF hub cache
+llmcli serve [name]                      # removed — use: systemctl --user start llmcli-nats-worker
+llmcli swap <name> [--host <hostname>]   # hot-swap running model (via NATS)
+llmcli stop [--host <hostname>]          # stop running engine (via NATS)
+llmcli status [--host <hostname>]        # engines, ports, VRAM, uptime (local or remote via NATS)
+llmcli reload-catalog [--host <hostname>] # reload llmcli.toml catalog on worker (local or remote via NATS)
+llmcli chat <name> "..."                 # one-shot OpenAI call (bypasses proxy)
+llmcli register-proxy                    # refresh llmCLI block in ~/.litellm/config.yaml
 ```
 
-## Supervisor
+The 5 lifecycle commands (`swap`, `stop`, `status`, `list`, `reload-catalog`) accept `--host <hostname>` to target a remote GPU host. Omitting `--host` defaults to the local hostname.
 
-Single program `llmcli_serve` registered into the lyra hub supervisor (`~/projects/lyra/deploy/supervisor/`) via `make register`:
+## Container Deployment
 
-- **Local** (`roxabitower`): `autostart=false` — start on-demand with `make llm`
-- **Prod** (`roxabituwer`): `autostart=true` — picked up by `lyra.service` linger
+Quadlet (Podman + systemd `--user`) is the production deployment model. Two services:
+
+| Service | Unit | Host role | Port |
+|---|---|---|---|
+| LiteLLM proxy | `llmcli.container` | any | 18091 |
+| NATS worker | `llmcli-nats-worker.container` | `llm-worker` | — (host network) |
 
 ```bash
-make register            # one-time: link conf + create log dir + supervisorctl reread
-make llm                 # start serving default model on :8091
-make llm reload          # restart the serve program
-make llm status          # supervisor status
-make llm logs            # tail stdout
-make llm errlogs         # tail stderr
+./deploy/install.sh              # one-time: install units + create env stubs
+$EDITOR ~/.roxabi/llmcli/env/proxy.env   # fill in API keys
+systemctl --user start llmcli            # start proxy
+systemctl --user start llmcli-nats-worker  # start worker (llm-worker hosts only)
+systemctl --user status llmcli           # status
+journalctl --user -u llmcli -f          # logs
 ```
+
+See `docs/QUADLET-DEPLOYMENT.md` for the full runbook (secret rotation, diagnostics, drop-ins).
 
 ## Consumers
 
@@ -97,7 +108,7 @@ Per-agent routing via `ModelConfig.base_url`. LiteLLM's native fallback list han
 
 ### claude-code (ccl / ccp aliases)
 
-`~/.claude/settings.json.local` points `ANTHROPIC_BASE_URL` at the LiteLLM proxy (`:4000`), which forwards OpenAI-format requests to `llama-server`. Aliases `ccl` / `ccp` / `cccl` / `cccp` select local vs prod and normal vs fast model.
+`~/.claude/settings.json.local` points `ANTHROPIC_BASE_URL` at the LiteLLM proxy (`:18091`), which forwards OpenAI-format requests to `llama-server`. Aliases `ccl` / `ccp` / `cccl` / `cccp` select local vs prod and normal vs fast model.
 
 ## LiteLLM Proxy Integration (Option A — sibling service)
 
@@ -184,4 +195,3 @@ Agents: Sonnet = all agents (frontend-dev, backend-dev, devops, doc-writer, fixe
 ## Gotchas
 
 <!-- Add project-specific gotchas here -->
-

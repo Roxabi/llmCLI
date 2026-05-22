@@ -169,9 +169,12 @@ def proxy(
             raise typer.Exit(127)
 
     # 5. Write with 0o700 dir mode, 0o600 file mode
+    # Atomic create with restrictive perms (no write_text→chmod race window).
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    target.write_text(yaml_text)
-    target.chmod(0o600)
+    fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(yaml_text)
+    target.chmod(0o600)  # defense-in-depth: enforce exact mode regardless of process umask
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
@@ -256,8 +259,14 @@ def _spawn_litellm(config_path: Path, port: int, host: str) -> subprocess.Popen:
             "or `uv add 'litellm[proxy]'`"
         )
         raise typer.Exit(127)
+    # start_new_session=True: child runs in its own process group so terminal
+    # SIGINT/SIGTERM hits only the parent. The handler in _install_signal_handlers
+    # then forwards deterministically with a drain timeout — without isolation,
+    # the kernel would deliver the signal to both parent and child via the
+    # foreground group, racing the drain logic.
     return subprocess.Popen(  # noqa: S603
-        [binary, "--config", str(config_path), "--port", str(port), "--host", host]
+        [binary, "--config", str(config_path), "--port", str(port), "--host", host],
+        start_new_session=True,
     )
 
 

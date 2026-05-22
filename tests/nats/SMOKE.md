@@ -3,6 +3,16 @@
 End-to-end verification on `roxabituwer` (M₁) gating the coordinated merge.
 Pass criteria gate the merge window; failure aborts the bundle.
 
+> **Automated harness:** `scripts/smoke_llm.py` codifies smokes 1–3 below
+> (request-reply, streaming, heartbeat). Run from any tailnet member:
+>
+> ```bash
+> uv run --extra nats python scripts/smoke_llm.py --nats-url nats://roxabituwer:4222
+> ```
+>
+> Exit 0 = all green; the manual `nats-cli` recipes below remain authoritative
+> for diagnostics when a smoke fails.
+
 ## Prerequisites
 
 - [ ] lyra#1104 deployed: `deploy/nats/auth.conf` regenerated with canonical
@@ -11,14 +21,14 @@ Pass criteria gate the merge window; failure aborts the bundle.
       neither `lyra.llm.request` (legacy) nor `lyra.llm.health.*` (legacy)
       remain in the file.
 - [ ] `lyra-nats.service` running on M₁ (`systemctl status lyra-nats`).
-- [ ] LiteLLM proxy running on M₁ port `:4000` with `qwen3-8b` mapped to the
+- [ ] LiteLLM proxy running on M₁ port `:18091` with `qwen3-8b` mapped to the
       local llama-server route. Verify:
       ```bash
       curl -sS -H "Authorization: Bearer $LLMCLI_LITELLM_API_KEY" \
-        http://localhost:4000/v1/models | jq '.data[].id' | grep qwen3-8b
+        http://localhost:18091/v1/models | jq '.data[].id' | grep qwen3-8b
       ```
 - [ ] llmCLI worker container ready: `podman secret ls` shows
-      `llmcli-nats-nkey` and `llmcli-litellm-key`.
+      `llmcli-nats-worker` and `llmcli-litellm-key`.
 - [ ] llama-server on `:8091` already serving `qwen3-8b` (`llmcli serve qwen3-8b`).
 
 ## Bring up the worker
@@ -37,7 +47,7 @@ journalctl -u llmcli-nats-worker -n 50 --no-pager
 ```
 
 Look for log lines:
-- `Starting LLM NATS adapter: model=qwen3-8b max_concurrent=… litellm_url=http://litellm:4000/v1`
+- `Starting LLM NATS adapter: model=qwen3-8b max_concurrent=… litellm_url=http://localhost:18091/v1`
 - `llm_adapter: model=qwen3-8b ready` (from `_ensure_model`)
 
 ## Smoke 1 — non-streaming
@@ -84,9 +94,9 @@ nats --creds=/path/to/hub.creds request lyra.llm.generate.request \
   }'
 ```
 
-(Streaming requires a small consumer that subscribes to a private inbox and
-prints each chunk; if `nats request --raw` doesn't fit, use the
-`scripts/smoke_llm.py` harness in lyra or call from within the hub.)
+(Streaming requires a consumer that subscribes to a private inbox and prints
+each chunk. Use `scripts/smoke_llm.py --only 2` — `nats request --raw` only
+prints the first reply.)
 
 **Assert:**
 - [ ] At least **1** `LlmChunkEvent` with `delta` populated, then
@@ -101,8 +111,9 @@ In a separate shell:
 nats --creds=/path/to/hub.creds sub lyra.llm.heartbeat
 ```
 
-**Assert (within ~10 s):**
-- [ ] At least one heartbeat received.
+**Assert (within ~13 s):**
+- [ ] At least **two** heartbeats received (worker emits every 5 s — matches the
+      `scripts/smoke_llm.py` ≥2 check).
 - [ ] Payload contains: `worker_id`, `model_loaded == "qwen3-8b"`,
       `vram_used_mb` > 0, `vram_free_mb` >= 0, `active_requests`
       (likely 0 if no in-flight req at that moment).

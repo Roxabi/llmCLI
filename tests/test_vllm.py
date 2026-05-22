@@ -448,72 +448,7 @@ class TestVLLMImportGuard:
 
 
 # ---------------------------------------------------------------------------
-# 7. Daemon dispatch
-# ---------------------------------------------------------------------------
-
-
-class TestDaemonDispatchVLLM:
-    """Daemon._engine_for_spec must route engine="vllm" to VLLMEngine."""
-
-    @pytest.mark.no_gpu
-    def test_engine_vllm_returns_vllm_engine(self, vllm_spec: ModelSpec) -> None:
-        from llmcli.daemon import Daemon
-        from llmcli.engines.vllm import VLLMEngine
-
-        # Arrange
-        daemon = Daemon()
-
-        # Act
-        result = daemon._engine_for_spec(vllm_spec)
-
-        # Assert
-        assert isinstance(result, VLLMEngine), (
-            f"engine='vllm' must dispatch to VLLMEngine, got {type(result)}"
-        )
-
-    @pytest.mark.no_gpu
-    def test_engine_llamacpp_returns_llamacpp_engine(self) -> None:
-        from llmcli.daemon import Daemon
-        from llmcli.engines.llamacpp import LlamaCppEngine
-
-        spec = ModelSpec(
-            name="qwen3-8b-q4",
-            engine="llamacpp",
-            repo="bartowski/Qwen3-8B-GGUF",
-            file="Qwen3-8B-Q4_K_M.gguf",
-            port=8091,
-            vram_gib=5.5,
-        )
-        daemon = Daemon()
-        result = daemon._engine_for_spec(spec)
-
-        assert isinstance(result, LlamaCppEngine), (
-            f"engine='llamacpp' must dispatch to LlamaCppEngine, got {type(result)}"
-        )
-
-    @pytest.mark.no_gpu
-    def test_engine_llamacpp_tq3_returns_tq3_engine(self) -> None:
-        from llmcli.daemon import Daemon
-        from llmcli.engines.llamacpp_tq3 import LlamaCppTQ3Engine
-
-        spec = ModelSpec(
-            name="qwen3-8b-tq3",
-            engine="llamacpp_tq3",
-            repo="bartowski/Qwen3-8B-GGUF",
-            file="Qwen3-8B-TQ3_K_M.gguf",
-            port=8092,
-            vram_gib=5.0,
-        )
-        daemon = Daemon()
-        result = daemon._engine_for_spec(spec)
-
-        assert isinstance(result, LlamaCppTQ3Engine), (
-            f"engine='llamacpp_tq3' must dispatch to LlamaCppTQ3Engine, got {type(result)}"
-        )
-
-
-# ---------------------------------------------------------------------------
-# 8. _wait_ready
+# 7. _wait_ready (formerly 8)
 # ---------------------------------------------------------------------------
 
 

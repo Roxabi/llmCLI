@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from llmcli.nats.llm_adapter import LlmNatsAdapter
-
 
 def _decode_publish(call) -> dict:
     """Extract JSON body from a nc.publish(subject, data) call."""
@@ -181,40 +179,6 @@ async def test_error_generic_emits_worker_internal(adapter, fake_msg_factory, ma
     assert body["worker_error"]["retryable"] is False
 
 
-# ---------- Slice 2 — _ensure_model daemon-optional skip paths (#28) ----------
-
-
-def test_ensure_model_socket_missing_sets_loaded_model(tmp_path):
-    """Socket absent → _loaded_model populated from _model_name (not None)."""
-    a = LlmNatsAdapter(
-        model_name="qwen3-8b",
-        litellm_url="http://litellm.test/v1",
-        litellm_key="test-key",
-        socket_path=tmp_path / "nonexistent.sock",
-    )
-    a._ensure_model()
-    assert a._loaded_model == "qwen3-8b"
-
-
-def test_ensure_model_oserror_sets_loaded_model(tmp_path, monkeypatch):
-    """OSError mid-connect → _loaded_model populated from _model_name (not None)."""
-    import llmcli.daemon as daemon_mod
-
-    sock = tmp_path / "fake.sock"
-    sock.touch()  # exists() returns True → enters try block
-
-    monkeypatch.setattr(daemon_mod, "daemon_request", MagicMock(side_effect=OSError("refused")))
-
-    a = LlmNatsAdapter(
-        model_name="qwen3-8b",
-        litellm_url="http://litellm.test/v1",
-        litellm_key="test-key",
-        socket_path=sock,
-    )
-    a._ensure_model()
-    assert a._loaded_model == "qwen3-8b"
-
-
 # ---------- Slice 2 — heartbeat enrichment ----------
 
 
@@ -262,6 +226,33 @@ async def test_reject_when_full_emits_worker_internal_retryable(
     assert body["ok"] is False
     assert body["worker_error"]["code"] == "worker.internal"
     assert body["worker_error"]["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_during_drain_emits_worker_capacity_retryable(
+    adapter, fake_msg_factory, make_request_payload
+):
+    """AC-5: generation during _draining → worker.capacity retryable, no fallthrough.
+
+    Regression for the missing drain-guard in handle(): without the guard a
+    generation arriving mid-swap would acquire the semaphore and extend the
+    drain window indefinitely.
+    """
+    adapter._draining.set()
+
+    payload = make_request_payload(stream=False)
+    msg = fake_msg_factory(payload)
+
+    await adapter.handle(msg, payload)
+
+    # One publish (the reject), no fallthrough to _run_generation
+    assert adapter._nc.publish.await_count == 1
+    body = _decode_publish(adapter._nc.publish.await_args_list[0])
+    assert body["ok"] is False
+    assert body["worker_error"]["code"] == "worker.capacity"
+    assert body["worker_error"]["retryable"] is True
+    # Semaphore must NOT have been touched — its full capacity stays available
+    assert not adapter._sem.locked()
 
 
 @pytest.mark.asyncio

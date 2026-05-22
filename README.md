@@ -9,9 +9,9 @@ uv sync
 mkdir -p ~/.roxabi/llmcli/models
 cp llmcli.example.toml ~/.roxabi/llmcli/llmcli.toml
 cp models/*.toml ~/.roxabi/llmcli/models/   # copy example model files, edit as needed
-make register            # wire supervisor hub
+./deploy/install.sh      # install Quadlet units + create env stubs
 llmcli pull qwen3_6-35b-a3b-tq3             # download model into HF hub cache
-make llm                 # start serving default model on :8091
+systemctl --user start llmcli               # start proxy on :18091
 llmcli status
 curl localhost:8091/v1/chat/completions -d '{"model":"...","messages":[...]}'
 ```
@@ -57,25 +57,26 @@ Inline `[models.*]` in the main toml still works for backward compat; the `model
 ## Architecture
 
 ```
-llama-server :PORT  ◄── llmcli_serve (supervisor, catalog-driven hot-swap)
+llama-server :PORT  ◄── llmcli serve (catalog-driven hot-swap)
       ▲
       │ OpenAI API
       ├── lyra hub (litellm library, per-agent ModelConfig)
-      └── litellm proxy :4000 ◄── claude-code (ccl/ccp aliases)
+      └── litellm proxy :18091 ◄── claude-code (ccl/ccp aliases)
 ```
 
-## Supervisor
+## Deployment (Quadlet)
 
-Single program `llmcli_serve` registered into the lyra hub supervisor via `make register`. Local: `autostart=false`. Prod: `autostart=true`.
+Two Podman Quadlet services managed by user-systemd:
 
-## Quadlet (production HTTP proxy)
-
-Run `llmcli proxy` under user-systemd via a Podman Quadlet on `:18091`:
+| Service | Port | Host |
+|---|---|---|
+| `llmcli` (LiteLLM proxy) | 18091 | all hosts |
+| `llmcli-nats-worker` (NATS worker) | — | `llm-worker` role only |
 
 ```bash
-make install-quadlet
+./deploy/install.sh
 $EDITOR ~/.roxabi/llmcli/env/proxy.env
 systemctl --user start llmcli
 ```
 
-See `docs/guides/deployment.md` → "Running `llmcli proxy` as a Quadlet" for the full flow.
+See `docs/QUADLET-DEPLOYMENT.md` for the full runbook and `docs/guides/deployment.md` for the deployment guide.

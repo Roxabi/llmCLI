@@ -13,4 +13,4 @@ jobs:
     with:
       image_name: ghcr.io/roxabi/llmcli
       release_please_component: llmcli
-      dockerfile_path: ./Dockerfile.llm
+      dockerfile_path: ./deploy/Dockerfile.llm

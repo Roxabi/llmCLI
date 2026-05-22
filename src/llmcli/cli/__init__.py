@@ -4,7 +4,7 @@ Public surface (stable):
   from llmcli.cli import app   ← entry point used by [project.scripts] and tests
 
 Patched names (tests use `patch("llmcli.cli.X", create=True)`):
-  config, daemon_request, hf_hub_download, Daemon, openai,
+  config, hf_hub_download, openai,
   build_block, write_block, reload_proxy
 """
 
@@ -17,7 +17,6 @@ from llmcli.cli._app import app, console, err_console  # noqa: F401
 # Submodules do `import llmcli.cli as _cli` and call `_cli.X(...)` at
 # runtime, so the mock injected here is what they see.
 from llmcli import config  # noqa: F401
-from llmcli.daemon import Daemon, daemon_request  # noqa: F401
 from llmcli.support.litellm_config import build_block, reload_proxy, write_block  # noqa: F401
 
 try:
@@ -32,7 +31,9 @@ except ImportError:  # pragma: no cover
 
 # Import submodules AFTER the re-exports above are in place.
 # Each submodule calls `@app.command()` at import time, registering commands.
-from llmcli.cli import bench, catalog, chat, lifecycle, proxy, swap  # noqa: F401
+# lifecycle_extra must come after lifecycle (both import _lifecycle_nats).
+# catalog must come before lifecycle_extra ('list' command moved from catalog to lifecycle_extra).
+from llmcli.cli import bench, catalog, chat, lifecycle, lifecycle_extra, proxy, swap  # noqa: F401
 
 # NATS sub-app — registered lazily so nats-py is only required when used.
 try:

@@ -1,0 +1,18 @@
+[meta]
+tool = "llmcli"
+uid = 1502
+
+[component.proxy]
+container = "llmcli.container"
+required_secrets = ["llmcli-litellm-key"]
+env_file = "~/.roxabi/llmcli/env/proxy.env"
+host_roles = ["any"]
+
+[component.worker]
+container = "llmcli-nats-worker.container"
+required_secrets = ["llmcli-nats-worker", "llmcli-litellm-key"]
+env_file = "~/.roxabi/llmcli/env/worker.env"
+host_roles = ["llm-worker"]
+# M₁ ¬llm-worker (VRAM voiceCLI). M₂ small test pour éviter pression VRAM 16 GB.
+# Override = informational pour l'instant — .container hardcode --model qwen3-4b.
+host_overrides.roxabitower = { model = "qwen3-4b" }

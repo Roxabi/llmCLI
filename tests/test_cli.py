@@ -8,7 +8,6 @@ reload graceful failure, confirmation output, friendly error on bad path).
 
 from __future__ import annotations
 
-import json
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -82,23 +81,6 @@ def fake_catalog(real_catalog):
 
 
 @pytest.fixture()
-def mock_daemon_socket():
-    """Patch daemon_request so CLI commands don't need a live AF_UNIX socket."""
-    status_payload = json.dumps(
-        {
-            "small-q4": {
-                "pid": 12345,
-                "port": 8091,
-                "model_name": "small-q4",
-                "started_at": 1700000000.0,
-            }
-        }
-    )
-    with patch("llmcli.cli.daemon_request", create=True, return_value=status_payload) as mock_req:
-        yield mock_req
-
-
-@pytest.fixture()
 def mock_openai_client():
     """Patch the openai module used by `chat`."""
     mock_completion = MagicMock()
@@ -118,45 +100,9 @@ def mock_openai_client():
 # ---------------------------------------------------------------------------
 
 
-class TestListCommand:
-    def test_list_exits_zero(self, fake_catalog, mock_daemon_socket) -> None:
-        """list exits 0."""
-        # Act
-        result = runner.invoke(app, ["list"])
-        # Assert
-        assert result.exit_code == 0
-
-    def test_list_prints_model_name(self, fake_catalog, mock_daemon_socket) -> None:
-        """list output contains the model name from catalog."""
-        # Act
-        result = runner.invoke(app, ["list"])
-        # Assert — RED: stub prints nothing
-        assert "small-q4" in result.output, (
-            f"Expected 'small-q4' in output but got: {result.output!r}"
-        )
-
-    def test_list_prints_engine(self, fake_catalog, mock_daemon_socket) -> None:
-        """list output contains the engine type."""
-        # Act
-        result = runner.invoke(app, ["list"])
-        # Assert — RED: stub prints nothing
-        assert "llamacpp" in result.output, (
-            f"Expected engine name in output but got: {result.output!r}"
-        )
-
-    def test_list_prints_vram(self, fake_catalog, mock_daemon_socket) -> None:
-        """list output contains the VRAM amount for the model."""
-        # Act
-        result = runner.invoke(app, ["list"])
-        # Assert — RED: stub prints nothing
-        assert "6" in result.output, f"Expected VRAM (6.0) in output but got: {result.output!r}"
-
-    def test_list_prints_port(self, fake_catalog, mock_daemon_socket) -> None:
-        """list output contains the port number."""
-        # Act
-        result = runner.invoke(app, ["list"])
-        # Assert — RED: stub prints nothing
-        assert "8091" in result.output, f"Expected port 8091 in output but got: {result.output!r}"
+# TestListCommand removed in Slice 6 cutover (#34): `list` now goes through NATS
+# and is exercised by tests/nats/test_lifecycle_host_filter.py +
+# tests/cli/test_swap_nats.py. Mocking NATS here would duplicate that coverage.
 
 
 # ---------------------------------------------------------------------------
@@ -204,136 +150,25 @@ class TestPullCommand:
 
 
 # ---------------------------------------------------------------------------
-# U3 — llmcli serve [name]
+# U3-U5 — stop, status, list: tests removed in Slice 6 cutover (#34).
+# All three go through NATS and are covered by tests/cli/test_lifecycle_nats.py
+# (CLI layer) + tests/nats/test_lifecycle_status.py (worker layer).
+# `serve` is now a deprecation stub — covered by TestServeStub below.
 # ---------------------------------------------------------------------------
 
 
-class TestServeCommand:
-    def test_serve_exits_zero_with_named_model(self, fake_catalog) -> None:
-        """serve --name <name> exits 0 when model fits VRAM."""
-        # Arrange
-        with (
-            patch("llmcli.cli.Daemon", create=True) as mock_daemon_cls,
-            patch("llmcli.cli.hf_hub_download", create=True, return_value="/tmp/fake.gguf"),
-        ):
-            mock_daemon_cls.return_value = MagicMock()
-            # Act
-            result = runner.invoke(app, ["serve", "--name", "small-q4"])
-        # Assert
-        assert result.exit_code == 0
+class TestServeStub:
+    """B9 (#34 Slice 6): `serve` exits 1 with a redirect to the NATS worker."""
 
-    def test_serve_starts_daemon_with_named_model(self, fake_catalog) -> None:
-        """serve --name <name> starts the daemon with the specified model."""
-        # Arrange
-        with (
-            patch("llmcli.cli.Daemon", create=True) as mock_daemon_cls,
-            patch("llmcli.cli.hf_hub_download", create=True, return_value="/tmp/fake.gguf"),
-        ):
-            mock_daemon_instance = MagicMock()
-            mock_daemon_cls.return_value = mock_daemon_instance
-            # Act
-            runner.invoke(app, ["serve", "--name", "small-q4"])
-        # Assert — RED: stub never calls Daemon
-        mock_daemon_instance.serve.assert_called_once()
+    def test_serve_exits_one(self) -> None:
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 1
 
-    def test_serve_uses_default_model_when_no_name_given(self, fake_catalog) -> None:
-        """serve with no name argument uses catalog host.default_model."""
-        # Arrange
-        with (
-            patch("llmcli.cli.Daemon", create=True) as mock_daemon_cls,
-            patch("llmcli.cli.hf_hub_download", create=True, return_value="/tmp/fake.gguf"),
-        ):
-            mock_daemon_instance = MagicMock()
-            mock_daemon_cls.return_value = mock_daemon_instance
-            # Act
-            runner.invoke(app, ["serve"])
-        # Assert — RED: stub exits 0 but never calls Daemon.serve
-        mock_daemon_instance.serve.assert_called_once()
-
-    def test_serve_rejects_vram_exceeded_exits_nonzero(self, fake_catalog) -> None:
-        """serve --name <oversized-model> exits non-zero when VRAM budget exceeded (C2)."""
-        # big-model vram_gib=13 > budget=10
-        # Act
-        result = runner.invoke(app, ["serve", "--name", "big-model"])
-        # Assert — RED: stub exits 0 for everything
-        assert result.exit_code != 0, "Expected non-zero exit when model exceeds VRAM budget, got 0"
-
-    def test_serve_vram_error_mentions_model_and_budget(self, fake_catalog) -> None:
-        """serve --name <oversized-model> output contains helpful VRAM info."""
-        # Act
-        result = runner.invoke(app, ["serve", "--name", "big-model"])
+    def test_serve_output_redirects_to_worker(self) -> None:
+        result = runner.invoke(app, ["serve"])
         combined = result.output + (result.stderr or "")
-        # Assert — RED: stub outputs nothing
-        assert any(
-            keyword in combined for keyword in ("big-model", "13", "10", "vram", "VRAM", "budget")
-        ), f"Expected VRAM error details in output, got: {combined!r}"
-
-    def test_serve_unknown_model_exits_nonzero(self, fake_catalog) -> None:
-        """serve --name <unknown-model> exits non-zero."""
-        # Act
-        result = runner.invoke(app, ["serve", "--name", "nonexistent-model"])
-        # Assert — RED: stub exits 0
-        assert result.exit_code != 0
-
-
-# ---------------------------------------------------------------------------
-# U4 — llmcli stop
-# ---------------------------------------------------------------------------
-
-
-class TestStopCommand:
-    def test_stop_exits_zero(self, mock_daemon_socket) -> None:
-        """stop exits 0 when daemon responds."""
-        # Act
-        result = runner.invoke(app, ["stop"])
-        # Assert
-        assert result.exit_code == 0
-
-    def test_stop_sends_shutdown_message(self, mock_daemon_socket) -> None:
-        """stop calls daemon_request with SHUTDOWN message."""
-        # Act
-        runner.invoke(app, ["stop"])
-        # Assert — RED: stub never calls daemon_request
-        mock_daemon_socket.assert_called_once_with("SHUTDOWN")
-
-
-# ---------------------------------------------------------------------------
-# U5 — llmcli status
-# ---------------------------------------------------------------------------
-
-
-class TestStatusCommand:
-    def test_status_exits_zero(self, mock_daemon_socket) -> None:
-        """status exits 0."""
-        # Act
-        result = runner.invoke(app, ["status"])
-        # Assert
-        assert result.exit_code == 0
-
-    def test_status_shows_running_model_name(self, mock_daemon_socket) -> None:
-        """status output contains the model name of the running engine."""
-        # Act
-        result = runner.invoke(app, ["status"])
-        # Assert — RED: stub prints nothing
-        assert "small-q4" in result.output, (
-            f"Expected model name in status output, got: {result.output!r}"
-        )
-
-    def test_status_shows_port(self, mock_daemon_socket) -> None:
-        """status output contains the port of the running engine."""
-        # Act
-        result = runner.invoke(app, ["status"])
-        # Assert — RED: stub prints nothing
-        assert "8091" in result.output, (
-            f"Expected port 8091 in status output, got: {result.output!r}"
-        )
-
-    def test_status_calls_daemon_socket_with_status(self, mock_daemon_socket) -> None:
-        """status sends STATUS to daemon socket."""
-        # Act
-        runner.invoke(app, ["status"])
-        # Assert — RED: stub never calls daemon_request
-        mock_daemon_socket.assert_called_once_with("STATUS")
+        assert "removed" in combined.lower()
+        assert "llmcli-nats-worker" in combined
 
 
 # ---------------------------------------------------------------------------
@@ -342,34 +177,28 @@ class TestStatusCommand:
 
 
 class TestChatCommand:
-    def test_chat_exits_zero(self, fake_catalog, mock_daemon_socket, mock_openai_client) -> None:
+    def test_chat_exits_zero(self, fake_catalog, mock_openai_client) -> None:
         """chat exits 0 on success."""
         # Act
         result = runner.invoke(app, ["chat", "small-q4", "ping"])
         # Assert
         assert result.exit_code == 0
 
-    def test_chat_prints_llm_response(
-        self, fake_catalog, mock_daemon_socket, mock_openai_client
-    ) -> None:
+    def test_chat_prints_llm_response(self, fake_catalog, mock_openai_client) -> None:
         """chat prints the LLM completion to stdout."""
         # Act
         result = runner.invoke(app, ["chat", "small-q4", "ping"])
         # Assert — RED: stub prints nothing
         assert "pong" in result.output, f"Expected 'pong' in chat output, got: {result.output!r}"
 
-    def test_chat_invokes_openai_completions(
-        self, fake_catalog, mock_daemon_socket, mock_openai_client
-    ) -> None:
+    def test_chat_invokes_openai_completions(self, fake_catalog, mock_openai_client) -> None:
         """chat calls the OpenAI completions endpoint."""
         # Act
         runner.invoke(app, ["chat", "small-q4", "ping"])
         # Assert — RED: stub never instantiates openai client
         mock_openai_client.chat.completions.create.assert_called_once()
 
-    def test_chat_passes_prompt_to_openai(
-        self, fake_catalog, mock_daemon_socket, mock_openai_client
-    ) -> None:
+    def test_chat_passes_prompt_to_openai(self, fake_catalog, mock_openai_client) -> None:
         """chat passes the user prompt in the messages argument."""
         # Act
         runner.invoke(app, ["chat", "small-q4", "hello world"])
