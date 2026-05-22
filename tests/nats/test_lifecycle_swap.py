@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from llmcli.config import Catalog, HostSettings, ModelSpec
 from llmcli.nats._lifecycle import LifecycleMixin
 from roxabi_contracts.llm import LifecycleRequest
 
@@ -77,7 +78,7 @@ class _IntegrationAdapter(LifecycleMixin):
         self.__init_lifecycle__()
         self._sem = asyncio.Semaphore(2)
         self._max_concurrent = 2
-        self._drain_timeout = 5.0
+        self.drain_timeout = 5.0
         self._instances: dict = initial_instances or {}
         self._nc = MagicMock()
         self._nc.publish = AsyncMock()
@@ -125,10 +126,15 @@ class _IntegrationAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
 
 def _make_spec(engine: str = "llamacpp", vram_gib: float = 8.0, name: str = "test") -> MagicMock:
@@ -276,9 +282,7 @@ class TestSwapHappyPath:
         await adapter._do_swap(msg, req)
 
         # Assert
-        assert not adapter._draining.is_set(), (
-            "_draining must be cleared after swap completes"
-        )
+        assert not adapter._draining.is_set(), "_draining must be cleared after swap completes"
 
 
 # ---------------------------------------------------------------------------
@@ -485,9 +489,7 @@ class TestSwapEngineStartFailure:
             f"Expected one _reply_err on engine crash, got: {adapter._reply_err_calls}"
         )
         err = adapter._reply_err_calls[0]
-        assert err["code"] == "worker.crash", (
-            f"Expected 'worker.crash' code, got: {err['code']!r}"
-        )
+        assert err["code"] == "worker.crash", f"Expected 'worker.crash' code, got: {err['code']!r}"
         assert err["retryable"] is True, "worker.crash must be retryable=True"
 
     @pytest.mark.asyncio
@@ -552,4 +554,131 @@ class TestSwapEngineStartFailure:
         assert adapter._instances == {}, (
             f"After crash, instances must be empty (old stopped, new failed), "
             f"got: {adapter._instances}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# VRAM rejection with real HostSettings (B5)
+# ---------------------------------------------------------------------------
+
+
+class _VramTestAdapter(LifecycleMixin):
+    """Test adapter with a real Catalog/HostSettings so check_vram_budget runs properly.
+
+    Separate from _IntegrationAdapter to avoid mutating the shared fixture for other tests.
+    """
+
+    def __init__(self, catalog: Catalog) -> None:
+        self.__init_lifecycle__()
+        self._sem = asyncio.Semaphore(2)
+        self._max_concurrent = 2
+        self.drain_timeout = 5.0
+        self._instances: dict = {}
+        self._nc = MagicMock()
+        self._nc.publish = AsyncMock()
+        self._vram_monitor = None
+        self._catalog = catalog
+        self._reply_ok_calls: list[dict] = []
+        self._reply_err_calls: list[dict] = []
+
+    async def _wait_sem_idle(self) -> None:
+        pass
+
+    def _engine_for_spec(self, spec):
+        engine = MagicMock()
+        inst = _make_instance(port=8091)
+        engine.start = MagicMock(return_value=inst)
+        engine.stop = MagicMock()
+        return engine
+
+    async def _reply_ok(self, msg, req, *, data=None) -> None:
+        self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
+
+    async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
+        self._reply_err_calls.append(
+            {"msg": msg, "req": req, "code": code, "message": message, "retryable": retryable}
+        )
+
+
+@pytest.mark.nats
+class TestSwapVramRejection:
+    """VRAM budget exceeded → lifecycle_rejected, not TypeError swallow (B5).
+
+    Spec: check_vram_budget raises ValueError when spec.vram_gib > host.vram_budget_gib.
+    The TypeError swallow in _lifecycle.py was removed in B5; these tests verify that
+    the check runs and produces the correct rejection for real HostSettings objects.
+    """
+
+    @pytest.mark.asyncio
+    async def test_vram_budget_exceeded_replies_lifecycle_rejected(self) -> None:
+        """Swap a model that exceeds the host VRAM budget → llm.lifecycle_rejected.
+
+        Arrange: host.vram_budget_gib=10.0, model.vram_gib=13.0.
+        Assert: _reply_err called with code='llm.lifecycle_rejected', retryable=False.
+        """
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url="http://localhost",
+            api_key_env="LLMCLI_API_KEY",
+            vram_budget_gib=10.0,
+        )
+        spec = ModelSpec(
+            name="big-model",
+            engine="llamacpp",
+            repo="Org/Big-GGUF",
+            file="big.gguf",
+            port=8091,
+            vram_gib=13.0,
+        )
+        catalog = Catalog(host=host, models={"big-model": spec})
+        adapter = _VramTestAdapter(catalog=catalog)
+
+        req = _make_swap_request(model_name="big-model")
+        msg = _make_msg()
+
+        await adapter._do_swap(msg, req)
+
+        assert len(adapter._reply_err_calls) == 1, (
+            f"Expected one _reply_err for VRAM exceeded, got: {adapter._reply_err_calls}"
+        )
+        err = adapter._reply_err_calls[0]
+        assert err["code"] == "llm.lifecycle_rejected", (
+            f"Expected 'llm.lifecycle_rejected', got: {err['code']!r}"
+        )
+        assert err["retryable"] is False, "VRAM rejection must be retryable=False"
+
+    @pytest.mark.asyncio
+    async def test_vram_within_budget_does_not_reject(self) -> None:
+        """Swap a model that fits in the host VRAM budget → ok reply (no rejection).
+
+        Arrange: host.vram_budget_gib=16.0, model.vram_gib=8.0.
+        Assert: _reply_ok called, _reply_err not called.
+        """
+        host = HostSettings(
+            bind="0.0.0.0",
+            public_base_url="http://localhost",
+            api_key_env="LLMCLI_API_KEY",
+            vram_budget_gib=16.0,
+        )
+        spec = ModelSpec(
+            name="small-model",
+            engine="llamacpp",
+            repo="Org/Small-GGUF",
+            file="small.gguf",
+            port=8091,
+            vram_gib=8.0,
+        )
+        catalog = Catalog(host=host, models={"small-model": spec})
+        adapter = _VramTestAdapter(catalog=catalog)
+
+        req = _make_swap_request(model_name="small-model")
+        msg = _make_msg()
+
+        await adapter._do_swap(msg, req)
+
+        assert adapter._reply_err_calls == [], (
+            f"Expected no rejection for model within budget, got: {adapter._reply_err_calls}"
+        )
+        assert len(adapter._reply_ok_calls) == 1, (
+            f"Expected ok reply for model within budget, got: {adapter._reply_ok_calls}"
         )
