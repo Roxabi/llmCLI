@@ -1,0 +1,49 @@
+---
+title: "feat(cli): --fleet lifecycle ops + extract cli/_nats_client.py helper"
+issue: 61
+status: approved
+tier: F-lite
+date: 2026-05-22
+---
+
+## Problem
+
+v1 (#34) deferred `--fleet` reply aggregation per consensus DP1 (separates primary blowup vector from the cutover-PR critical path). With v1 shipped and the routing topology proven on M₁ and M₂, the second concrete use site — reply collection across N workers with timeout — makes `_nats_client.py` earn its abstraction. Without the helper, every lifecycle command that needs fleet-wide visibility duplicates inline NATS publish/reply blocks, creating the same debt v1 explicitly accepted.
+
+## Who
+
+- **Primary:** llmCLI operators running `status`, `list`, or `swap` across the fleet (M₁ + M₂)
+- **Secondary:** Future lifecycle command authors who would otherwise copy-paste inline NATS blocks
+
+## Constraints
+
+- Depends on #34 merged first (now closed) — v1 lifecycle subjects, `LifecycleMixin`, and Slice 6 cutover are in tree
+- Must not break existing v1 ops (`swap`, `stop`, `status`, `list`, `reload-catalog`)
+- `--fleet` on `swap` broadcasts to all matching workers; on `status`/`list` broadcasts and aggregates replies
+- Reply aggregation needs bounded timeout (configurable, default sane)
+
+## Out of Scope
+
+- `stop` and `reload-catalog` moving to `_nats_client.py` — they keep their inline pattern until a separate issue
+- vLLM engine changes
+- LiteLLM proxy changes
+- Any new CLI commands beyond `--fleet` on existing 3 ops
+
+## Premise Validity
+
+**Success in 6 months:** `--fleet` works on `status`/`list`/`swap` across M₁+M₂, `cli/_nats_client.py` is reused by ≥2 commands, no inline NATS publish/reply blocks remain in lifecycle code.
+
+**Failure in 6 months:** After 3 sprints, `swap`/`status`/`list` still contain inline NATS publish/reply logic (grep-detectable) and no `--fleet` aggregation exists.
+
+**Simplest alternative:** Add `--fleet` inline to each command without extracting `_nats_client.py`.  
+**Why not simplest:** The inline duplication is exactly what #34 deferred to avoid; second use site without extraction = same debt v1 explicitly accepted.
+
+## Complexity
+
+**Tier: F-lite** — Single domain (CLI Python), clear scope, ~5 files, no new architecture. Extraction pattern + flag addition on existing commands.
+
+Signals:
+- Single domain (CLI Python / NATS client helper)
+- Clear scope (extract helper, add `--fleet` to 3 commands)
+- No new architecture (publish/reply pattern already proven in v1)
+- Known unknowns bounded (timeout default, aggregation format — well-defined)
