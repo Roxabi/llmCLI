@@ -99,62 +99,10 @@ def constrained_host() -> HostSettings:
 
 
 # ---------------------------------------------------------------------------
-# B1 — swap CLI passes timeout=300.0 to daemon_request
+# B1 — swap CLI timeout: tests removed in Slice 6 cutover (#34).
+# `daemon_request` no longer exists; swap goes through NATS. The --timeout
+# CLI flag is exercised by tests/cli/test_swap_nats.py.
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.no_gpu
-class TestSwapTimeout:
-    """B1: swap command must pass timeout=300.0 to daemon_request."""
-
-    def test_swap_uses_300s_timeout_by_default(self) -> None:
-        """daemon_request is called with timeout=300.0 when no --timeout given."""
-        from typer.testing import CliRunner
-
-        from llmcli.cli import app
-
-        runner = CliRunner()
-
-        fake_catalog = MagicMock()
-        fake_catalog.models = {"model-a": MagicMock()}
-
-        with (
-            patch("llmcli.cli.config") as mock_config,
-            patch("llmcli.cli.daemon_request", return_value="OK swapped to model-a") as mock_req,
-        ):
-            mock_config.load.return_value = fake_catalog
-            runner.invoke(app, ["swap", "model-a"])
-
-        mock_req.assert_called_once()
-        kwargs = mock_req.call_args[1]
-        assert "timeout" in kwargs, "daemon_request must receive timeout kwarg"
-        assert kwargs["timeout"] == 300.0, (
-            f"Expected timeout=300.0 (model load can take 30-60s), got {kwargs['timeout']}"
-        )
-
-    def test_swap_accepts_custom_timeout_flag(self) -> None:
-        """--timeout CLI option overrides the 300s default."""
-        from typer.testing import CliRunner
-
-        from llmcli.cli import app
-
-        runner = CliRunner()
-
-        fake_catalog = MagicMock()
-        fake_catalog.models = {"model-a": MagicMock()}
-
-        with (
-            patch("llmcli.cli.config") as mock_config,
-            patch("llmcli.cli.daemon_request", return_value="OK swapped to model-a") as mock_req,
-        ):
-            mock_config.load.return_value = fake_catalog
-            runner.invoke(app, ["swap", "model-a", "--timeout", "600"])
-
-        mock_req.assert_called_once()
-        kwargs = mock_req.call_args[1]
-        assert kwargs["timeout"] == 600.0, (
-            f"--timeout 600 should set timeout=600.0, got {kwargs['timeout']}"
-        )
 
 
 # ---------------------------------------------------------------------------

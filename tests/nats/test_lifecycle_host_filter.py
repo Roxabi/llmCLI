@@ -66,10 +66,15 @@ class _TestAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
     def _engine_for_spec(self, spec):
         return MagicMock()

@@ -66,10 +66,15 @@ class _TestAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
     def _engine_for_spec(self, spec):
         return MagicMock()
@@ -214,9 +219,7 @@ class TestReloadCatalogSuccess:
         )
         data = adapter._reply_ok_calls[0]["data"]
         assert data is not None, "_reply_ok data must not be None"
-        assert data.get("models_loaded") == 2, (
-            f"Expected models_loaded=2, got: {data}"
-        )
+        assert data.get("models_loaded") == 2, f"Expected models_loaded=2, got: {data}"
 
     @pytest.mark.asyncio
     async def test_valid_catalog_updates_in_memory_catalog(self) -> None:

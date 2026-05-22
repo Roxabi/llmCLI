@@ -121,10 +121,15 @@ class _CrashRecoveryAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -207,9 +212,7 @@ class TestCrashRecovery:
             f"Expected _do_status to reply ok after crash, got: {adapter._reply_ok_calls}"
         )
         data = adapter._reply_ok_calls[0]["data"]
-        assert data == {"model": None}, (
-            f"After crash, status must be {{model: None}}, got: {data}"
-        )
+        assert data == {"model": None}, f"After crash, status must be {{model: None}}, got: {data}"
 
     @pytest.mark.asyncio
     async def test_subsequent_swap_succeeds_after_crash(self) -> None:

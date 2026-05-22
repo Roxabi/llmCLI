@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 
 import typer
@@ -27,17 +26,8 @@ def chat(name: str, prompt: str) -> None:
 
     spec = catalog.models[name]
 
-    # Determine base_url: try daemon STATUS first, fall back to catalog port.
+    # Determine base_url: catalog port is the authoritative source (AF_UNIX daemon removed in Slice 6).
     base_url = f"http://localhost:{spec.port}/v1"
-    try:
-        raw = _cli.daemon_request("STATUS")
-        if raw.startswith("{"):
-            instances = json.loads(raw)
-            if name in instances:
-                port = instances[name].get("port", spec.port)
-                base_url = f"http://localhost:{port}/v1"
-    except Exception:
-        pass
 
     api_key = os.environ.get(catalog.host.api_key_env, "no-key")
 

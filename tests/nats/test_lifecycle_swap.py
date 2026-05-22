@@ -125,10 +125,15 @@ class _IntegrationAdapter(LifecycleMixin):
         self._reply_ok_calls.append({"msg": msg, "req": req, "data": data})
 
     async def _reply_err(self, msg, req, code, message, *, retryable=True) -> None:
-        self._reply_err_calls.append({
-            "msg": msg, "req": req, "code": code,
-            "message": message, "retryable": retryable,
-        })
+        self._reply_err_calls.append(
+            {
+                "msg": msg,
+                "req": req,
+                "code": code,
+                "message": message,
+                "retryable": retryable,
+            }
+        )
 
 
 def _make_spec(engine: str = "llamacpp", vram_gib: float = 8.0, name: str = "test") -> MagicMock:
@@ -276,9 +281,7 @@ class TestSwapHappyPath:
         await adapter._do_swap(msg, req)
 
         # Assert
-        assert not adapter._draining.is_set(), (
-            "_draining must be cleared after swap completes"
-        )
+        assert not adapter._draining.is_set(), "_draining must be cleared after swap completes"
 
 
 # ---------------------------------------------------------------------------
@@ -485,9 +488,7 @@ class TestSwapEngineStartFailure:
             f"Expected one _reply_err on engine crash, got: {adapter._reply_err_calls}"
         )
         err = adapter._reply_err_calls[0]
-        assert err["code"] == "worker.crash", (
-            f"Expected 'worker.crash' code, got: {err['code']!r}"
-        )
+        assert err["code"] == "worker.crash", f"Expected 'worker.crash' code, got: {err['code']!r}"
         assert err["retryable"] is True, "worker.crash must be retryable=True"
 
     @pytest.mark.asyncio

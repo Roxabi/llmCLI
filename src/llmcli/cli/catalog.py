@@ -7,9 +7,7 @@ import typer
 from llmcli.cli._app import app, console, err_console
 
 
-# NOTE: The `list` command has been consolidated into lifecycle.py (Slice 3, T25).
-# It supports both AF_UNIX daemon path and the new NATS path behind
-# LLMCLI_LIFECYCLE_VIA_NATS feature flag.
+# NOTE: The `list` command has been consolidated into lifecycle_extra.py (Slice 3, T25).
 
 
 # ---------------------------------------------------------------------------

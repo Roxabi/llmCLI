@@ -2,7 +2,7 @@
 
 Spec trace: SC AC-1 (local default), SC AC-2 (remote target), U1
 
-These tests exercise cli/swap.py when LLMCLI_LIFECYCLE_VIA_NATS=1. They monkeypatch
+These tests exercise cli/swap.py via NATS. They monkeypatch
 nats.aio.client.Client so no broker is required. The test verifies that:
   - nc.request is called on SUBJECTS.lifecycle_swap
   - The payload validates as a LifecycleRequest with op="swap", model_name, host
@@ -16,7 +16,7 @@ So we patch `nats.aio.client.Client`, not `llmcli.cli.swap.NATS`.
 Expected: PASS (T22 already implemented the NATS path in swap.py).
 If T22 had NOT landed, all tests would FAIL at the nc.request assertion step.
 
-Negative pattern: removing the `if _use_nats_lifecycle():` branch in swap.py
+Negative pattern: removing the inline NATS branch in swap.py
 causes these tests to fail — nc.request would never be called.
 """
 
@@ -154,17 +154,18 @@ def fake_catalog(tmp_path: Path):
 
 
 class TestSwapNatsHappyPath:
-    """LLMCLI_LIFECYCLE_VIA_NATS=1 — successful swap round-trip."""
+    """Successful path: successful swap round-trip."""
 
-    def test_publishes_on_lifecycle_swap_subject(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_publishes_on_lifecycle_swap_subject(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """llmcli swap publishes on SUBJECTS.lifecycle_swap when NATS flag is set.
 
-        Negative: removing the `if _use_nats_lifecycle():` branch means nc.request
+        Negative: removing the inline NATS branch means nc.request
         is never called → published_subject remains None → assertion fails.
         """
         # Arrange
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
@@ -180,11 +181,12 @@ class TestSwapNatsHappyPath:
             f"Expected exit 0 on OK response, got {result.exit_code}. Output: {result.output!r}"
         )
 
-    def test_payload_validates_as_lifecycle_request(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_payload_validates_as_lifecycle_request(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The published payload is a valid LifecycleRequest with op=swap, model_name, host."""
         # Arrange
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
@@ -194,33 +196,33 @@ class TestSwapNatsHappyPath:
         assert nats_client.published_payload is not None, "nc.request was never called"
         req = LifecycleRequest.model_validate_json(nats_client.published_payload)
         assert req.op == "swap", f"Expected op='swap', got: {req.op!r}"
-        assert req.model_name == "qwen3-8b", f"Expected model_name='qwen3-8b', got: {req.model_name!r}"
+        assert req.model_name == "qwen3-8b", (
+            f"Expected model_name='qwen3-8b', got: {req.model_name!r}"
+        )
         # host must be set (defaults to local hostname when --host omitted)
         assert req.host is not None, "host must be set in LifecycleRequest"
 
-    def test_success_prints_ok_line_with_model(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success_prints_ok_line_with_model(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Successful swap prints 'OK swapped to <model>' on stdout."""
         # Arrange
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b", port=8091, vram=5000))
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
             result = runner.invoke(app, ["swap", "qwen3-8b"], catch_exceptions=False)
 
         # Assert
-        assert "qwen3-8b" in result.output, (
-            f"Expected model name in output, got: {result.output!r}"
-        )
-        assert "OK" in result.output, (
-            f"Expected 'OK' in output, got: {result.output!r}"
-        )
+        assert "qwen3-8b" in result.output, f"Expected model name in output, got: {result.output!r}"
+        assert "OK" in result.output, f"Expected 'OK' in output, got: {result.output!r}"
 
-    def test_success_prints_port_and_vram(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_success_prints_port_and_vram(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Successful swap output includes port and vram_used_mb from the response."""
         # Arrange
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b", port=8091, vram=5000))
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
@@ -233,15 +235,18 @@ class TestSwapNatsHappyPath:
             f"Expected vram_used_mb in output, got: {result.output!r}"
         )
 
-    def test_host_flag_propagated_to_request(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_host_flag_propagated_to_request(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """--host flag value is used as the host field in LifecycleRequest."""
         # Arrange
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
-            runner.invoke(app, ["swap", "qwen3-8b", "--host", "roxabituwer"], catch_exceptions=False)
+            runner.invoke(
+                app, ["swap", "qwen3-8b", "--host", "roxabituwer"], catch_exceptions=False
+            )
 
         assert nats_client.published_payload is not None
         req = LifecycleRequest.model_validate_json(nats_client.published_payload)
@@ -251,14 +256,15 @@ class TestSwapNatsHappyPath:
 
 
 class TestSwapNatsErrorPath:
-    """LLMCLI_LIFECYCLE_VIA_NATS=1 — error replies cause non-zero exit."""
+    """Successful path: error replies cause non-zero exit."""
 
-    def test_lifecycle_rejected_exits_nonzero(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_lifecycle_rejected_exits_nonzero(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Worker error reply causes non-zero exit."""
         # Arrange
         err_bytes = _make_err_response("llm.lifecycle_rejected", "model uses engine='remote'")
         nats_client = _FakeNATSClient(err_bytes)
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
@@ -269,12 +275,15 @@ class TestSwapNatsErrorPath:
             f"Output: {result.output!r}"
         )
 
-    def test_lifecycle_rejected_prints_error_code(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_lifecycle_rejected_prints_error_code(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Worker error code appears in stderr/stdout output."""
         # Arrange
-        err_bytes = _make_err_response("llm.lifecycle_rejected", "vram budget exceeded: 15.0 > 10.0")
+        err_bytes = _make_err_response(
+            "llm.lifecycle_rejected", "vram budget exceeded: 15.0 > 10.0"
+        )
         nats_client = _FakeNATSClient(err_bytes)
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
 
         with _nats_class_patch(nats_client):
@@ -287,42 +296,13 @@ class TestSwapNatsErrorPath:
 
 
 class TestSwapNatsFlag:
-    """Feature flag toggle — NATS vs AF_UNIX path."""
+    """Pre-flight validation and credential checks for the NATS swap path."""
 
-    def test_flag_unset_does_not_call_nats(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Without LLMCLI_LIFECYCLE_VIA_NATS=1, nc.request is NOT called (AF_UNIX path used)."""
-        # Arrange — ensure flag is absent
-        monkeypatch.delenv("LLMCLI_LIFECYCLE_VIA_NATS", raising=False)
-        nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
-
-        with _nats_class_patch(nats_client):
-            with patch("llmcli.cli.daemon_request", return_value="OK model-a") as mock_req:
-                runner.invoke(app, ["swap", "qwen3-8b"])
-
-        # Assert — NATS was NOT used; daemon_request was
-        assert nats_client.published_subject is None, (
-            "nc.request must NOT be called when LLMCLI_LIFECYCLE_VIA_NATS is unset"
-        )
-        mock_req.assert_called_once()
-
-    def test_flag_zero_does_not_call_nats(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
-        """LLMCLI_LIFECYCLE_VIA_NATS=0 still uses AF_UNIX path."""
-        # Arrange
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "0")
-        nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
-
-        with _nats_class_patch(nats_client):
-            with patch("llmcli.cli.daemon_request", return_value="OK model-a"):
-                runner.invoke(app, ["swap", "qwen3-8b"])
-
-        assert nats_client.published_subject is None, (
-            "nc.request must NOT be called when LLMCLI_LIFECYCLE_VIA_NATS=0"
-        )
-
-    def test_unknown_model_exits_before_nats(self, fake_catalog, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unknown_model_exits_before_nats(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Unknown model name exits with error before NATS publish is attempted."""
         # Arrange
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
         nats_client = _FakeNATSClient(_make_ok_response("qwen3-8b"))
 
@@ -344,7 +324,6 @@ class TestSwapNatsFlag:
         Anonymous-by-default would let a misconfigured client publish lifecycle ops
         against a permissive broker without identity. Force an explicit opt-in.
         """
-        monkeypatch.setenv("LLMCLI_LIFECYCLE_VIA_NATS", "1")
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
         # Override the conftest autouse: this test exercises the fail-closed path.
         monkeypatch.delenv("LLMCLI_NATS_SKIP_CREDS", raising=False)
