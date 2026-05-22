@@ -166,6 +166,18 @@ class LifecycleMixin:
             )
             return
 
+        # ADR-006 Override Protocol: refuse swap when the engine does not support it.
+        _cap_engine = self._engine_for_spec(spec)  # type: ignore[attr-defined]
+        if not _cap_engine.supports_swap():
+            await self._reply_err(
+                msg,
+                req,
+                "llm.unsupported_operation",
+                f"engine '{spec.engine}' does not support swap",
+                retryable=False,
+            )
+            return
+
         try:
             check_vram_budget(spec, catalog.host)
         except ValueError as exc:
@@ -219,8 +231,7 @@ class LifecycleMixin:
                 await loop.run_in_executor(executor, old_engine.stop, old_inst)
                 del instances[old_name]
 
-            new_engine = self._engine_for_spec(spec)  # type: ignore[attr-defined]
-            new_inst = await loop.run_in_executor(executor, new_engine.start, spec)
+            new_inst = await loop.run_in_executor(executor, _cap_engine.start, spec)
         except Exception as exc:  # noqa: BLE001
             wire_msg = _CRASH_MESSAGES.get(type(exc).__name__, _CRASH_FALLBACK)
             await self._reply_err(msg, req, "worker.crash", wire_msg, retryable=True)

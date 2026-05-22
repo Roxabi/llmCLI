@@ -77,6 +77,9 @@ class VLLMEngine:
     def supports_swap(self) -> bool:
         return False
 
+    def supports_hot_reload(self) -> bool:
+        return True
+
     def health(self, instance: EngineInstance) -> bool:
         """Return True iff the vllm /health endpoint responds 2xx."""
         return default_health(instance.base_url)

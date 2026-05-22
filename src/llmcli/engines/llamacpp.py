@@ -112,6 +112,12 @@ class LlamaCppEngine:
             started_at=time.time(),
         )
 
+    def supports_swap(self) -> bool:
+        return True
+
+    def supports_hot_reload(self) -> bool:
+        return True
+
     def health(self, instance: EngineInstance) -> bool:
         """Return True iff the llama-server /health endpoint responds 2xx."""
         return default_health(instance.base_url)
