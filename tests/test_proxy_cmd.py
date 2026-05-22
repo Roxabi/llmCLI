@@ -192,7 +192,8 @@ class TestSpawnLitellm:
                 "18091",
                 "--host",
                 "0.0.0.0",
-            ]
+            ],
+            start_new_session=True,
         )
 
     def test_missing_binary_exits_127(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -583,6 +584,50 @@ class TestExitCodePropagation:
         assert result.exit_code == 137, (
             f"Expected 137 (128+9); got {result.exit_code}; output: {result.output!r}"
         )
+
+    def test_port_flag_propagates_to_spawn(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`--port 4001` reaches _spawn_litellm via Typer → covers the CLI wiring end-to-end."""
+        from typer.testing import CliRunner
+        from llmcli.cli._app import app as typer_app
+
+        monkeypatch.setenv("LLMCLI_API_KEY", "test-master-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "test-fireworks-key")
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        fake_child = MagicMock()
+        fake_child.wait.return_value = 0
+        fake_spawn = MagicMock(return_value=fake_child)
+
+        catalog = self._make_remote_catalog()
+        runner = CliRunner()
+
+        with patch("llmcli.cli.config") as mock_config:
+            mock_config.load.return_value = catalog
+            import llmcli.cli.proxy as proxy_mod
+
+            monkeypatch.setattr(
+                proxy_mod.shutil,
+                "which",
+                lambda name: "/usr/local/bin/litellm" if name == "litellm" else None,
+            )
+            monkeypatch.setattr("llmcli.cli.proxy._spawn_litellm", fake_spawn)
+            monkeypatch.setattr(
+                "llmcli.cli.proxy._install_signal_handlers",
+                lambda *a, **k: None,
+            )
+            result = runner.invoke(typer_app, ["proxy", "--port", "4001"])
+
+        assert result.exit_code == 0, (
+            f"Expected 0; got {result.exit_code}; output: {result.output!r}"
+        )
+        fake_spawn.assert_called_once()
+        # Signature: _spawn_litellm(config_path, port, host) — port is positional[1].
+        called_port = fake_spawn.call_args.args[1]
+        assert called_port == 4001, f"Expected port 4001; got {called_port!r}"
 
 
 # ---------------------------------------------------------------------------
