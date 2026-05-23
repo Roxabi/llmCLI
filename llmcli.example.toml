@@ -8,6 +8,9 @@
 #
 # Per-machine filter: set machines=["hostname"] on any spec to restrict it to
 # specific hosts. Empty list (machines=[]) means all hosts — the default.
+#
+# Startup timeout: override the engine default per model spec.
+#   # startup_timeout_s = 120  # override engine default (llamacpp=60s, vllm=180s)
 
 [host]
 bind              = "0.0.0.0"

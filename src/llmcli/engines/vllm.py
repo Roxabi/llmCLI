@@ -14,8 +14,9 @@ from ._common import _wait_ready, default_health
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_WAIT_TIMEOUT = (
+_DEFAULT_WAIT_TIMEOUT = (
     180  # vLLM needs longer: safetensors load + NVFP4 JIT compile can take 60–120 s on first start
+    # fallback when ModelSpec.startup_timeout_s is None
 )
 
 
@@ -50,7 +51,7 @@ class VLLMEngine:
         Raises:
             ImportError: when the vllm package is not installed.
             RuntimeError: when the process exits early or the health endpoint
-                does not become ready within _WAIT_TIMEOUT seconds.
+                does not become ready within _DEFAULT_WAIT_TIMEOUT seconds.
         """
         if shutil.which("vllm") is None:
             raise RuntimeError(
@@ -66,7 +67,7 @@ class VLLMEngine:
         cmd = self._build_cmd(spec)
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, start_new_session=True)  # noqa: S603
         base_url = f"http://localhost:{spec.port}/v1"
-        _wait_ready(base_url, proc, _WAIT_TIMEOUT, "vllm serve")
+        _wait_ready(base_url, proc, spec.startup_timeout_s or _DEFAULT_WAIT_TIMEOUT, "vllm serve")
         return EngineInstance(
             pid=proc.pid,
             port=spec.port,

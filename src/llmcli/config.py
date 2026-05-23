@@ -47,6 +47,8 @@ class ModelSpec:
     provider: str = ""
     model_id: str = ""
     protocol: str = "openai"
+    # Startup timeout override — None = use engine default (llamacpp=60s, vllm=180s)
+    startup_timeout_s: int | None = None
     # Per-machine filter — empty = all hosts
     machines: list[str] = field(default_factory=list)
 
