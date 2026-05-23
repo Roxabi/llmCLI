@@ -347,3 +347,40 @@ class TestReloadCatalogCLI:
         assert nc.published_payload is not None
         req = LifecycleRequest.model_validate_json(nc.published_payload)
         assert req.host is None, f"reload-catalog must broadcast (host=None), got: {req.host!r}"
+
+
+class TestNatsServeLLMEnvDeprecation:
+    """Deprecation warning for legacy NATS_URL → LLMCLI_NATS_URL."""
+
+    def test_legacy_nats_url_emits_deprecation_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When NATS_URL is set and LLMCLI_NATS_URL is absent, a deprecation
+        warning must be logged before the adapter starts.  No broker required —
+        asyncio.run is patched to prevent actual NATS connection."""
+        import logging
+
+        monkeypatch.setenv("NATS_URL", "nats://test:4222")
+        monkeypatch.delenv("LLMCLI_NATS_URL", raising=False)
+
+        with (
+            patch("asyncio.run", return_value=None),
+            caplog.at_level(logging.WARNING, logger="llmcli.nats-serve"),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "nats-serve",
+                    "llm",
+                    "--model",
+                    "qwen3-8b",
+                    "--litellm-key",
+                    "test-key",
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        deprecation_msgs = [r.message for r in caplog.records if "deprecated" in r.message.lower()]
+        assert deprecation_msgs, "Expected deprecation warning for NATS_URL, got none"
+        assert any("LLMCLI_NATS_URL" in m for m in deprecation_msgs)

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -24,13 +23,11 @@ from roxabi_nats.adapter_base import NatsAdapterBase
 
 from llmcli.config import load as load_catalog
 from llmcli.gpu import VRAMMonitor
-from llmcli.nats._generation import GenerationMixin
+from llmcli.nats._generation import GenerationMixin, _REQUEST_ID_RE
 from llmcli.nats._lifecycle import LIFECYCLE_SUBJECTS, LifecycleMixin
 from roxabi_contracts.llm import SUBJECTS
 
 log = logging.getLogger(__name__)
-
-_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):

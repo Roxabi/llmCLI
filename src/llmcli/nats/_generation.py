@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -28,6 +29,8 @@ if TYPE_CHECKING:
     from nats.aio.msg import Msg as NatsMsg
 
 log = logging.getLogger(__name__)
+
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class GenerationMixin:
@@ -56,25 +59,47 @@ class GenerationMixin:
     def _make_worker_error(code: str, msg: str, retryable: bool) -> WorkerError:
         return WorkerError(code=code, message=msg, retryable=retryable)
 
-    async def _err(self, msg, payload: dict, worker_error: WorkerError) -> None:
-        safe_payload = {
-            "request_id": str(payload.get("request_id", "unknown"))[:128],
-            "trace_id": payload.get("trace_id"),
-        }
+    @staticmethod
+    def _build_error_response(payload: dict, we: WorkerError, *, stream: bool) -> bytes:
+        """Build and serialize an error envelope (LlmChunkEvent or LlmResponse).
+
+        Sanitizes request_id to prevent Pydantic validation errors from illegal chars.
+        """
+        rid = str(payload.get("request_id", "unknown"))[:128]
+        safe_id = rid if _REQUEST_ID_RE.match(rid) else "unknown"
+        trace_id = payload.get("trace_id") or safe_id
         # builders.py does not accept worker_error= — build envelope manually.
-        data = (
+        if stream:
+            return (
+                LlmChunkEvent(
+                    contract_version=CONTRACT_VERSION,
+                    trace_id=trace_id,
+                    issued_at=datetime.now(timezone.utc),
+                    request_id=safe_id,
+                    done=True,
+                    is_error=True,
+                    error=we.message,
+                    worker_error=we,
+                )
+                .model_dump_json(exclude_none=True)
+                .encode()
+            )
+        return (
             LlmResponse(
                 contract_version=CONTRACT_VERSION,
-                trace_id=safe_payload.get("trace_id") or safe_payload["request_id"],
+                trace_id=trace_id,
                 issued_at=datetime.now(timezone.utc),
-                request_id=safe_payload["request_id"],
+                request_id=safe_id,
                 ok=False,
-                error=worker_error.message,
-                worker_error=worker_error,
+                error=we.message,
+                worker_error=we,
             )
             .model_dump_json(exclude_none=True)
             .encode()
         )
+
+    async def _err(self, msg, payload: dict, worker_error: WorkerError) -> None:
+        data = self._build_error_response(payload, worker_error, stream=False)
         await self.reply(msg, data)
 
     # ------------------------------------------------------------------
@@ -133,22 +158,10 @@ class GenerationMixin:
         )
         if stream and msg.reply and self._nc:
             try:
-                # builders.py does not accept worker_error= — build envelope manually.
-                data = (
-                    LlmChunkEvent(
-                        contract_version=CONTRACT_VERSION,
-                        trace_id=payload.get("trace_id") or request_id,
-                        issued_at=datetime.now(timezone.utc),
-                        request_id=request_id,
-                        done=True,
-                        is_error=True,
-                        error=we.message,
-                        worker_error=we,
-                    )
-                    .model_dump_json(exclude_none=True)
-                    .encode()
+                await self._nc.publish(
+                    msg.reply,
+                    self._build_error_response(payload, we, stream=True),
                 )
-                await self._nc.publish(msg.reply, data)
             except Exception:  # noqa: BLE001
                 pass
         else:
@@ -191,6 +204,11 @@ class GenerationMixin:
 
         if chunk_count == 0 and not saw_done:
             raise json.JSONDecodeError("no parseable SSE chunks", "", 0)
+        if chunk_count == 0 and saw_done:
+            log.warning(
+                "llm_adapter: empty response (only [DONE]) request_id=%s",
+                payload.get("request_id", "unknown"),
+            )
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         if msg.reply:
