@@ -117,9 +117,7 @@ def status(
         await client.connect()
         try:
             if fleet:
-                result = await client.request_fleet(
-                    SUBJECTS.lifecycle_status, "status", timeout
-                )
+                result = await client.request_fleet(SUBJECTS.lifecycle_status, "status", timeout)
                 if result.responses:
                     table = Table(title="Fleet status")
                     table.add_column("host", style="cyan")
