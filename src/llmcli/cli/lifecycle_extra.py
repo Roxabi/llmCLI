@@ -52,9 +52,7 @@ def list_models(
         await client.connect()
         try:
             if fleet:
-                result = await client.request_fleet(
-                    SUBJECTS.lifecycle_list, "list", timeout
-                )
+                result = await client.request_fleet(SUBJECTS.lifecycle_list, "list", timeout)
                 # Merge model lists from all hosts
                 models: dict[str, dict] = {}
                 for resp in result.responses:

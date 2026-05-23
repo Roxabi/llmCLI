@@ -70,7 +70,9 @@ flags    = []
 runner = CliRunner()
 
 
-def _make_ok_response(model_name: str = "qwen3-8b", port: int = 8091, vram: int = 5000, host: str | None = None) -> bytes:
+def _make_ok_response(
+    model_name: str = "qwen3-8b", port: int = 8091, vram: int = 5000, host: str | None = None
+) -> bytes:
     """Build a serialised LifecycleResponse(ok=True) reply."""
     resp = LifecycleResponse(
         contract_version="1",
