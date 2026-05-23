@@ -149,7 +149,7 @@ class _FakeNATSClientFleet:
         self.connect = AsyncMock(return_value=None)
         self.drain = AsyncMock(return_value=None)
 
-    async def new_inbox(self):
+    def new_inbox(self):
         return "_inbox.test.1"
 
     async def subscribe(self, inbox):
@@ -411,7 +411,7 @@ class TestSwapFleetCLI:
         assert nc.published_subject == SUBJECTS.lifecycle_swap
         assert nc.published_payload is not None
         req = LifecycleRequest.model_validate_json(nc.published_payload)
-        assert req.host == "*"
+        assert req.host is None
         assert req.model_name == "qwen3-8b"
 
     def test_swap_fleet_shows_per_host_results(

@@ -68,3 +68,9 @@ proxy = [
 [tool.uv.sources]
 roxabi-nats      = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }
 roxabi-contracts = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+pythonVersion = "3.12"

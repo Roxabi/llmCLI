@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import typer
@@ -18,6 +19,8 @@ from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
 
 from llmcli.cli._app import err_console
 from llmcli.config import apply_nats_env_from_config
+
+LifecycleOp = Literal["swap", "stop", "status", "list", "reload-catalog"]
 
 
 @dataclass
@@ -31,12 +34,12 @@ class FleetResult:
 class NatsClient:
     def __init__(self, *, allow_anonymous: bool = False) -> None:
         self.allow_anonymous = allow_anonymous
-        self._nc: "NATS" | None = None
+        self._nc = None
 
     async def connect(self) -> None:
         from nats.aio.client import Client as NATS
 
-        self._nc = NATS()
+        nc = NATS()
         creds_path = Path("~/.roxabi/llmcli/nkeys/operator.creds").expanduser()
         apply_nats_env_from_config()
         nats_url = os.environ.get("LLMCLI_NATS_URL", "nats://localhost:4222")
@@ -49,16 +52,17 @@ class NatsClient:
             )
             raise typer.Exit(code=1)
 
-        await self._nc.connect(
+        await nc.connect(
             nats_url,
             nkeys_seed_str=creds_path.read_text().strip() if creds_path.exists() else None,
             inbox_prefix="_inbox.llm-operator",
         )
+        self._nc = nc
 
     async def request(
         self,
         subject: str,
-        op: str,
+        op: LifecycleOp,
         host: str | None,
         timeout: float,
         *,
@@ -70,7 +74,7 @@ class NatsClient:
         req = LifecycleRequest(
             contract_version="1",
             trace_id=uuid4().hex,
-            issued_at=datetime.now(timezone.utc).isoformat(),
+            issued_at=datetime.now(timezone.utc),
             request_id=uuid4().hex,
             host=host or socket.gethostname(),
             op=op,
@@ -82,7 +86,7 @@ class NatsClient:
     async def request_fleet(
         self,
         subject: str,
-        op: str,
+        op: LifecycleOp,
         timeout: float,
         *,
         model_name: str | None = None,
@@ -93,9 +97,9 @@ class NatsClient:
         req = LifecycleRequest(
             contract_version="1",
             trace_id=uuid4().hex,
-            issued_at=datetime.now(timezone.utc).isoformat(),
+            issued_at=datetime.now(timezone.utc),
             request_id=uuid4().hex,
-            host="*",
+            host=None,
             op=op,
             model_name=model_name,
         )

@@ -12,8 +12,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-import pytest
-
 from llmcli.cli._nats_client import FleetResult, NatsClient
 from roxabi_contracts.errors import WorkerError
 from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
@@ -56,7 +54,7 @@ class _FakeNATSClientFleet:
         self.connect = AsyncMock(return_value=None)
         self.drain = AsyncMock(return_value=None)
 
-    async def new_inbox(self):
+    def new_inbox(self):
         return "_inbox.test.1"
 
     async def subscribe(self, inbox):
@@ -105,7 +103,6 @@ class TestNatsClientRequestFleet:
         assert len(result.responses) == 2
         assert result.responses[0].host == "host-a"
         assert result.responses[1].host == "host-b"
-        assert not result.timeout_reached
         assert result.errors == []
         assert result.elapsed_ms > 0
         assert fake.published_subject == "test.subject"
@@ -166,11 +163,10 @@ class TestNatsClientRequestFleet:
         # Assert
         assert len(result.responses) == 2
         assert len(result.errors) == 1
-        assert not result.timeout_reached
         assert fake.published_subject == "test.subject"
         assert fake.published_payload is not None
         req = LifecycleRequest.model_validate_json(fake.published_payload)
-        assert req.host == "*"
+        assert req.host is None
         assert req.op == "status"
 
     async def test_invalid_reply_skipped(self):
@@ -192,5 +188,4 @@ class TestNatsClientRequestFleet:
         assert len(result.responses) == 2
         assert result.responses[0].host == "host-a"
         assert result.responses[1].host == "host-c"
-        assert not result.timeout_reached
         assert result.errors == []

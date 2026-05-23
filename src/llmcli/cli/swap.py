@@ -7,7 +7,7 @@ from typing import Optional
 import typer
 
 from llmcli.cli._app import app, console, err_console
-from llmcli.cli._nats_client import FleetResult, NatsClient
+from llmcli.cli._nats_client import NatsClient
 from roxabi_contracts.llm.subjects import SUBJECTS
 
 

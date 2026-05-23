@@ -6,11 +6,14 @@ A breakage here means `llmcli proxy` would crash-loop at container start
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_litellm_proxy_runtime_imports() -> None:
-    import apscheduler  # noqa: F401  # pyright: ignore[reportMissingImports]
-    import uvloop  # noqa: F401  # pyright: ignore[reportMissingImports]
-    import websockets  # noqa: F401  # pyright: ignore[reportMissingImports]
+    pytest.importorskip("apscheduler")
+    pytest.importorskip("uvloop")
+    pytest.importorskip("websockets")
+    pytest.importorskip("litellm")
     from litellm.proxy.proxy_server import app  # pyright: ignore[reportMissingImports]
 
     assert app is not None

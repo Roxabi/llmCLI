@@ -107,7 +107,7 @@ class _FakeNATSClientFleet:
         self.connect = AsyncMock(return_value=None)
         self.drain = AsyncMock(return_value=None)
 
-    async def new_inbox(self):
+    def new_inbox(self):
         return "_inbox.test.1"
 
     async def subscribe(self, inbox):
