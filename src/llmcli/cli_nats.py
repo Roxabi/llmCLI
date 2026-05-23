@@ -53,7 +53,12 @@ def nats_serve_llm(
     logging.basicConfig(level=logging.INFO)
     log = logging.getLogger("llmcli.nats-serve")
 
-    nats_url = os.environ.get("LLMCLI_NATS_URL") or os.environ.get("NATS_URL")
+    nats_url = os.environ.get("LLMCLI_NATS_URL")
+    if not nats_url:
+        legacy = os.environ.get("NATS_URL")
+        if legacy:
+            log.warning("NATS_URL is deprecated; set LLMCLI_NATS_URL instead")
+            nats_url = legacy
     if not nats_url:
         log.error("LLMCLI_NATS_URL (or legacy NATS_URL) env var is required")
         raise typer.Exit(2)
