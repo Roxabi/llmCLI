@@ -1235,6 +1235,8 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "roxabi-contracts" },
+    { name = "roxabi-nats" },
     { name = "ruff" },
 ]
 vllm = [
@@ -1268,6 +1270,8 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout", specifier = ">=0.5" },
+    { name = "roxabi-contracts", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-contracts&branch=staging" },
+    { name = "roxabi-nats", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
     { name = "ruff" },
 ]
 vllm = [{ name = "vllm", specifier = ">=0.6.0" }]

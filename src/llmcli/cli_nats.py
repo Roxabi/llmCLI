@@ -42,7 +42,7 @@ def nats_serve_llm(
 ) -> None:
     """Subscribe to lyra.llm.generate.request and serve LLM completions.
 
-    Reads NATS_URL from the environment.
+    Reads LLMCLI_NATS_URL from the environment (falls back to legacy NATS_URL).
     """
     import asyncio
     import logging

@@ -22,7 +22,8 @@ async def test_request_parse_invalid_request_id_emits_transport_parse(
     adapter, fake_msg_factory, make_request_payload
 ):
     # Use a 129-char all-valid-char request_id: fails _REQUEST_ID_RE (max 128 chars)
-    # but _err slices it to [:128] before building LlmResponse, so serialization succeeds.
+    # but _build_error_response slices to [:128] then re-validates via _REQUEST_ID_RE,
+    # falling back to "unknown" for illegal chars; serialization always succeeds.
     # Using "../../bad path"-style IDs would crash LlmResponse Pydantic validation.
     payload = make_request_payload(stream=False, request_id="a" * 129)
     msg = fake_msg_factory(payload)
@@ -313,3 +314,40 @@ def test_heartbeat_vram_used_zero_when_sample_returns_zeros(adapter, monkeypatch
 
     assert p["vram_free_mb"] == 0
     assert p["vram_used_mb"] == 0
+
+
+# ---------- _generation.py — empty-response warning (saw_done=True, chunk_count=0) ----------
+
+
+@pytest.mark.asyncio
+async def test_stream_only_done_emits_empty_response_warning(
+    adapter, fake_msg_factory, make_request_payload, caplog
+):
+    """A stream that yields only data: [DONE] (no content chunks) must log a warning.
+
+    This exercises the ``chunk_count == 0 and saw_done`` branch in
+    ``_generation._stream_response``.
+    """
+    import logging
+
+    payload = make_request_payload(stream=True)
+    msg = fake_msg_factory(payload)
+
+    async def _done_only():
+        yield "data: [DONE]"
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.aiter_lines = lambda: _done_only()
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=fake_resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    adapter._client.stream.return_value = cm
+
+    with caplog.at_level(logging.WARNING, logger="llmcli.nats._generation"):
+        await adapter.handle(msg, payload)
+
+    warning_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("empty response" in m for m in warning_msgs), (
+        f"Expected 'empty response' warning, got: {warning_msgs}"
+    )
