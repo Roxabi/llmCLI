@@ -17,16 +17,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-SCRIPT = Path(__file__).parent.parent / "tools" / "check_axial_drift.sh"
+import pytest
 
-# Content that triggers PRIMARY: a single line containing both
-# "engines/llamacpp" (or tq3/vllm) and "def" and "wait|poll|ready".
-# Realistic form: a copy-paste breadcrumb comment left by a developer.
-_PRIMARY_OFFENDING_LINE = (
-    "# re-implemented from engines/llamacpp def _wait_ready — do not keep\n"
-    "def _wait_ready_local(self) -> bool:\n"
-    "    return True\n"
-)
+SCRIPT = Path(__file__).parent.parent / "tools" / "check_axial_drift.sh"
 
 # Content that triggers SECONDARY: a line with "if.*engine_type.*(vllm|llamacpp)".
 _SECONDARY_OFFENDING_LINE = "if engine_type in ('vllm', 'llamacpp'):\n    handler()\n"
@@ -51,7 +44,7 @@ def _init_fake_repo(tmp_path: Path) -> None:
 def _run_script(tmp_path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT)],
-        cwd=str(tmp_path),
+        cwd=tmp_path,
         capture_output=True,
         text=True,
     )
@@ -60,16 +53,42 @@ def _run_script(tmp_path: Path) -> subprocess.CompletedProcess[str]:
 class TestCheckAxialDriftScript:
     """Integration tests for tools/check_axial_drift.sh."""
 
-    def test_primary_detects_stage_method_breadcrumb(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "engine_name, offending_line",
+        [
+            (
+                "llamacpp",
+                "# re-implemented from engines/llamacpp def _wait_ready — do not keep\n"
+                "def _wait_ready_local(self) -> bool:\n"
+                "    return True\n",
+            ),
+            (
+                "llamacpp_tq3",
+                "# re-implemented from engines/llamacpp_tq3 def _wait_ready — do not keep\n"
+                "def _wait_ready_local(self) -> bool:\n"
+                "    return True\n",
+            ),
+            (
+                "vllm",
+                "# re-implemented from engines/vllm def _poll_ready — do not keep\n"
+                "def _poll_ready_local(self) -> bool:\n"
+                "    return True\n",
+            ),
+        ],
+    )
+    def test_primary_detects_stage_method_breadcrumb(
+        self, tmp_path: Path, engine_name: str, offending_line: str
+    ) -> None:
         """Non-zero exit + offender path in output when PRIMARY pattern matches.
 
         Negative-test guard: if the PRIMARY grep pattern is removed from the
         script, this test will pass with exit 0, causing the assertion to fail.
+        Parametrized over all three engine variants: llamacpp, llamacpp_tq3, vllm.
         """
         # Arrange
         _init_fake_repo(tmp_path)
-        engine_file = tmp_path / "src" / "llmcli" / "engines" / "llamacpp.py"
-        engine_file.write_text(_PRIMARY_OFFENDING_LINE)
+        engine_file = tmp_path / "src" / "llmcli" / "engines" / f"{engine_name}.py"
+        engine_file.write_text(offending_line)
 
         # Clean nats + cli so the secondary check passes
         (tmp_path / "src" / "llmcli" / "nats" / "__init__.py").write_text(_CLEAN_NATS_CONTENT)
@@ -84,7 +103,7 @@ class TestCheckAxialDriftScript:
             f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
         combined = result.stdout + result.stderr
-        assert "llamacpp.py" in combined, (
+        assert f"{engine_name}.py" in combined, (
             f"Offending file path should appear in script output.\n"
             f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
         )
