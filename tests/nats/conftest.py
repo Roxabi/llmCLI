@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Iterator
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import urlparse
 
 import pytest
 
@@ -92,6 +95,52 @@ def adapter(monkeypatch) -> Iterator[LlmNatsAdapter]:
     a._nc = fake_nc
 
     yield a
+
+
+@pytest.fixture
+def nats_auth_broker():
+    """URL of the NATS broker with ACL enforcement enabled.
+
+    Defaults to localhost:4223 for local dev; CI overrides via NATS_AUTH_URL.
+    Skips the test if the broker is not reachable so local dev without the
+    container does not fail.
+    """
+    url = os.environ.get("NATS_AUTH_URL", "nats://localhost:4223")
+    parsed = urlparse(url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 4223
+    try:
+        with socket.create_connection((host, port), timeout=1):
+            pass
+    except OSError:
+        pytest.skip(f"nats-auth broker not available at {host}:{port}")
+    return url
+
+
+@pytest.fixture
+def nats_auth_creds():
+    """Ephemeral credentials for the NATS auth broker.
+
+    Reads NATS_TEST_OP_PASSWORD / NATS_TEST_BAD_PASSWORD from the environment.
+    When running locally, generate them first:
+
+        eval $(python tests/nats/auth/generate_config.py)
+
+    Skips the test if the variables are not set.
+    """
+    op_password = os.environ.get("NATS_TEST_OP_PASSWORD")
+    bad_password = os.environ.get("NATS_TEST_BAD_PASSWORD")
+    if not op_password or not bad_password:
+        pytest.skip(
+            "NATS_TEST_OP_PASSWORD and NATS_TEST_BAD_PASSWORD must be set. "
+            "Run: eval $(python tests/nats/auth/generate_config.py)"
+        )
+    return {
+        "op_user": "operator",
+        "op_password": op_password,
+        "bad_user": "unauthorized",
+        "bad_password": bad_password,
+    }
 
 
 @pytest.fixture

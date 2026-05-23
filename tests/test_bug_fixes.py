@@ -232,7 +232,7 @@ class TestProbeVramFallback:
         with (
             patch.dict("sys.modules", {"pynvml": None}),
             patch(
-                "llmcli.gpu.subprocess.run",
+                "llmcli.gpu.vram.subprocess.run",
                 side_effect=FileNotFoundError("nvidia-smi not found"),
             ),
         ):
@@ -247,7 +247,7 @@ class TestProbeVramFallback:
 
         with (
             patch.dict("sys.modules", {"pynvml": None}),
-            patch("llmcli.gpu.subprocess.run", return_value=mock_result),
+            patch("llmcli.gpu.vram.subprocess.run", return_value=mock_result),
         ):
             result = probe_free_vram_gib()
         assert abs(result - 10.0) < 0.01, f"Expected ~10.0 GiB from nvidia-smi, got {result}"
