@@ -51,7 +51,7 @@ def _make_ok(data: dict | None = None, host: str | None = None) -> bytes:
     resp = LifecycleResponse(
         contract_version="1",
         trace_id="trace-ok",
-        issued_at=datetime.now(timezone.utc).isoformat(),
+        issued_at=datetime.now(timezone.utc),
         request_id="req-ok",
         ok=True,
         host=host or socket.gethostname(),
@@ -66,7 +66,7 @@ def _make_err(code: str, message: str, host: str | None = None) -> bytes:
     resp = LifecycleResponse(
         contract_version="1",
         trace_id="trace-err",
-        issued_at=datetime.now(timezone.utc).isoformat(),
+        issued_at=datetime.now(timezone.utc),
         request_id="req-err",
         ok=False,
         host=host or socket.gethostname(),
@@ -232,7 +232,9 @@ class TestStatusFleetCLI:
         nc = _FakeNATSClientFleet(replies)
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
         with _patch_nats_fleet(nc):
-            result = runner.invoke(app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False
+            )
         assert result.exit_code == 0
         assert "host-a" in result.output
         assert "host-b" in result.output
@@ -251,7 +253,9 @@ class TestStatusFleetCLI:
         nc = _FakeNATSClientFleet(replies)
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
         with _patch_nats_fleet(nc):
-            result = runner.invoke(app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False
+            )
         assert result.exit_code == 0
         combined = result.output + (result.stderr or "")
         assert "host-a" in result.output
@@ -285,8 +289,18 @@ class TestListFleetCLI:
             _make_ok(
                 {
                     "models": [
-                        {"name": "qwen3-8b", "engine": "llamacpp", "vram_gib": 8.0, "running": True},
-                        {"name": "qwen3-4b", "engine": "llamacpp", "vram_gib": 4.0, "running": False},
+                        {
+                            "name": "qwen3-8b",
+                            "engine": "llamacpp",
+                            "vram_gib": 8.0,
+                            "running": True,
+                        },
+                        {
+                            "name": "qwen3-4b",
+                            "engine": "llamacpp",
+                            "vram_gib": 4.0,
+                            "running": False,
+                        },
                     ]
                 },
                 host="host-a",
@@ -294,7 +308,12 @@ class TestListFleetCLI:
             _make_ok(
                 {
                     "models": [
-                        {"name": "qwen3-4b", "engine": "llamacpp", "vram_gib": 4.0, "running": True},
+                        {
+                            "name": "qwen3-4b",
+                            "engine": "llamacpp",
+                            "vram_gib": 4.0,
+                            "running": True,
+                        },
                     ]
                 },
                 host="host-b",
@@ -303,7 +322,9 @@ class TestListFleetCLI:
         nc = _FakeNATSClientFleet(replies)
         monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
         with _patch_nats_fleet(nc):
-            result = runner.invoke(app, ["list", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+            result = runner.invoke(
+                app, ["list", "--fleet", "--allow-anonymous"], catch_exceptions=False
+            )
         assert result.exit_code == 0
         assert "qwen3-8b" in result.output
         assert "qwen3-4b" in result.output
