@@ -11,6 +11,7 @@ Mirrors the patterns in tests/cli/test_swap_nats.py — monkeypatches
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,20 +47,20 @@ flags    = []
 runner = CliRunner()
 
 
-def _make_ok(data: dict | None = None) -> bytes:
+def _make_ok(data: dict | None = None, host: str | None = None) -> bytes:
     resp = LifecycleResponse(
         contract_version="1",
         trace_id="trace-ok",
         issued_at=datetime.now(timezone.utc).isoformat(),
         request_id="req-ok",
         ok=True,
-        host=socket.gethostname(),
+        host=host or socket.gethostname(),
         data=data or {},
     )
     return resp.model_dump_json().encode()
 
 
-def _make_err(code: str, message: str) -> bytes:
+def _make_err(code: str, message: str, host: str | None = None) -> bytes:
     from roxabi_contracts.errors import WorkerError
 
     resp = LifecycleResponse(
@@ -68,7 +69,7 @@ def _make_err(code: str, message: str) -> bytes:
         issued_at=datetime.now(timezone.utc).isoformat(),
         request_id="req-err",
         ok=False,
-        host=socket.gethostname(),
+        host=host or socket.gethostname(),
         worker_error=WorkerError(code=code, message=message, retryable=False),
     )
     return resp.model_dump_json().encode()
@@ -92,6 +93,45 @@ class _FakeNATSClient:
 
 
 def _patch_nats(client: _FakeNATSClient):
+    return patch("nats.aio.client.Client", return_value=client)
+
+
+class _FakeNATSClientFleet:
+    """NATS client stub that yields pre-staged replies for request_fleet()."""
+
+    def __init__(self, replies: list[bytes]) -> None:
+        self._replies = replies
+        self._reply_idx = 0
+        self.published_subject: str | None = None
+        self.published_payload: bytes | None = None
+        self.connect = AsyncMock(return_value=None)
+        self.drain = AsyncMock(return_value=None)
+
+    async def new_inbox(self):
+        return "_inbox.test.1"
+
+    async def subscribe(self, inbox):
+        client = self
+
+        class _Sub:
+            async def next_msg(self, timeout=10):
+                if client._reply_idx < len(client._replies):
+                    r = client._replies[client._reply_idx]
+                    client._reply_idx += 1
+                    return SimpleNamespace(data=r)
+                raise asyncio.TimeoutError
+
+            async def unsubscribe(self):
+                pass
+
+        return _Sub()
+
+    async def publish(self, subject, payload, reply=None):
+        self.published_subject = subject
+        self.published_payload = payload
+
+
+def _patch_nats_fleet(client: _FakeNATSClientFleet):
     return patch("nats.aio.client.Client", return_value=client)
 
 
@@ -183,6 +223,42 @@ class TestStatusCLI:
 # ---------------------------------------------------------------------------
 
 
+class TestStatusFleetCLI:
+    def test_status_fleet_shows_per_host_table(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        replies = [
+            _make_ok({"model": "qwen3-8b", "port": 8091, "vram_used_mb": 5120}, host="host-a"),
+            _make_ok({"model": "qwen3-4b", "port": 8092, "vram_used_mb": 2048}, host="host-b"),
+        ]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "host-a" in result.output
+        assert "host-b" in result.output
+        assert "qwen3-8b" in result.output
+        assert "qwen3-4b" in result.output
+        assert "8091" in result.output
+        assert "8092" in result.output
+        assert "5120" in result.output
+        assert "2048" in result.output
+
+    def test_status_fleet_errors_shown_separately(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        replies = [
+            _make_ok({"model": "qwen3-8b", "port": 8091, "vram_used_mb": 5120}, host="host-a"),
+            _make_err("llm.no_engine", "no engine running", host="host-b"),
+        ]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(app, ["status", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+        assert result.exit_code == 0
+        combined = result.output + (result.stderr or "")
+        assert "host-a" in result.output
+        assert "llm.no_engine" in combined
+        assert "no engine running" in combined
+
+
 class TestListCLI:
     def test_ok_exits_zero_and_publishes(
         self, fake_catalog, monkeypatch: pytest.MonkeyPatch
@@ -201,6 +277,38 @@ class TestListCLI:
 # ---------------------------------------------------------------------------
 # reload-catalog — spec N5/U5: broadcast (host=None)
 # ---------------------------------------------------------------------------
+
+
+class TestListFleetCLI:
+    def test_list_fleet_merges_models(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        replies = [
+            _make_ok(
+                {
+                    "models": [
+                        {"name": "qwen3-8b", "engine": "llamacpp", "vram_gib": 8.0, "running": True},
+                        {"name": "qwen3-4b", "engine": "llamacpp", "vram_gib": 4.0, "running": False},
+                    ]
+                },
+                host="host-a",
+            ),
+            _make_ok(
+                {
+                    "models": [
+                        {"name": "qwen3-4b", "engine": "llamacpp", "vram_gib": 4.0, "running": True},
+                    ]
+                },
+                host="host-b",
+            ),
+        ]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(app, ["list", "--fleet", "--allow-anonymous"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "qwen3-8b" in result.output
+        assert "qwen3-4b" in result.output
+        assert "host-a" in result.output
+        assert "host-b" in result.output
 
 
 class TestReloadCatalogCLI:

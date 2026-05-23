@@ -22,6 +22,7 @@ causes these tests to fail — nc.request would never be called.
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,7 +70,7 @@ flags    = []
 runner = CliRunner()
 
 
-def _make_ok_response(model_name: str = "qwen3-8b", port: int = 8091, vram: int = 5000) -> bytes:
+def _make_ok_response(model_name: str = "qwen3-8b", port: int = 8091, vram: int = 5000, host: str | None = None) -> bytes:
     """Build a serialised LifecycleResponse(ok=True) reply."""
     resp = LifecycleResponse(
         contract_version="1",
@@ -77,13 +78,13 @@ def _make_ok_response(model_name: str = "qwen3-8b", port: int = 8091, vram: int 
         issued_at=datetime.now(timezone.utc).isoformat(),
         request_id="req-ok",
         ok=True,
-        host=socket.gethostname(),
+        host=host or socket.gethostname(),
         data={"model": model_name, "port": port, "vram_used_mb": vram},
     )
     return resp.model_dump_json().encode()
 
 
-def _make_err_response(code: str, message: str) -> bytes:
+def _make_err_response(code: str, message: str, host: str | None = None) -> bytes:
     """Build a serialised LifecycleResponse(ok=False) error reply."""
     from roxabi_contracts.errors import WorkerError
 
@@ -93,7 +94,7 @@ def _make_err_response(code: str, message: str) -> bytes:
         issued_at=datetime.now(timezone.utc).isoformat(),
         request_id="req-err",
         ok=False,
-        host=socket.gethostname(),
+        host=host or socket.gethostname(),
         worker_error=WorkerError(code=code, message=message, retryable=False),
     )
     return resp.model_dump_json().encode()
@@ -135,6 +136,45 @@ def _nats_class_patch(nats_client: _FakeNATSClient):
     We patch the class so NATS() → nats_client.
     """
     return patch("nats.aio.client.Client", return_value=nats_client)
+
+
+class _FakeNATSClientFleet:
+    """NATS client stub that yields pre-staged replies for request_fleet()."""
+
+    def __init__(self, replies: list[bytes]) -> None:
+        self._replies = replies
+        self._reply_idx = 0
+        self.published_subject: str | None = None
+        self.published_payload: bytes | None = None
+        self.connect = AsyncMock(return_value=None)
+        self.drain = AsyncMock(return_value=None)
+
+    async def new_inbox(self):
+        return "_inbox.test.1"
+
+    async def subscribe(self, inbox):
+        client = self
+
+        class _Sub:
+            async def next_msg(self, timeout=10):
+                if client._reply_idx < len(client._replies):
+                    r = client._replies[client._reply_idx]
+                    client._reply_idx += 1
+                    return SimpleNamespace(data=r)
+                raise asyncio.TimeoutError
+
+            async def unsubscribe(self):
+                pass
+
+        return _Sub()
+
+    async def publish(self, subject, payload, reply=None):
+        self.published_subject = subject
+        self.published_payload = payload
+
+
+def _patch_nats_fleet(client: _FakeNATSClientFleet):
+    return patch("nats.aio.client.Client", return_value=client)
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +389,68 @@ class TestSwapNatsFlag:
         assert nats_client.published_subject is None, (
             "nc.request must NOT be called when creds are missing without --allow-anonymous"
         )
+
+
+class TestSwapFleetCLI:
+    """Fleet-wide swap via --fleet flag — issue #61, T6."""
+
+    def test_swap_fleet_broadcasts_to_all_workers(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--fleet causes request_fleet with host='*' and publishes on lifecycle_swap."""
+        replies = [_make_ok_response("qwen3-8b", port=8091, vram=5000, host="host-a")]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(
+                app, ["swap", "qwen3-8b", "--fleet", "--allow-anonymous"], catch_exceptions=False
+            )
+
+        assert result.exit_code == 0
+        assert nc.published_subject == SUBJECTS.lifecycle_swap
+        assert nc.published_payload is not None
+        req = LifecycleRequest.model_validate_json(nc.published_payload)
+        assert req.host == "*"
+        assert req.model_name == "qwen3-8b"
+
+    def test_swap_fleet_shows_per_host_results(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Multiple OK replies print per-host swap confirmation lines."""
+        replies = [
+            _make_ok_response("qwen3-8b", port=8091, vram=5000, host="host-a"),
+            _make_ok_response("qwen3-8b", port=8091, vram=5000, host="host-b"),
+        ]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(
+                app, ["swap", "qwen3-8b", "--fleet", "--allow-anonymous"], catch_exceptions=False
+            )
+
+        assert result.exit_code == 0
+        assert "host-a" in result.output
+        assert "host-b" in result.output
+        assert "qwen3-8b" in result.output
+        assert "OK" in result.output
+
+    def test_swap_fleet_exits_nonzero_on_any_failure(
+        self, fake_catalog, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mixed replies (OK + error) cause exit code 1 with error details in stderr."""
+        replies = [
+            _make_ok_response("qwen3-8b", port=8091, vram=5000, host="host-a"),
+            _make_err_response("llm.no_engine", "no engine running", host="host-b"),
+        ]
+        nc = _FakeNATSClientFleet(replies)
+        monkeypatch.setenv("NATS_URL", "nats://localhost:4222")
+
+        with _patch_nats_fleet(nc):
+            result = runner.invoke(app, ["swap", "qwen3-8b", "--fleet", "--allow-anonymous"])
+
+        assert result.exit_code == 1
+        combined = result.output + (result.stderr or "")
+        assert "llm.no_engine" in combined
+        assert "no engine running" in combined
