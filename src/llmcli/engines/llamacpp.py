@@ -103,7 +103,12 @@ class LlamaCppEngine:
         cmd = self._build_cmd(spec)
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)  # noqa: S603
         base_url = f"http://localhost:{spec.port}/v1"
-        _wait_ready(base_url, proc, spec.startup_timeout_s or _DEFAULT_WAIT_TIMEOUT, "llama-server")
+        _wait_ready(
+            base_url,
+            proc,
+            spec.startup_timeout_s if spec.startup_timeout_s is not None else _DEFAULT_WAIT_TIMEOUT,
+            "llama-server",
+        )
         return EngineInstance(
             pid=proc.pid,
             port=spec.port,
