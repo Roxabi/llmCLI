@@ -434,6 +434,56 @@ class TestEngineInstanceShape:
 
 
 # ---------------------------------------------------------------------------
+# 4b. startup_timeout_s forwarding
+# ---------------------------------------------------------------------------
+
+
+class TestStartupTimeoutForwarding:
+    """start() must forward the correct timeout to _wait_ready."""
+
+    @pytest.mark.no_gpu
+    @pytest.mark.parametrize(
+        ("timeout_s", "expected_timeout"),
+        [
+            (30, 30),  # explicit value — must be forwarded as-is
+            (None, 60),  # None — must fall back to _DEFAULT_WAIT_TIMEOUT (60)
+        ],
+    )
+    def test_startup_timeout_forwarded_to_wait_ready(
+        self,
+        engine: LlamaCppEngine,
+        fake_hf_cache: Path,
+        timeout_s: int | None,
+        expected_timeout: int,
+    ) -> None:
+        """_wait_ready must receive the correct timeout regardless of spec.startup_timeout_s."""
+        spec = ModelSpec(
+            name="qwen3-8b-q4",
+            engine="llamacpp",
+            repo="bartowski/Qwen3-8B-GGUF",
+            file="Qwen3-8B-Q4_K_M.gguf",
+            port=8091,
+            vram_gib=5.5,
+            startup_timeout_s=timeout_s,
+        )
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+
+        with (
+            patch("llmcli.engines.llamacpp.subprocess.Popen", return_value=mock_proc),
+            patch("llmcli.engines.llamacpp._wait_ready", return_value=None) as mock_wait,
+        ):
+            engine.start(spec)
+
+        mock_wait.assert_called_once()
+        _, _, actual_timeout, _ = mock_wait.call_args[0]
+        assert actual_timeout == expected_timeout, (
+            f"_wait_ready timeout must be {expected_timeout} when startup_timeout_s={timeout_s!r}, "
+            f"got {actual_timeout}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # 5. health() — HTTP probe
 # ---------------------------------------------------------------------------
 

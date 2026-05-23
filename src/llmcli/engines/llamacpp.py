@@ -14,7 +14,7 @@ from ._common import _wait_ready, default_health
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-_WAIT_TIMEOUT = 60  # seconds
+_DEFAULT_WAIT_TIMEOUT = 60  # seconds — fallback when ModelSpec.startup_timeout_s is None
 
 
 def _hf_hub_root() -> Path:
@@ -103,7 +103,12 @@ class LlamaCppEngine:
         cmd = self._build_cmd(spec)
         proc = subprocess.Popen(cmd, stderr=subprocess.PIPE)  # noqa: S603
         base_url = f"http://localhost:{spec.port}/v1"
-        _wait_ready(base_url, proc, _WAIT_TIMEOUT, "llama-server")
+        _wait_ready(
+            base_url,
+            proc,
+            spec.startup_timeout_s if spec.startup_timeout_s is not None else _DEFAULT_WAIT_TIMEOUT,
+            "llama-server",
+        )
         return EngineInstance(
             pid=proc.pid,
             port=spec.port,

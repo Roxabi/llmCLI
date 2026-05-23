@@ -19,7 +19,9 @@ DEFAULT_CONFIG_PATH = Path(
 
 _VALID_PROTOCOLS = frozenset({"openai", "anthropic"})
 _LOCAL_ENGINES = frozenset({"llamacpp", "llamacpp_tq3", "vllm"})
-_REMOTE_LOCAL_FIELDS = frozenset({"repo", "file", "port", "vram_gib", "flags", "mmproj"})
+_REMOTE_LOCAL_FIELDS = frozenset(
+    {"repo", "file", "port", "vram_gib", "flags", "mmproj", "startup_timeout_s"}
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ class ModelSpec:
     provider: str = ""
     model_id: str = ""
     protocol: str = "openai"
+    # Startup timeout override — None = use engine default (llamacpp=60s, vllm=180s)
+    startup_timeout_s: int | None = None
     # Per-machine filter — empty = all hosts
     machines: list[str] = field(default_factory=list)
 
