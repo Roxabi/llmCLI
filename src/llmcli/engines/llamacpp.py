@@ -15,7 +15,6 @@ from ._common import _wait_ready, default_health
 # ---------------------------------------------------------------------------
 
 _WAIT_TIMEOUT = 60  # seconds
-_STOP_GRACE = 5  # seconds to wait after SIGTERM before SIGKILL
 
 
 def _hf_hub_root() -> Path:

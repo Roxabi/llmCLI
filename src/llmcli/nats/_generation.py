@@ -22,7 +22,10 @@ from roxabi_contracts.llm.builders import build_llm_chunk, build_llm_response
 from roxabi_contracts.llm.models import LlmChunkEvent, LlmResponse
 
 if TYPE_CHECKING:
-    pass
+    from collections.abc import Awaitable, Callable
+
+    from nats.aio.client import Client as NatsClient
+    from nats.aio.msg import Msg as NatsMsg
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +39,14 @@ class GenerationMixin:
     - ``self._nc``       — NATS connection (with ``.publish``)
     - ``self.reply``     — coroutine from NatsAdapterBase
     """
+
+    if TYPE_CHECKING:
+        # Host-provided attributes (NatsAdapterBase + LlmNatsAdapter.__init__).
+        # Declared here so Pyright can resolve attribute access on self.
+        _nc: NatsClient | None
+        _client: httpx.AsyncClient
+        _loaded_model: str | None
+        reply: Callable[[NatsMsg, bytes], Awaitable[None]]
 
     # ------------------------------------------------------------------
     # Error helpers
@@ -153,6 +164,7 @@ class GenerationMixin:
     async def _stream_response(self, msg, payload: dict, body: dict, t0: float) -> None:
         body = {**body, "stream": True}
         nc = self._nc
+        assert nc is not None  # _nc is connected before any generation is dispatched
 
         chunk_count = 0
         saw_done = False

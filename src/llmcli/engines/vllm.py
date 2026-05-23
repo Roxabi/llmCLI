@@ -59,7 +59,7 @@ class VLLMEngine:
                 "Install with: uv sync --group vllm"
             )
         try:
-            import vllm  # noqa: F401
+            import vllm  # noqa: F401  # type: ignore[import-not-found]
         except ImportError as exc:
             raise ImportError("vLLM not installed. Run: uv sync --group vllm") from exc
 
