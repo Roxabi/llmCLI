@@ -194,27 +194,30 @@ class TestGgufPathResolution:
         )
 
     @pytest.mark.no_gpu
-    def test_missing_gguf_raises_file_not_found(
+    def test_missing_gguf_auto_pulls(
         self,
         engine: LlamaCppEngine,
         spec: ModelSpec,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """If the GGUF is not cached, the engine must raise FileNotFoundError (not a silent path)."""
+        """If the GGUF is not cached, the engine must auto-pull via hf_hub_download."""
         # Point HF_HOME at an empty directory — no model files present.
         empty = tmp_path / "empty_hub"
         empty.mkdir()
         monkeypatch.setenv("HF_HOME", str(empty))
 
-        helper = getattr(engine, "_gguf_path", None) or getattr(engine, "gguf_path", None)
-        if helper is None:
-            # Fallback: start() should surface the missing file.
-            with pytest.raises((FileNotFoundError, NotImplementedError)):
-                engine.start(spec)
-        else:
-            with pytest.raises(FileNotFoundError):
-                helper(spec)
+        with patch(
+            "llmcli.engines.llamacpp.hf_hub_download",
+            return_value=str(empty / "hub" / "models--bartowski--Qwen3-8B-GGUF" / "snapshots" / "main" / spec.file),
+        ) as mock_pull:
+            result = engine._gguf_path(spec)
+            mock_pull.assert_called_once_with(
+                repo_id=spec.repo,
+                filename=spec.file,
+                cache_dir=str(empty / "hub"),
+            )
+            assert str(result).endswith(spec.file)
 
 
 # ---------------------------------------------------------------------------
