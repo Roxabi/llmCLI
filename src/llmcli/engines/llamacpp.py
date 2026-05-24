@@ -10,6 +10,11 @@ from ..config import ModelSpec
 from ..engine import EngineInstance
 from ._common import _wait_ready, default_health
 
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:  # pragma: no cover
+    hf_hub_download = None  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -48,8 +53,8 @@ class LlamaCppEngine:
         Searches under ``<HF_HOME>/hub/models--<org>--<repo>/snapshots/``
         for any revision that contains ``spec.file``.
 
-        Raises FileNotFoundError with a helpful hint when the model has not
-        been pulled yet.
+        If the file is not found, automatically downloads it via
+        ``hf_hub_download`` and returns the resolved local path.
         """
         hub = _hf_hub_root()
         repo_dir = hub / _repo_to_dir_name(spec.repo)
@@ -61,10 +66,18 @@ class LlamaCppEngine:
                 if candidate.is_file():
                     return candidate
 
-        raise FileNotFoundError(
-            f"GGUF file '{spec.file}' not found in HF hub cache for repo '{spec.repo}'.\n"
-            f"Run `llmcli pull {spec.name}` to download the model first."
+        # Not cached — auto-pull.
+        if hf_hub_download is None:
+            raise FileNotFoundError(
+                f"GGUF file '{spec.file}' not found in HF hub cache for repo '{spec.repo}'.\n"
+                f"Run `llmcli pull {spec.name}` to download the model first."
+            )
+        path = hf_hub_download(
+            repo_id=spec.repo,
+            filename=spec.file,
+            cache_dir=str(_hf_hub_root()),
         )
+        return Path(path)
 
     # ------------------------------------------------------------------
     # Command builder
