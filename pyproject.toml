@@ -1,8 +1,8 @@
 [project]
 name = "llmcli"
-version = "0.1.0"
+version = "0.1.1"
 description = "Unified CLI for local LLM serving — llama.cpp + TurboQuant GGUF, OpenAI-compatible HTTP"
-license = "MIT"
+license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "typer[all]>=0.12",
