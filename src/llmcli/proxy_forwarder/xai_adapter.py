@@ -20,12 +20,14 @@ class XaiAdapter:
     Attributes
     ----------
     api_base:
-        xAI public OpenAI-compatible API base URL.
+        xAI host-only base URL. The ``/v1/...`` prefix lives on the inbound
+        ``path`` (see ALLOWED_PATHS), so concatenation with ``api_base`` MUST
+        NOT double it.
     credential_path:
         Path to the JSON file written by ``llmcli xai login``.
     """
 
-    api_base: str = "https://api.x.ai/v1"
+    api_base: str = "https://api.x.ai"
     credential_path = XAI_CREDENTIALS_PATH
 
     async def refresh(self, creds: XaiCredentials) -> XaiCredentials:
