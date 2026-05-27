@@ -1,0 +1,57 @@
+---
+title: feat(auth) — xAI OAuth proxy à la Hermes (SuperGrok credentials forwarder)
+issue: 99
+status: approved
+tier: F-lite
+date: 2026-05-27
+---
+
+## Problem
+
+llmCLI's LiteLLM proxy currently routes cloud requests using static API keys (`FIREWORKS_API_KEY`, `ANTHROPIC_API_KEY`, `NVIDIA_API_KEY` — see `src/llmcli/support/providers.py`). xAI/Grok would normally fit this pattern via `XAI_API_KEY` against the paid xAI API — except the user already pays for a **SuperGrok subscription**, whose credits are accessible **only via OAuth-issued bearer tokens with limited lifetime**. LiteLLM does not natively support OAuth bearer rotation; it expects static keys at config-load time.
+
+Without OAuth support in llmCLI, two paths exist: (a) pay xAI twice (subscription + API credits), or (b) skip Grok in the local LLM mesh. Neither is acceptable.
+
+Hermes solved this with a small aiohttp forwarder (`hermes_cli/proxy/`) sibling service that swaps `Authorization` headers per request and refreshes tokens lazily on 401. Porting the pattern unlocks SuperGrok now AND lays the substrate for future OAuth providers (Gemini OAuth, Anthropic Console OAuth, Qwen OAuth).
+
+## Who
+
+- **Primary:** sole operator consuming Grok-4 via SuperGrok subscription from lyra agents + claude-code aliases (`ccl`/`ccp`) routed through the LiteLLM proxy on M₁ (`roxabituwer:18091`).
+- **Secondary:** future Roxabi consumers of any OAuth-issued LLM credential — the `auth/` + `proxy_forwarder/` modules are the reusable substrate when Gemini / Anthropic Console / Qwen OAuth get added next.
+
+## Constraints
+
+- **Single-account, single-host:** M₁ only (24/7 cloud relay). M₂ off-able sans préavis → cannot host credentials that must be live for agents.
+- **Quadlet + `roxabi.network`:** forwarder must join the existing podman bridge so the `llmcli` LiteLLM container reaches it by DNS name (`http://llmcli-xai-forwarder:18645`), not via host loopback.
+- **Credentials writable from container:** OAuth refresh writes a new `access_token` back to disk → forwarder's mount of `~/.roxabi/llmcli/credentials/` must be `rw` (the `llmcli` proxy container uses `:ro,Z` today for `~/.roxabi/llmcli`; the new forwarder gets its own narrower writable mount).
+- **Library reuse:** port Hermes' xAI OAuth subset (~250 lines from `hermes_cli/auth.py:97-203` + refresh logic) without dragging in the multi-account `credential_pool` abstraction.
+- **F-lite ceiling:** ≤900 lines across `auth/`, `proxy_forwarder/`, `cli/xai.py`, and edits to `cli/_app.py` + `support/litellm_config.py` + `support/providers.py`.
+
+## Out of Scope
+
+- **M₂ deployment** — deferred. Tailnet routing (M₂ LiteLLM → `roxabituwer:18645`) is the fallback when needed.
+- **Multi-account credential pool** — Hermes feature, overkill for a single-operator setup.
+- **Eager timer-based refresh** — lazy on-401 only.
+- **Other OAuth providers** (Anthropic Console, Gemini, Qwen) — separate issues. This issue establishes the pattern; reuse is the next issue's payoff, not this one's scope.
+- **CLAUDE.md layout-doc update** — follow-up sibling issue once #99 ships (the stale `src/llmcli/cli.py` reference in CLAUDE.md will be fixed then).
+
+## Premise Validity
+
+**Success in 6 months:** SuperGrok OAuth credentials work transparently for lyra + claude-code via the existing LiteLLM proxy on M₁. `llmcli list` shows `grok-4`. Token refresh happens automatically with no manual intervention. The `auth/` + `proxy_forwarder/` pattern is reusable for Gemini / Anthropic Console OAuth (next 1–2 providers).
+
+**Failure in 6 months (falsifiable):** Forwarder uptime <99% on a rolling 30-day window, OR manual `llmcli xai login` required more than 1×/month, OR >50% of Grok requests fall back to cloud-paid relays (Kimi/DeepSeek) due to OAuth errors. Any of these → we shipped operational burden without reliable Grok access; rip out and revert to paid xAI API.
+
+**Simplest alternative:** Static `XAI_API_KEY` via existing LiteLLM provider mechanism — 2 lines of YAML in `~/.litellm/config.yaml`, no OAuth, no forwarder, no Quadlet.
+**Why not simplest:** Pays twice (SuperGrok subscription already running + API credits separately). More importantly, the investment in OAuth + forwarder is the *substrate* for future OAuth providers (Gemini, Anthropic Console) — the value is not "xAI access" but "OAuth-provider pattern in llmCLI". Static key gets Grok cheaply but leaves us flat-footed for the next OAuth provider.
+
+## Complexity
+
+**Tier: F-lite** — single domain (auth/proxy infrastructure), clear scope (port Hermes subset), bounded file count (~12 files / ~900 lines).
+
+Signals observed:
+- **Files touched:** ~12 (5 new modules + ~7 edits) — F-lite range
+- **Technical risk:** 5 — OAuth PKCE is well-known, but new for llmCLI; Hermes is the reference impl
+- **Architectural impact:** 6 — new sibling-service pattern, new `auth/` subsystem, first credential-rotating provider in llmCLI
+- **Unknowns:** 3 — minor (lazy-refresh + Podman `rw` mount semantics for credentials file)
+- **Domain breadth:** 2 (auth + HTTP forwarding) — single infrastructure cluster
+- **κ = 5** → F-lite tier confirmed (computed: `6×0.20 + 5×0.25 + 6×0.25 + 3×0.15 + 7×0.15 = 5.45 → 5`)
