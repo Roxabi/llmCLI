@@ -118,86 +118,72 @@ def _proxy(adapter: OAuthAdapter):
         if path not in ALLOWED_PATHS:
             return web.Response(status=404)
 
-        # Fail fast if credentials are corrupt — don't forward the request.
-        try:
-            _pre_check = store.load(adapter.credential_path)
-        except CredentialsCorruptError:
-            return web.Response(
-                status=503,
-                headers={"X-Llmcli-Reauth": "required"},
-                text="credentials corrupted — re-run llmcli xai login",
-            )
-        if _pre_check is None:
-            return web.Response(
-                status=401,
-                headers={"X-Llmcli-Reauth": "required"},
-                text="not logged in — run llmcli xai login",
-            )
-
         body = await request.read()
         fwd_headers = _filter_request_headers(request.headers)
 
-        timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
+        ) as session:
 
-        async def request_fn(token: str) -> aiohttp.ClientResponse:
-            upstream_url = f"{adapter.api_base.rstrip('/')}{path}"
-            if request.query_string:
-                upstream_url = f"{upstream_url}?{request.query_string}"
-            headers = {**fwd_headers, "Authorization": f"Bearer {token}"}
-            session = aiohttp.ClientSession(timeout=timeout)
-            try:
-                upstream_resp = await session.request(
+            async def request_fn(token: str) -> aiohttp.ClientResponse:
+                upstream_url = f"{adapter.api_base.rstrip('/')}{path}"
+                if request.query_string:
+                    upstream_url = f"{upstream_url}?{request.query_string}"
+                headers = {**fwd_headers, "Authorization": f"Bearer {token}"}
+                return await session.request(
                     request.method,
                     upstream_url,
                     data=body if body else None,
                     headers=headers,
                     allow_redirects=False,
                 )
-            except Exception:
-                await session.close()
-                raise
-            # Attach session to response so caller can close it.
-            upstream_resp._llmcli_session = session  # type: ignore[attr-defined]
-            return upstream_resp
 
-        try:
-            upstream_resp = await lazy_retry_on_401(
-                request_fn,
-                adapter.refresh,
-                lambda: store.load(adapter.credential_path),
-                lambda c: store.save(c, adapter.credential_path),
-            )
-        except aiohttp.ClientError as exc:
-            logger.warning("proxy: upstream connection failed: %s", exc)
-            return web.Response(status=502, text=f"upstream connection failed: {exc}")
-        except asyncio.TimeoutError:
-            return web.Response(status=504, text="upstream request timed out")
+            try:
+                upstream_resp = await lazy_retry_on_401(
+                    request_fn,
+                    adapter.refresh,
+                    lambda: store.load(adapter.credential_path),
+                    lambda c: store.save(c, adapter.credential_path),
+                )
+            except CredentialsCorruptError:
+                return web.Response(
+                    status=503,
+                    headers={"X-Llmcli-Reauth": "required"},
+                    text="credentials corrupted — re-run llmcli xai login",
+                )
+            except RuntimeError:
+                logger.warning("proxy: token refresh failed for %s — re-auth required", request.path)
+                # ¬log the exc — its message may contain response.text from auth.x.ai
+                return web.Response(
+                    status=401,
+                    headers={"X-Llmcli-Reauth": "required"},
+                    text="token refresh failed — re-run `llmcli xai login`",
+                )
+            except aiohttp.ClientError as exc:
+                logger.warning("proxy: upstream connection failed: %s", exc)
+                return web.Response(status=502, text=f"upstream connection failed: {exc}")
+            except asyncio.TimeoutError:
+                return web.Response(status=504, text="upstream request timed out")
 
-        # Still 401 after retry — operator must re-authenticate.
-        if upstream_resp.status == 401:
-            session = getattr(upstream_resp, "_llmcli_session", None)
-            if session:
-                await session.close()
-            return web.Response(status=401, headers={"X-Llmcli-Reauth": "required"})
+            # Still 401 after retry — operator must re-authenticate.
+            if upstream_resp.status == 401:
+                return web.Response(status=401, headers={"X-Llmcli-Reauth": "required"})
 
-        # Stream response back (supports SSE on /v1/chat/completions).
-        session = getattr(upstream_resp, "_llmcli_session", None)
-        resp_headers = _filter_response_headers(upstream_resp.headers)
-        stream = web.StreamResponse(status=upstream_resp.status, headers=resp_headers)
-        await stream.prepare(request)
-        try:
-            async for chunk in upstream_resp.content.iter_any():
-                if chunk:
-                    await stream.write(chunk)
-        except (aiohttp.ClientError, asyncio.CancelledError) as exc:
-            logger.warning("proxy: streaming interrupted: %s", exc)
-        finally:
-            upstream_resp.release()
-            if session:
-                await session.close()
+            # Stream response back (supports SSE on /v1/chat/completions).
+            resp_headers = _filter_response_headers(upstream_resp.headers)
+            stream = web.StreamResponse(status=upstream_resp.status, headers=resp_headers)
+            await stream.prepare(request)
+            try:
+                async for chunk in upstream_resp.content.iter_any():
+                    if chunk:
+                        await stream.write(chunk)
+            except (aiohttp.ClientError, asyncio.CancelledError) as exc:
+                logger.warning("proxy: streaming interrupted: %s", exc)
+            finally:
+                upstream_resp.release()
 
-        await stream.write_eof()
-        return stream
+            await stream.write_eof()
+            return stream
 
     return handler
 

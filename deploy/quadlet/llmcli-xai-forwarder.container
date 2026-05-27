@@ -15,7 +15,7 @@ Environment=LLMCLI_FORWARDER_PROVIDER=xai
 Environment=LLMCLI_FORWARDER_PORT=18645
 UserNS=keep-id:uid=1502,gid=1502
 Exec=python -m llmcli.proxy_forwarder._server
-HealthCmd=curl -f http://localhost:18645/health || exit 1
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://localhost:18645/health', timeout=5)"
 HealthInterval=30s
 HealthStartPeriod=15s
 NoNewPrivileges=true

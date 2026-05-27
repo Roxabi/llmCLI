@@ -1,6 +1,8 @@
 """xAI / SuperGrok OAuth credentials CLI subcommands."""
 from __future__ import annotations
 
+import json
+
 import typer
 
 from llmcli.auth import login_flow, store
@@ -33,7 +35,7 @@ def status_cmd() -> None:
         err_console.print(f"[red]error:[/red] {exc}")
         raise typer.Exit(2)
     if creds is None:
-        console.print({"logged_in": False})
+        console.print(json.dumps({"logged_in": False}))
         raise typer.Exit(1)
     # AC3: stdout must NOT contain eyJ (JWT prefix) or xai- substring
-    console.print({"logged_in": True, "expires_at": creds.expires_at, "scope": creds.scope})
+    console.print(json.dumps({"logged_in": True, "expires_at": creds.expires_at, "scope": creds.scope}))

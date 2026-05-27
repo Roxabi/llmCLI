@@ -1219,6 +1219,7 @@ name = "llmcli"
 version = "0.1.1"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "nvidia-ml-py" },
@@ -1259,6 +1260,7 @@ vllm = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.9" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=1.0" },
     { name = "litellm", extras = ["proxy"], marker = "extra == 'proxy'", specifier = ">=1.0" },

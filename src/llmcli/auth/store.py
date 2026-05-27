@@ -48,9 +48,9 @@ def load(path: Path = XAI_CREDENTIALS_PATH) -> XaiCredentials | None:
         return None
     try:
         data = json.loads(path.read_text())
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, OSError) as exc:
         raise CredentialsCorruptError(
-            f"credentials corrupted at {path} — re-run `llmcli xai login`"
+            f"cannot read credentials at {path} ({type(exc).__name__}) — re-run `llmcli xai login`"
         ) from exc
     return XaiCredentials(**data)
 
@@ -62,6 +62,7 @@ def save(creds: XaiCredentials, path: Path = XAI_CREDENTIALS_PATH) -> None:
     Uses an exclusive flock + os.replace for atomicity; final file mode 0600.
     """
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
     tmp = path.with_suffix(".tmp")
     payload = {
         "access_token": creds.access_token,
@@ -71,9 +72,11 @@ def save(creds: XaiCredentials, path: Path = XAI_CREDENTIALS_PATH) -> None:
         "token_type": creds.token_type,
         "scope": creds.scope,
     }
-    with open(tmp, "w") as f:
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         json.dump(payload, f)
-        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    os.chmod(tmp, 0o600)
+        f.flush()
+        os.fsync(f.fileno())
+        # lock held until file close (with-block exit)
     os.replace(tmp, path)  # atomic rename

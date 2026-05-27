@@ -1,13 +1,4 @@
-"""RED-phase tests for xAI OAuth PKCE flow and credential store.
-
-Tests 1 and 4 (test_pkce_code_exchange, test_credentials_corrupted) exercise
-auth/xai_oauth.py + auth/store.py from Wave 1 and are expected to PASS after
-backend-dev-A completes T2 + T3.
-
-Tests 2 and 3 (test_lazy_refresh_on_401, test_concurrent_refresh_dedup) exercise
-proxy_forwarder/_common.py from Wave 2 and are SKIPPED until that module lands
-(import-guarded via importlib.util.find_spec at module level).
-"""
+"""Tests for xAI OAuth PKCE flow and credential store."""
 
 from __future__ import annotations
 
@@ -18,44 +9,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# ---------------------------------------------------------------------------
-# Wave 1 import guard — auth modules (required for T1/T4 at RG1)
-# findspec on a submodule of a non-existent parent raises ModuleNotFoundError,
-# so we guard with a try/except rather than find_spec directly.
-# ---------------------------------------------------------------------------
-
-try:
-    from llmcli.auth.store import CredentialsCorruptError, XaiCredentials
-    from llmcli.auth import store as auth_store
-
-    _AUTH_STORE_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    _AUTH_STORE_AVAILABLE = False
-
-try:
-    from llmcli.auth.xai_oauth import (
-        XAI_OAUTH_CLIENT_ID,
-        XAI_OAUTH_PLAN,
-        _build_authorize_url,
-        exchange_code,
-    )
-
-    _AUTH_OAUTH_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    _AUTH_OAUTH_AVAILABLE = False
-
-_AUTH_AVAILABLE = _AUTH_STORE_AVAILABLE and _AUTH_OAUTH_AVAILABLE
-
-# ---------------------------------------------------------------------------
-# Wave 2 import guard — proxy_forwarder._common (required for T2/T3 at RG2)
-# ---------------------------------------------------------------------------
-
-try:
-    from llmcli.proxy_forwarder._common import _REFRESH_LOCK, lazy_retry_on_401  # noqa: F401
-
-    _FORWARDER_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    _FORWARDER_AVAILABLE = False
+# F1 — direct imports (no try/except guards)
+from llmcli.auth import store as auth_store
+from llmcli.auth.store import CredentialsCorruptError, XaiCredentials
+from llmcli.auth.xai_oauth import (
+    XAI_OAUTH_CLIENT_ID,
+    _build_authorize_url,
+    exchange_code,
+)
+from llmcli.proxy_forwarder._common import _REFRESH_LOCK, lazy_retry_on_401  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -63,21 +25,12 @@ except (ImportError, ModuleNotFoundError):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture()
-def creds_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Monkeypatch XAI_CREDENTIALS_PATH to a temp file; return the path."""
-    xai_creds = tmp_path / "xai.json"
-    if _AUTH_STORE_AVAILABLE:
-        monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", xai_creds)
-    return xai_creds
-
-
 def _make_fake_creds(
     access_token: str = "ATK",
     refresh_token: str = "RTK",
     id_token: str = "ITK",
     expires_delta: int = 3600,
-) -> "XaiCredentials":
+) -> XaiCredentials:
     """Build an XaiCredentials for test usage."""
     return XaiCredentials(
         access_token=access_token,
@@ -94,7 +47,6 @@ def _make_fake_creds(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _AUTH_AVAILABLE, reason="auth modules not yet implemented (Wave 1)")
 def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """exchange_code POSTs to auth.x.ai/oauth/token with correct body; returns XaiCredentials."""
     # Arrange
@@ -136,6 +88,8 @@ def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert body.get("code") == "test_code", f"body={body}"
     assert body.get("code_verifier") == fake_verifier, f"body={body}"
     assert body.get("client_id") == XAI_OAUTH_CLIENT_ID, f"body={body}"
+    # F4 — assert code_challenge in POST body
+    assert body.get("code_challenge") is not None, f"code_challenge missing from body: {body}"
 
     # Assert — returned XaiCredentials matches mock response
     assert result.access_token == "ATK"
@@ -147,21 +101,27 @@ def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     # Assert — authorize URL contains plan=generic (build helper)
-    assert XAI_OAUTH_PLAN == "generic"
+    # F3 — removed tautological assert XAI_OAUTH_PLAN == "generic"
     auth_url = _build_authorize_url(
         challenge="challenge_abc",
         state="state_xyz",
         nonce="nonce_123",
     )
     assert "plan=generic" in auth_url, f"plan=generic missing from URL: {auth_url}"
+    # F4 — assert state and nonce in URL
+    assert "state=state_xyz" in auth_url, f"state missing from URL: {auth_url}"
+    assert "nonce=nonce_123" in auth_url, f"nonce missing from URL: {auth_url}"
+    # F11 — assert client_id constant (not hardcoded literal)
+    assert f"client_id={XAI_OAUTH_CLIENT_ID}" in auth_url, (
+        f"client_id missing from URL: {auth_url}"
+    )
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — lazy 401 retry (Wave 2)
+# Test 2 — lazy 401 retry
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _FORWARDER_AVAILABLE, reason="proxy_forwarder not yet implemented (Wave 2)")
 @pytest.mark.asyncio
 async def test_lazy_refresh_on_401(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -170,6 +130,8 @@ async def test_lazy_refresh_on_401(
     # Arrange — initial (expired) credentials on disk
     creds_file = tmp_path / "xai.json"
     monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
+    # F8 — isolate _REFRESH_LOCK per test
+    monkeypatch.setattr("llmcli.proxy_forwarder._common._REFRESH_LOCK", asyncio.Lock())
 
     old_creds = _make_fake_creds(access_token="OLD_ATK", expires_delta=-60)
     auth_store.save(old_creds, path=creds_file)
@@ -186,6 +148,8 @@ async def test_lazy_refresh_on_401(
 
     api_call_count = 0
     auth_call_count = 0
+    # F9 — accumulate tokens received
+    tokens_received: list[str] = []
 
     async def _json_ok() -> dict:
         return chat_ok_resp
@@ -193,6 +157,7 @@ async def test_lazy_refresh_on_401(
     async def request_fn(token: str) -> MagicMock:
         nonlocal api_call_count
         api_call_count += 1
+        tokens_received.append(token)
         resp = MagicMock()
         if api_call_count == 1:
             resp.status = 401
@@ -201,7 +166,7 @@ async def test_lazy_refresh_on_401(
             resp.json = _json_ok
         return resp
 
-    async def refresh_fn(creds: "XaiCredentials") -> "XaiCredentials":
+    async def refresh_fn(creds: XaiCredentials) -> XaiCredentials:
         nonlocal auth_call_count
         auth_call_count += 1
         return XaiCredentials(
@@ -227,13 +192,20 @@ async def test_lazy_refresh_on_401(
     assert persisted is not None
     assert persisted.access_token == "NEW_ATK"
 
+    # F9 — assert token values used on each call
+    assert tokens_received[0] == "OLD_ATK", (
+        f"first call should use old token, got {tokens_received[0]!r}"
+    )
+    assert tokens_received[1] == "NEW_ATK", (
+        f"retry should use refreshed token, got {tokens_received[1]!r}"
+    )
+
 
 # ---------------------------------------------------------------------------
-# Test 3 — concurrent 401 dedup (Wave 2)
+# Test 3 — concurrent 401 dedup
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _FORWARDER_AVAILABLE, reason="proxy_forwarder not yet implemented (Wave 2)")
 @pytest.mark.asyncio
 async def test_concurrent_refresh_dedup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -242,6 +214,8 @@ async def test_concurrent_refresh_dedup(
     # Arrange — expired credentials on disk
     creds_file = tmp_path / "xai.json"
     monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
+    # F8 — isolate _REFRESH_LOCK per test
+    monkeypatch.setattr("llmcli.proxy_forwarder._common._REFRESH_LOCK", asyncio.Lock())
 
     old_creds = _make_fake_creds(access_token="OLD_ATK", expires_delta=-60)
     auth_store.save(old_creds, path=creds_file)
@@ -263,7 +237,7 @@ async def test_concurrent_refresh_dedup(
             resp.status = 200
         return resp
 
-    async def refresh_fn(creds: "XaiCredentials") -> "XaiCredentials":
+    async def refresh_fn(creds: XaiCredentials) -> XaiCredentials:
         nonlocal refresh_call_count
         refresh_call_count += 1
         # Small delay to make race condition visible
@@ -290,13 +264,21 @@ async def test_concurrent_refresh_dedup(
         f"expected exactly 1 refresh, got {refresh_call_count} — _REFRESH_LOCK dedup broken"
     )
 
+    # F10 — assert disk persistence + final api count
+    persisted = auth_store.load(path=creds_file)
+    assert persisted is not None
+    assert persisted.access_token == "REFRESHED_ATK"
+
+    assert api_call_count >= 5, (
+        f"expected ≥5 api calls (initial 401s), got {api_call_count}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test 4 — corrupted credentials
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _AUTH_STORE_AVAILABLE, reason="auth.store not yet implemented (Wave 1)")
 def test_credentials_corrupted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -314,3 +296,121 @@ def test_credentials_corrupted(
     message = str(exc_info.value).lower()
     assert "corrupted" in message, f"expected 'corrupted' in error message, got: {message!r}"
     assert "re-run" in message, f"expected 're-run' in error message, got: {message!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — AC14: credentials repr redacts tokens  (F5)
+# ---------------------------------------------------------------------------
+
+
+def test_credentials_repr_redacts_tokens() -> None:
+    """AC14: XaiCredentials.__repr__ MUST redact access/refresh/id tokens."""
+    creds = XaiCredentials(
+        access_token="eyJhbGciOiJIUzI1NiJ9.payload.sig",  # JWT-like prefix
+        refresh_token="xai-refresh-abc123",
+        id_token="eyJhbGciOiJIUzI1NiJ9.id.sig",
+        expires_at=9999999,
+        token_type="Bearer",
+        scope="openid",
+    )
+    r = repr(creds)
+    assert "eyJ" not in r, f"JWT prefix leaked in repr: {r}"
+    assert "xai-refresh" not in r, f"refresh token leaked in repr: {r}"
+    assert "access_token=***" in r
+    assert "refresh_token=***" in r
+    assert "id_token=***" in r
+    assert "expires_at=9999999" in r  # non-secret int is fine
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — empty verifier guard  (F6)
+# ---------------------------------------------------------------------------
+
+
+def test_exchange_code_empty_verifier_raises() -> None:
+    """`exchange_code` MUST reject empty verifier — guard at xai_oauth.py."""
+    with pytest.raises(ValueError, match="PKCE code_verifier"):
+        exchange_code(code="some_code", verifier="")
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — AC4 second half: /health returns logged_in:false on corrupt creds  (F7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_credentials_corrupted_health_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test-AC4 second half: forwarder /health reports logged_in:false when xai.json is corrupted."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    creds_file = tmp_path / "xai.json"
+    creds_file.write_text('{"access_token": "abc"')  # partial JSON
+
+    adapter = XaiAdapter()
+    monkeypatch.setattr(adapter, "credential_path", creds_file)
+
+    app = create_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/health")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["logged_in"] is False
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — lazy_retry still 401 propagates  (F8)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lazy_refresh_still_401_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the retry is ALSO 401, lazy_retry_on_401 returns the 401 (caller handles X-Llmcli-Reauth)."""
+    creds_file = tmp_path / "xai.json"
+    monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
+    monkeypatch.setattr("llmcli.proxy_forwarder._common._REFRESH_LOCK", asyncio.Lock())
+
+    old = XaiCredentials(
+        access_token="OLD_ATK",
+        refresh_token="OLD_RTK",
+        id_token="OLD_ITK",
+        expires_at=int(time.time()) - 60,  # expired
+        token_type="Bearer",
+        scope="openid",
+    )
+    auth_store.save(old, path=creds_file)
+
+    api_calls = 0
+
+    async def request_fn(token: str) -> MagicMock:
+        nonlocal api_calls
+        api_calls += 1
+        resp = MagicMock()
+        resp.status = 401
+        return resp
+
+    async def refresh_fn(creds: XaiCredentials) -> XaiCredentials:
+        # Returns NEW creds — but the api will STILL return 401
+        return XaiCredentials(
+            access_token="NEW_BUT_STILL_REJECTED",
+            refresh_token="NEW_RTK",
+            id_token="NEW_ITK",
+            expires_at=int(time.time()) + 3600,
+            token_type="Bearer",
+            scope="openid",
+        )
+
+    resp = await lazy_retry_on_401(
+        request_fn,
+        refresh_fn,
+        lambda: auth_store.load(path=creds_file),
+        lambda c: auth_store.save(c, path=creds_file),
+    )
+    assert resp.status == 401, f"expected final 401, got {resp.status}"
+    assert api_calls == 2, f"expected 2 api calls (initial + retry), got {api_calls}"

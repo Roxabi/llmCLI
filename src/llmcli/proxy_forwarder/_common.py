@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 
@@ -36,7 +37,10 @@ ALLOWED_PATHS: frozenset[str] = frozenset(
 # across all concurrent request handlers in the same process.
 # ---------------------------------------------------------------------------
 
-_REFRESH_LOCK = asyncio.Lock()
+# _REFRESH_LOCK is module-level — exactly ONE in-flight refresh per process.
+# Python 3.10+: asyncio.Lock is loop-agnostic (bpo-39529); safe to instantiate at import.
+# Requires Python ≥ 3.10 (project targets 3.12).
+_REFRESH_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -126,20 +130,21 @@ async def lazy_retry_on_401(
         # already written fresh tokens to disk while we waited.
         fresh_creds = store_load()
 
-        if fresh_creds is not None and fresh_creds.access_token != creds.access_token:
-            # Token was already refreshed by a concurrent handler — use it.
+        if fresh_creds is None:
+            # Credentials disappeared mid-flight; propagate 401.
+            return _Resp401()
+
+        # Spec-mandated: if another handler already refreshed and the new token
+        # is not expired, skip the POST and retry with the already-refreshed token.
+        if fresh_creds.expires_at > int(time.time()) + 5:  # 5s skew tolerance
             logger.debug("lazy_retry_on_401: token refreshed by another handler, skipping POST")
-            new_creds = fresh_creds
+            resp = await request_fn(fresh_creds.access_token)
         else:
-            # Token is still the stale one — we are responsible for refreshing.
+            # Token is still expired — we are responsible for refreshing.
             logger.info("lazy_retry_on_401: refreshing token via refresh_fn")
-            if fresh_creds is None:
-                # Credentials disappeared mid-flight; propagate 401.
-                return _Resp401()
             new_creds = await refresh_fn(fresh_creds)
             store_save(new_creds)
-
-        resp = await request_fn(new_creds.access_token)
+            resp = await request_fn(new_creds.access_token)
 
     return resp
 

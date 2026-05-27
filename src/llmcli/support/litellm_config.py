@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from llmcli.auth.store import XAI_CREDENTIALS_PATH as _XAI_CREDENTIALS_PATH
 from llmcli.config import Catalog
 from llmcli.support.providers import PROVIDERS
 
@@ -18,7 +19,6 @@ LITELLM_CONFIG = Path.home() / ".litellm" / "config.yaml"
 
 # xAI OAuth — hardcoded model list (forwarder-routed; NOT in per-host TOML catalog)
 _XAI_OAUTH_MODELS: list[str] = ["grok-4", "grok-4-fast"]
-_XAI_CREDENTIALS_PATH = Path.home() / ".roxabi" / "llmcli" / "credentials" / "xai.json"
 BLOCK_START = "# --- llmCLI managed block start ---"
 BLOCK_END = "# --- llmCLI managed block end ---"
 
@@ -136,9 +136,7 @@ def build_model_list(
 
     # Inject OAuth-managed models (not in catalog — forwarder-routed)
     # Gate on credentials presence; silently skip when absent.
-    from llmcli.support.providers import PROVIDERS as _PROVIDERS  # local import avoids circularity
-
-    xai_provider = _PROVIDERS.get("xai-oauth")
+    xai_provider = PROVIDERS.get("xai-oauth")
     if xai_provider is not None and xai_provider.key_env == "_OAUTH_MANAGED":
         if _XAI_CREDENTIALS_PATH.exists():
             for model_name in _XAI_OAUTH_MODELS:

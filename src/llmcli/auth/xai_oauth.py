@@ -5,6 +5,8 @@ credential_pool — single-account only.
 """
 import base64
 import hashlib
+import hmac
+import logging
 import secrets
 import threading
 import time
@@ -16,6 +18,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from llmcli.auth.store import XaiCredentials, XAI_CREDENTIALS_PATH, save
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants — load-bearing values, do NOT modify without testing against xAI
@@ -36,6 +40,11 @@ _XAI_AUTHORIZE_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth/authorize"
 # PKCE helpers
 # ---------------------------------------------------------------------------
 
+def _s256_challenge(verifier: str) -> str:
+    """Compute the S256 PKCE code_challenge from a verifier string."""
+    return base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+
+
 @dataclass(frozen=True)
 class PkceVerifier:
     """PKCE parameters for one OAuth session."""
@@ -49,13 +58,11 @@ class PkceVerifier:
 def _generate_pkce_verifier() -> PkceVerifier:
     """Generate a fresh PKCE verifier using S256 challenge method."""
     verifier = secrets.token_urlsafe(64)
-    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
-    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
     state = secrets.token_hex(16)
     nonce = secrets.token_hex(16)
     return PkceVerifier(
         code_verifier=verifier,
-        code_challenge=challenge,
+        code_challenge=_s256_challenge(verifier),
         state=state,
         nonce=nonce,
     )
@@ -170,8 +177,7 @@ def exchange_code(code: str, verifier: str) -> XaiCredentials:
         f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
     )
     # Recompute challenge from verifier for the defense-in-depth parameter
-    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
-    challenge = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    challenge = _s256_challenge(verifier)
 
     data = {
         "grant_type": "authorization_code",
@@ -192,9 +198,8 @@ def exchange_code(code: str, verifier: str) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        raise RuntimeError(
-            f"xAI token exchange failed (HTTP {response.status_code}): {response.text.strip()}"
-        )
+        logger.debug("xai token endpoint error body: %s", response.text)
+        raise RuntimeError(f"xAI token exchange failed (HTTP {response.status_code})")
     payload = response.json()
     expires_in = int(payload.get("expires_in") or 3600)
     return XaiCredentials(
@@ -227,9 +232,8 @@ def refresh_credentials(creds: XaiCredentials) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        raise RuntimeError(
-            f"xAI token refresh failed (HTTP {response.status_code}): {response.text.strip()}"
-        )
+        logger.debug("xai token endpoint error body: %s", response.text)
+        raise RuntimeError(f"xAI token refresh failed (HTTP {response.status_code})")
     payload = response.json()
     expires_in = int(payload.get("expires_in") or 3600)
     return XaiCredentials(
@@ -272,8 +276,8 @@ def login_flow() -> XaiCredentials:
     print("Waiting for authorization callback (timeout 120s)…")
     code, received_state = _loopback_server(timeout=120.0)
 
-    if received_state != pkce.state:
-        raise RuntimeError("xAI authorization failed: state mismatch (possible CSRF).")
+    if not hmac.compare_digest(received_state, pkce.state):
+        raise RuntimeError("OAuth state mismatch — possible CSRF")
 
     print("Authorization code received, exchanging for tokens…")
     creds = exchange_code(code, pkce.code_verifier)
