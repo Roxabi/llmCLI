@@ -14,7 +14,12 @@ import yaml
 
 from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
-from llmcli.support.litellm_config import build_model_list, load_proxy_base, merge_proxy_config
+from llmcli.support.litellm_config import (
+    build_model_list,
+    emit_xai_oauth_warning_if_absent,
+    load_proxy_base,
+    merge_proxy_config,
+)
 from llmcli.support.providers import PROVIDERS
 
 # ---------------------------------------------------------------------------
@@ -66,6 +71,9 @@ def register_proxy(
         raise typer.Exit(code=1)
 
     model_count = len(catalog.models)
+
+    # 5a. Warn if xAI credentials are absent (discoverability hint)
+    emit_xai_oauth_warning_if_absent(err_console)
 
     # 6. Reload proxy — warn on failure, don't fail the command
     try:

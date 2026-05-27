@@ -187,6 +187,9 @@ async def test_lazy_refresh_on_401(
     api_call_count = 0
     auth_call_count = 0
 
+    async def _json_ok() -> dict:
+        return chat_ok_resp
+
     async def request_fn(token: str) -> MagicMock:
         nonlocal api_call_count
         api_call_count += 1
@@ -195,7 +198,7 @@ async def test_lazy_refresh_on_401(
             resp.status = 401
         else:
             resp.status = 200
-            resp.json = asyncio.coroutine(lambda: chat_ok_resp)  # type: ignore[attr-defined]
+            resp.json = _json_ok
         return resp
 
     async def refresh_fn(creds: "XaiCredentials") -> "XaiCredentials":
