@@ -9,12 +9,16 @@ from typing import Any
 
 import yaml
 
+from llmcli.auth.store import XAI_CREDENTIALS_PATH as _XAI_CREDENTIALS_PATH
 from llmcli.config import Catalog
 from llmcli.support.providers import PROVIDERS
 
 log = logging.getLogger(__name__)
 
 LITELLM_CONFIG = Path.home() / ".litellm" / "config.yaml"
+
+# xAI OAuth — hardcoded model list (forwarder-routed; NOT in per-host TOML catalog)
+_XAI_OAUTH_MODELS: list[str] = ["grok-4", "grok-4-fast"]
 BLOCK_START = "# --- llmCLI managed block start ---"
 BLOCK_END = "# --- llmCLI managed block end ---"
 
@@ -129,6 +133,23 @@ def build_model_list(
                 },
             }
         model_list.append(entry)
+
+    # Inject OAuth-managed models (not in catalog — forwarder-routed)
+    # Gate on credentials presence; silently skip when absent.
+    xai_provider = PROVIDERS.get("xai-oauth")
+    if xai_provider is not None and xai_provider.key_env == "_OAUTH_MANAGED":
+        if _XAI_CREDENTIALS_PATH.exists():
+            for model_name in _XAI_OAUTH_MODELS:
+                model_list.append(
+                    {
+                        "model_name": model_name,
+                        "litellm_params": {
+                            "model": f"openai/{model_name}",
+                            "api_base": xai_provider.api_base,
+                            "api_key": "dummy",  # LiteLLM requires non-empty; forwarder ignores
+                        },
+                    }
+                )
 
     return model_list
 
@@ -248,6 +269,19 @@ def write_block(block: str, path: Path = LITELLM_CONFIG) -> None:
         new_content = before + block + after
 
     path.write_text(new_content)
+
+
+def emit_xai_oauth_warning_if_absent(err_console: Any) -> None:
+    """Print a stderr warning when xAI credentials are absent.
+
+    Called from cli/proxy.py:register_proxy after the LiteLLM config write.
+    No-op when credentials exist.
+    """
+    if not _XAI_CREDENTIALS_PATH.exists():
+        err_console.print(
+            "[yellow]WARNING:[/yellow] xAI credentials not found — "
+            "run `llmcli xai login` to enable Grok models"
+        )
 
 
 def reload_proxy() -> None:

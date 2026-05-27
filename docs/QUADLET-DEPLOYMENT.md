@@ -176,6 +176,156 @@ systemctl --user restart llmcli-nats-worker
 
 ---
 
+## xAI OAuth setup
+
+> **M₁ (roxabituwer / lyra-hub host) only.** The xAI forwarder Quadlet runs on M₁.
+> These steps must be performed on that host, not inside a container.
+
+The `llmcli-xai-forwarder` Quadlet forwards requests from the LiteLLM proxy (`:18091`) to
+`api.x.ai/v1`, replacing the incoming bearer token with a real SuperGrok OAuth token on
+every request. Credentials live at `~/.roxabi/llmcli/credentials/xai.json` (mode 0600).
+
+### One-time login
+
+Run the PKCE OAuth flow from the M₁ host shell:
+
+```bash
+llmcli xai login
+```
+
+What happens:
+
+1. The CLI generates a PKCE verifier/challenge and opens a browser to
+   `https://auth.x.ai/oauth/authorize?...&plan=generic` (the `plan=generic`
+   parameter is load-bearing — xAI rejects loopback OAuth without it).
+2. A loopback HTTP listener starts on `127.0.0.1:56121` waiting for the callback
+   (120 s timeout).
+3. You log in with your SuperGrok account and grant consent.
+4. The browser redirects to `http://127.0.0.1:56121/callback?code=…`; the CLI
+   exchanges the authorization code for tokens and writes them to
+   `~/.roxabi/llmcli/credentials/xai.json` (mode 0600, dir mode 0700).
+
+Expected output:
+
+```
+✓ Logged in. expires_at=<unix int>
+```
+
+**If the browser does not open (headless server / SSH session):**
+The CLI prints the full authorize URL to stdout. Open that URL on any browser-capable
+device. The callback redirect targets `127.0.0.1:56121`, so you need an SSH port
+forward so the callback reaches M₁:
+
+```bash
+ssh -L 56121:127.0.0.1:56121 roxabituwer
+# then run llmcli xai login in that SSH session
+```
+
+---
+
+### Status checks
+
+Run these three checks after login to confirm end-to-end wiring:
+
+**1. CLI credential status:**
+
+```bash
+llmcli xai status
+```
+
+Expected (note: no token material ever appears):
+
+```json
+{"logged_in": true, "expires_at": 1748454131, "scope": "openid profile email offline_access grok-cli:access api:access"}
+```
+
+If `logged_in: false`, re-run `llmcli xai login`.
+
+**2. Forwarder service health:**
+
+```bash
+systemctl --user status llmcli-xai-forwarder
+```
+
+Expected: `Active: active (running)` with `Health: healthy`.
+
+**3. Health endpoint from inside the `llmcli` proxy container** (verifies network reachability on `roxabi.network`):
+
+```bash
+podman exec llmcli curl -f http://llmcli-xai-forwarder:18645/health
+```
+
+Expected:
+
+```json
+{"status": "ok", "logged_in": true, "expires_at": 1748454131}
+```
+
+---
+
+### Refresh expiry behavior
+
+**`access_token` (short-lived, ~1 h):**
+The forwarder refreshes lazily — no background timer. When `api.x.ai` returns
+HTTP 401, the forwarder acquires a module-level `asyncio.Lock`, POSTs to
+`auth.x.ai/oauth/token` with the `refresh_token`, persists the new
+`access_token` to `xai.json`, and retries the original request once. Callers
+experience at most one extra round-trip; no manual intervention required.
+
+**Concurrent requests with an expired token:**
+Exactly one refresh POST is in-flight at any time (protected by the asyncio
+Lock). Additional concurrent handlers that enter the lock after a refresh is
+complete re-read the already-fresh credentials from disk and skip their own
+refresh POST.
+
+**`refresh_token` (long-lived, ~30 d while actively used):**
+If the forwarder is offline for ~30 days continuously the refresh token expires.
+The next forwarded request fails with HTTP 401 and header `X-Llmcli-Reauth: required`.
+Operator action: re-run `llmcli xai login`.
+
+To check logs for the reauth signal:
+
+```bash
+journalctl --user -u llmcli-xai-forwarder --since today | grep X-Llmcli-Reauth
+```
+
+---
+
+### Logout / secret rotation
+
+**Logout:**
+
+```bash
+llmcli xai logout
+```
+
+This deletes `~/.roxabi/llmcli/credentials/xai.json` (silent no-op if already absent).
+
+**Restart the forwarder** so it picks up the absent file immediately:
+
+```bash
+systemctl --user restart llmcli-xai-forwarder
+```
+
+After restart the health endpoint reports:
+
+```json
+{"status": "ok", "logged_in": false, "expires_at": null}
+```
+
+LiteLLM will also stop advertising Grok models (re-run `llmcli register-proxy` to
+refresh the managed block in `~/.litellm/config.yaml`).
+
+**New login:**
+
+```bash
+llmcli xai login
+```
+
+The forwarder picks up the new `xai.json` on the next request — no restart needed.
+
+---
+
 ## 4. Diagnostics
 
 ### Unit enters `failed` immediately (no retries)
@@ -246,8 +396,10 @@ podman exec llmcli llmcli proxy --config-out /dev/stdout
 |---|---|
 | `deploy/quadlet/llmcli.container` | Proxy Quadlet unit |
 | `deploy/quadlet/llmcli-nats-worker.container` | Worker Quadlet unit |
+| `deploy/quadlet/llmcli-xai-forwarder.container` | xAI OAuth forwarder Quadlet unit (M₁ only) |
 | `deploy/quadlet.toml` | Manifest (components, host_roles, secrets) |
 | `deploy/install.sh` | Idempotent install script |
 | `~/.roxabi/llmcli/env/proxy.env` | Proxy env file (API keys) |
 | `~/.roxabi/llmcli/env/worker.env` | Worker env file (NATS URL) |
 | `~/.roxabi/llmcli/llmcli.toml` | LLM catalog (model list, host settings) |
+| `~/.roxabi/llmcli/credentials/xai.json` | xAI OAuth credentials (mode 0600, written by `llmcli xai login`) |

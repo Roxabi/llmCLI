@@ -19,7 +19,9 @@ from pydantic import ValidationError
 from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
 from roxabi_contracts.errors import WorkerError
 
+from llmcli.auth.store import XAI_CREDENTIALS_PATH
 from llmcli.config import check_vram_budget, load as load_catalog
+from llmcli.support.litellm_config import _XAI_OAUTH_MODELS
 
 log = logging.getLogger(__name__)
 
@@ -247,6 +249,14 @@ class LifecycleMixin:
             }
             for name, spec in catalog.models.items()
         ]
+        if XAI_CREDENTIALS_PATH.exists():
+            for model_name in _XAI_OAUTH_MODELS:
+                models.append({
+                    "name": model_name,
+                    "running": False,  # forwarder liveness checked via /health, not surfaced here
+                    "engine": "oauth-forwarder",
+                    "vram_gib": 0,
+                })
         await self._reply_ok(msg, req, data={"models": models})
 
     async def _do_stop(self, msg, req: LifecycleRequest) -> None:

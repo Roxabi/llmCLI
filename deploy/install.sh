@@ -88,6 +88,8 @@ echo "--- Directories ---"
 run mkdir -p "$QUADLET_DIR"
 run mkdir -p "$ENV_DIR"
 run mkdir -p "${HOME}/.cache/huggingface"
+run mkdir -p "${DATA_DIR}/credentials"
+run chmod 700 "${DATA_DIR}/credentials"
 echo "  dirs ok"
 
 # --- Networks ---
@@ -120,7 +122,7 @@ fi
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
-for unit in llmcli.container llmcli-nats-worker.container; do
+for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container; do
   src="${SCRIPT_DIR}/quadlet/${unit}"
   dst="${QUADLET_DIR}/${unit}"
   if [ ! -f "$src" ]; then
@@ -191,3 +193,5 @@ echo "  1. Edit ${PROXY_ENV} (fill in API keys)"
 echo "  2. Edit ${WORKER_ENV} (set LLMCLI_NATS_URL — llm-worker hosts only)"
 echo "  3. systemctl --user start llmcli               # proxy (all hosts)"
 echo "  4. systemctl --user start llmcli-nats-worker   # worker (llm-worker hosts only)"
+echo "  5. llmcli xai login                              # xAI OAuth credentials (lyra-hub / M₁ only)"
+echo "  6. systemctl --user start llmcli-xai-forwarder   # xAI OAuth forwarder (lyra-hub / M₁ only)"

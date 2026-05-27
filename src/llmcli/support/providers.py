@@ -19,4 +19,5 @@ PROVIDERS: dict[str, Provider] = {
     "anthropic": Provider("https://api.anthropic.com", "ANTHROPIC_API_KEY"),
     "openai": Provider("https://api.openai.com/v1", "OPENAI_API_KEY"),
     "nvidia-nim": Provider("https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY"),
+    "xai-oauth": Provider("http://llmcli-xai-forwarder:18645/v1", "_OAUTH_MANAGED"),
 }

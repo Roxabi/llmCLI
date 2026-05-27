@@ -1,0 +1,30 @@
+[Unit]
+Description=llmCLI xAI OAuth forwarder (:18645)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Container]
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli-xai-forwarder
+# No PublishPort — internal to roxabi.network only (reachable as
+# http://llmcli-xai-forwarder:18645 from other containers on roxabi.network)
+Network=roxabi.network
+Volume=%h/.roxabi/llmcli/credentials:/home/llmcli/.roxabi/llmcli/credentials:rw,Z
+Environment=LLMCLI_FORWARDER_PROVIDER=xai
+Environment=LLMCLI_FORWARDER_PORT=18645
+UserNS=keep-id:uid=1502,gid=1502
+Exec=python -m llmcli.proxy_forwarder._server
+HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://localhost:18645/health', timeout=5)"
+HealthInterval=30s
+HealthStartPeriod=15s
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20s
+
+[Install]
+WantedBy=default.target

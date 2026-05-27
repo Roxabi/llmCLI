@@ -16,3 +16,10 @@ host_roles = ["llm-worker"]
 # M₁ ¬llm-worker (VRAM voiceCLI). M₂ small test pour éviter pression VRAM 16 GB.
 # Override = informational pour l'instant — .container hardcode --model qwen3-4b.
 host_overrides.roxabitower = { model = "qwen3-4b" }
+
+[component.xai-forwarder]
+container = "llmcli-xai-forwarder.container"
+required_secrets = []
+# credentials via bind-mount (rw) — not Podman secrets
+host_roles = ["lyra-hub"]
+# M₁ only — 24/7 cloud relay. xAI OAuth credentials at ~/.roxabi/llmcli/credentials/
