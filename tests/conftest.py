@@ -27,6 +27,19 @@ def _stub_free_vram_probe():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_xai_credentials_path(tmp_path_factory):
+    # OAuth model injection (litellm_config.build_model_list) is gated on
+    # XAI_CREDENTIALS_PATH.exists(). Point it at a tmp path so tests are
+    # deterministic regardless of whether `llmcli xai login` was run on the
+    # host running pytest. Tests that exercise the OAuth path can re-patch.
+    from pathlib import Path
+    fake = tmp_path_factory.mktemp("no-xai-creds") / "xai.json"
+    with patch("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", Path(fake)), \
+         patch("llmcli.nats._lifecycle.XAI_CREDENTIALS_PATH", Path(fake)):
+        yield
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",

@@ -144,7 +144,10 @@ def build_model_list(
                     {
                         "model_name": model_name,
                         "litellm_params": {
-                            "model": f"openai/{model_name}",
+                            # `responses/` prefix triggers LiteLLM's Chat→Responses bridge
+                            # (litellm/main.py:responses_api_bridge_check). Grok-CLI OAuth
+                            # tokens are accepted only at /v1/responses, not /v1/chat/completions.
+                            "model": f"openai/responses/{model_name}",
                             "api_base": xai_provider.api_base,
                             "api_key": "dummy",  # LiteLLM requires non-empty; forwarder ignores
                         },
