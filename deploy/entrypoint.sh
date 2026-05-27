@@ -11,6 +11,9 @@ case "$MODE" in
     proxy)
         exec llmcli proxy "$@"
         ;;
+    forwarder)
+        exec python -m llmcli.proxy_forwarder._server "$@"
+        ;;
     *)
         echo "Unknown mode: $MODE" >&2
         exit 1
