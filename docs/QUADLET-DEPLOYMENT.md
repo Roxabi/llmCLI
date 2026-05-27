@@ -196,7 +196,7 @@ llmcli xai login
 What happens:
 
 1. The CLI generates a PKCE verifier/challenge and opens a browser to
-   `https://auth.x.ai/oauth/authorize?...&plan=generic` (the `plan=generic`
+   `https://auth.x.ai/oauth2/authorize?...&plan=generic` (the `plan=generic`
    parameter is load-bearing — xAI rejects loopback OAuth without it).
 2. A loopback HTTP listener starts on `127.0.0.1:56121` waiting for the callback
    (120 s timeout).
@@ -268,7 +268,7 @@ Expected:
 **`access_token` (short-lived, ~1 h):**
 The forwarder refreshes lazily — no background timer. When `api.x.ai` returns
 HTTP 401, the forwarder acquires a module-level `asyncio.Lock`, POSTs to
-`auth.x.ai/oauth/token` with the `refresh_token`, persists the new
+`auth.x.ai/oauth2/token` with the `refresh_token`, persists the new
 `access_token` to `xai.json`, and retries the original request once. Callers
 experience at most one extra round-trip; no manual intervention required.
 

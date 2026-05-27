@@ -32,8 +32,8 @@ XAI_OAUTH_REDIRECT_PATH = "/callback"
 XAI_OAUTH_PLAN = "generic"  # load-bearing — DO NOT remove
 
 _XAI_REDIRECT_HOST = "127.0.0.1"
-_XAI_TOKEN_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth/token"
-_XAI_AUTHORIZE_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth/authorize"
+_XAI_TOKEN_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth2/token"
+_XAI_AUTHORIZE_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth2/authorize"
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ def _loopback_server(timeout: float = 120.0) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def exchange_code(code: str, verifier: str) -> XaiCredentials:
-    """Exchange an authorization code for tokens via POST to auth.x.ai/oauth/token.
+    """Exchange an authorization code for tokens via POST to auth.x.ai/oauth2/token.
 
     Also sends code_challenge + code_challenge_method as defense-in-depth
     (xAI validates challenge at token step, not only at authorize step).
@@ -255,7 +255,7 @@ def login_flow() -> XaiCredentials:
 
     1. Generate PKCE verifier + challenge
     2. Spawn loopback listener on :56121
-    3. Open browser at auth.x.ai/oauth/authorize?plan=generic&...
+    3. Open browser at auth.x.ai/oauth2/authorize?plan=generic&...
     4. Wait for /callback?code=...&state=...
     5. Verify state, exchange code for tokens
     6. Persist credentials to XAI_CREDENTIALS_PATH (0600)

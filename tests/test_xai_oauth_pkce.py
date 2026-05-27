@@ -48,7 +48,7 @@ def _make_fake_creds(
 
 
 def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """exchange_code POSTs to auth.x.ai/oauth/token with correct body; returns XaiCredentials."""
+    """exchange_code POSTs to auth.x.ai/oauth2/token with correct body; returns XaiCredentials."""
     # Arrange
     fake_response_json = {
         "access_token": "ATK",
@@ -77,8 +77,8 @@ def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         result = exchange_code(code="test_code", verifier=fake_verifier)
         after = int(time.time())
 
-    # Assert — POST was made to auth.x.ai/oauth/token
-    assert captured_kwargs["url"] == "https://auth.x.ai/oauth/token"
+    # Assert — POST was made to auth.x.ai/oauth2/token
+    assert captured_kwargs["url"] == "https://auth.x.ai/oauth2/token"
 
     # Assert — request body contains required fields (httpx uses data= as dict)
     body = captured_kwargs.get("data") or {}
