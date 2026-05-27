@@ -88,6 +88,10 @@ echo "--- Directories ---"
 run mkdir -p "$QUADLET_DIR"
 run mkdir -p "$ENV_DIR"
 run mkdir -p "${HOME}/.cache/huggingface"
+run mkdir -p "${DATA_DIR}/credentials"
+if ! "$DRY_RUN"; then
+  chmod 700 "${DATA_DIR}/credentials"
+fi
 echo "  dirs ok"
 
 # --- Networks ---
@@ -120,7 +124,7 @@ fi
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
-for unit in llmcli.container llmcli-nats-worker.container; do
+for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container; do
   src="${SCRIPT_DIR}/quadlet/${unit}"
   dst="${QUADLET_DIR}/${unit}"
   if [ ! -f "$src" ]; then
