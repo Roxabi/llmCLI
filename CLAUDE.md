@@ -59,143 +59,23 @@ deploy/
 Makefile                  — install, install-quadlet, lint, test
 ```
 
-## CLI Commands
+→ [docs/cli.md](docs/cli.md) for full CLI reference.
+→ [docs/consumers.md](docs/consumers.md) for consumer integration details.
+→ [docs/QUADLET-DEPLOYMENT.md](docs/QUADLET-DEPLOYMENT.md) for container deployment.
 
-```bash
-llmcli list [--host <hostname>]          # catalog + running state + VRAM (local or remote host)
-llmcli pull <name>                       # hf download into HF hub cache
-llmcli serve [name]                      # removed — use: systemctl --user start llmcli-nats-worker
-llmcli swap <name> [--host <hostname>]   # hot-swap running model (via NATS)
-llmcli stop [--host <hostname>]          # stop running engine (via NATS)
-llmcli status [--host <hostname>]        # engines, ports, VRAM, uptime (local or remote via NATS)
-llmcli reload-catalog [--host <hostname>] # reload llmcli.toml catalog on worker (local or remote via NATS)
-llmcli chat <name> "..."                 # one-shot OpenAI call (bypasses proxy)
-llmcli register-proxy                    # refresh llmCLI block in ~/.litellm/config.yaml
-```
-
-The 5 lifecycle commands (`swap`, `stop`, `status`, `list`, `reload-catalog`) accept `--host <hostname>` to target a remote GPU host. Omitting `--host` defaults to the local hostname.
-
-## Container Deployment
-
-Quadlet (Podman + systemd `--user`) is the production deployment model. Two services:
-
-| Service | Unit | Host role | Port |
-|---|---|---|---|
-| LiteLLM proxy | `llmcli.container` | any | 18091 |
-| NATS worker | `llmcli-nats-worker.container` | `llm-worker` | — (host network) |
-
-```bash
-./deploy/install.sh              # one-time: install units + create env stubs
-$EDITOR ~/.roxabi/llmcli/env/proxy.env   # fill in API keys
-systemctl --user start llmcli            # start proxy
-systemctl --user start llmcli-nats-worker  # start worker (llm-worker hosts only)
-systemctl --user status llmcli           # status
-journalctl --user -u llmcli -f          # logs
-```
-
-See `docs/QUADLET-DEPLOYMENT.md` for the full runbook (secret rotation, diagnostics, drop-ins).
-
-## Consumers
-
-### lyra
-
-```python
-ModelConfig(
-    backend="litellm",
-    model="openai/qwen3.6-35b-a3b-tq3",
-    base_url="http://roxabitower.lan:8091/v1",
-    api_key=os.environ["LLMCLI_API_KEY"],
-)
-```
-
-Per-agent routing via `ModelConfig.base_url`. LiteLLM's native fallback list handles graceful degrade when local is off.
-
-### claude-code (ccl / ccp aliases)
-
-`~/.claude/settings.json.local` points `ANTHROPIC_BASE_URL` at the LiteLLM proxy (`:18091`), which forwards OpenAI-format requests to `llama-server`. Aliases `ccl` / `ccp` / `cccl` / `cccp` select local vs prod and normal vs fast model.
-
-## LiteLLM Proxy Integration (Option A — sibling service)
+## LiteLLM Proxy Integration
 
 llmCLI does **not** own the proxy. `llmcli register-proxy` emits/maintains a namespaced `# --- llmCLI managed block start/end ---` section in `~/.litellm/config.yaml` and calls `make litellm reload`. Never touches other entries (e.g. Fireworks pass-through).
 
-## TL;DR
+## Key Invariants
 
-- **Project:** llmCLI
-- **Before work:** Use `/dev #N` as the single entry point — it determines tier (S / F-lite / F-full) and drives the full lifecycle
-- **All code changes** → worktree: `git worktree add ../llmCLI-XXX -b feat/XXX-slug staging`
-- **Never** use `--force`/`--hard`/`--amend`
-- **Always** use appropriate skill even without slash command
-- **Before code:** Read relevant standards doc (see Coding Standards section below)
-- **Orchestrator** delegates to agents — only minor fixes directly
-
-### 1. Dev Process
-
-**Entry point: `/dev #N`** — single command that scans artifacts, shows progress, and delegates to the right phase skill.
-
-| Tier | Criteria | Phases |
-|------|----------|--------|
-| **S** | ≤3 files, no arch, no risk | triage → implement → pr → validate → review → fix* → cleanup* |
-| **F-lite** | Clear scope, single domain | Frame → spec → plan → implement → verify → ship |
-| **F-full** | New arch, unclear reqs, >2 domains | Frame → analyze → spec → plan → implement → verify → ship |
-
-`*` = conditional (runs only if applicable)
-
-Phases: **Frame** (problem) → **Shape** (spec) → **Build** (code) → **Verify** (review) → **Ship** (release).
-
-### 2. Orchestrator Delegation
-
-Orchestrator does not modify code/docs directly. Delegate: FE→`frontend-dev` | BE→`backend-dev` | Infra→`devops` | Docs→`doc-writer` | Tests→`tester` | Fixes→`fixer`. Exception: typo/single-line. Deploy→`devops` only.
-
-### 3. Parallel Execution
-
-≥3 complex tasks → propose Sequential | Parallel (Recommended).
-F-full + ≥4 independent tasks in 1 domain → multiple same-type agents on separate file groups.
-
-### 4. Git
-
-Format: `<type>(<scope>): <desc>`
-Types: feat|fix|refactor|docs|style|test|chore|ci|perf
-Never push without request. Never force/hard/amend. Hook fail → fix + NEW commit.
-
-### 5. Artifact Model
-
-Artifacts are the state markers `/dev` uses for progress detection and resumption.
-
-| Type | Directory | Question answered |
-|------|-----------|-------------------|
-| **Frame** | `artifacts/frames/` | What's the problem? |
-| **Analysis** | `artifacts/analyses/` | How deep is it? |
-| **Spec** | `artifacts/specs/` | What will we build? |
-| **Plan** | `artifacts/plans/` | How do we build it? |
-
-### 6. Mandatory Worktree
-
-```bash
-git worktree add ../llmCLI-XXX -b feat/XXX-slug staging
-cd ../llmCLI-XXX && cp .env.example .env && uv sync
-```
-
-Exceptions: XS (confirm first) | `/dev` pre-implementation artifacts (frame, analysis, spec, plan) | `/promote` release artifacts.
-**Never code on main/staging without worktree.**
-
-### 7. Code Review
-
-MUST read [code-review](docs/standards/code-review.md). Conventional Comments. Block only: security, correctness, standard violations.
-
-### 8. Coding Standards
-
-| Context | Read |
-|---------|------|
-| API / Backend | [backend-patterns](docs/standards/backend-patterns.md) |
-| Tests | [testing](docs/standards/testing.md) |
-
-## Skills & Agents
-
-Skills: always use appropriate skill. Workflow skills → `dev-core` plugin.
-Agents: Sonnet = all agents (frontend-dev, backend-dev, devops, doc-writer, fixer, tester, architect, product-lead, security-auditor).
-
-**Shared agent rules:** Never force/hard/amend | Stage specific files only | Escalate blockers → lead | Message lead on completion.
+- M₁ is always on — never assume local inference is available there.
+- M₂ is on-demand — local inference can disappear at any time.
+- New engine = +1 file composing `engines/_common.py` — never re-implement stage logic.
+- `llmcli register-proxy` only touches the `# --- llmCLI managed block` in `~/.litellm/config.yaml`.
 
 ## Gotchas
 
-<!-- Add project-specific gotchas here -->
+- `llmcli serve` is removed — use `systemctl --user start llmcli-nats-worker` instead.
+- `vllm` engine requires `uv sync --group vllm` and is dev-only (M₂).
+- TQ3_4S models require the `llamacpp_tq3` engine (TurboQuant fork), not vanilla llama.cpp.
