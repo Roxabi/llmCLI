@@ -68,6 +68,7 @@ def merge_proxy_config(
     result = copy.deepcopy(base)  # B3 — deep copy to prevent mutation of caller's base
     gs = result.setdefault("general_settings", {})
     gs.setdefault("master_key", f"os.environ/{api_key_env}")
+    gs.setdefault("custom_auth", "proxy_custom_auth.custom_auth")
     ls = result.setdefault("litellm_settings", {})
     ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
     result["model_list"] = model_list

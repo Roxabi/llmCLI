@@ -75,6 +75,15 @@ def register_proxy(
     # 5a. Warn if xAI credentials are absent (discoverability hint)
     emit_xai_oauth_warning_if_absent(err_console)
 
+    # 5b. Write custom auth module so LiteLLM can resolve it
+    _write_custom_auth_module(resolved_path.parent)
+    # 5c. Warn if custom_auth is not yet in the persistent config
+    if resolved_path.exists() and "custom_auth" not in resolved_path.read_text():
+        err_console.print(
+            "[yellow]Note: add `custom_auth: proxy_custom_auth.custom_auth` to "
+            "general_settings in your config to fix the 'No connected db' error.[/yellow]"
+        )
+
     # 6. Reload proxy — warn on failure, don't fail the command
     try:
         _cli.reload_proxy()
@@ -183,6 +192,9 @@ def proxy(
     with os.fdopen(fd, "w") as f:
         f.write(yaml_text)
     target.chmod(0o600)  # defense-in-depth: enforce exact mode regardless of process umask
+
+    # 5b. Write custom auth module so LiteLLM can resolve it
+    _write_custom_auth_module(target.parent)
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
@@ -304,3 +316,15 @@ def _install_signal_handlers(child: subprocess.Popen, drain_timeout: float = 10.
 
     signal.signal(signal.SIGTERM, handler)
     signal.signal(signal.SIGINT, handler)
+
+
+def _write_custom_auth_module(target_dir: Path) -> None:
+    """Copy the LiteLLM custom auth module to the config directory.
+
+    LiteLLM's get_instance_fn resolves custom_auth modules relative to the
+    config file path. Writing proxy_custom_auth.py next to the config ensures
+    it is importable regardless of which venv runs litellm.
+    """
+    auth_module_src = Path(__file__).parent.parent / "proxy_custom_auth.py"
+    if auth_module_src.exists():
+        shutil.copy2(auth_module_src, target_dir / "proxy_custom_auth.py")
