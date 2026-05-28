@@ -12,6 +12,12 @@
 general_settings:
   master_key: os.environ/LLMCLI_API_KEY
 
+  # Custom auth intercept: replaces LiteLLM's default DB key lookup with a
+  # master_key-only check. Fixes the misleading 400 "No connected db" error
+  # that LiteLLM returns for invalid keys when no database is configured.
+  # `llmcli proxy` auto-wires this; add it manually for `register-proxy` setups.
+  custom_auth: proxy_custom_auth.custom_auth
+
   # Fireworks /v1/messages → forward as-is to Fireworks Anthropic-compatible
   # endpoint. Used by Claude Code aliases (ccfg/ccfk) that speak Anthropic
   # protocol and route to Fireworks via this proxy.
