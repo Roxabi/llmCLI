@@ -139,7 +139,7 @@ The skill (`/xai-research`) lets Claude invoke `xai_research.py` directly from c
 
 ### Project-local (llmCLI only)
 
-Already included at `.claude/skills/xai-research/SKILL.md` — available automatically when working in this repo.
+Already included at `.claude/skills/xai-research/` — available automatically when working in this repo.
 
 ```
 /xai-research Claude Code harness
@@ -147,16 +147,17 @@ Already included at `.claude/skills/xai-research/SKILL.md` — available automat
 /xai-research --all MCP protocol
 ```
 
-### Global (any project)
-
-Copy the SKILL.md to your global skills directory:
+### Global via claude plugin (any project)
 
 ```bash
-mkdir -p ~/.claude/skills/xai-research
-cp .claude/skills/xai-research/SKILL.md ~/.claude/skills/xai-research/SKILL.md
+# Session only (no permanent install)
+claude --plugin-dir .claude/skills/xai-research
+
+# Permanent install from local directory
+claude plugin install .claude/skills/xai-research
 ```
 
-The skill will appear in `/skills` from any project. Requires the xAI forwarder to be running (see Prerequisites above).
+Once installed, `/xai-research` is available from any project. Requires the xAI forwarder to be running (see Prerequisites above).
 
 ---
 
