@@ -4,9 +4,9 @@ Utility scripts in `tools/`. Run with `uv run tools/<script>.py`.
 
 ## xai_research.py — xAI Grok research
 
-Query Grok via the llmCLI xAI forwarder (`:18645`) or direct `api.x.ai`. → [Full setup guide](../.claude/skills/xai-research/README.md)
+Query Grok via the llmCLI xAI forwarder (`:18645`) or direct `api.x.ai`. → [Full setup guide](../plugins/xai-research/README.md)
 
-> Script: `.claude/skills/xai-research/xai_research.py` (symlinked as `tools/xai_research.py`)
+> Script: `plugins/xai-research/skills/xai-research/xai_research.py` (symlinked as `tools/xai_research.py`)
 
 ```bash
 uv run tools/xai_research.py "Claude Code harness"           # plain chat

@@ -1,1 +1,1 @@
-../.claude/skills/xai-research/xai_research.py
+../plugins/xai-research/skills/xai-research/xai_research.py
