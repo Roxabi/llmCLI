@@ -1,8 +1,8 @@
-"""Provider-agnostic aiohttp forwarder server for llmCLI OAuth upstreams.
+"""Provider-agnostic aiohttp forwarder server for llmCLI upstreams.
 
 Listens on ``http://0.0.0.0:<port>`` and forwards allowed paths to the
-upstream defined by the injected OAuthAdapter. Authorization header is
-replaced with the real OAuth bearer on every request.
+upstream defined by the injected ForwardAdapter. Authorization header is
+replaced with adapter-supplied headers on every request.
 
 Supports SSE streaming on ``/v1/chat/completions`` via aiohttp StreamResponse.
 
@@ -22,15 +22,14 @@ import aiohttp
 from aiohttp import web
 from multidict import CIMultiDictProxy
 
-from llmcli.auth import store
 from llmcli.auth.store import CredentialsCorruptError
 
-from ._common import ALLOWED_PATHS, OAuthAdapter, lazy_retry_on_401
+from ._common import ALLOWED_PATHS, ForwardAdapter
 
 logger = logging.getLogger(__name__)
 
 # Headers that must not be forwarded verbatim — aiohttp recomputes
-# content-length; authorization is replaced with the real bearer token.
+# content-length; authorization is replaced by the adapter.
 _DROP_REQUEST_HEADERS: frozenset[str] = frozenset(
     {
         "host",
@@ -84,32 +83,16 @@ def _filter_response_headers(headers: CIMultiDictProxy[str]) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _health(adapter: OAuthAdapter):
+def _health(adapter: ForwardAdapter):
     """Return a GET /health handler bound to *adapter*."""
 
     async def handler(request: web.Request) -> web.Response:  # noqa: ARG001 — handler signature
-        try:
-            creds = store.load(adapter.credential_path)
-            return web.json_response(
-                {
-                    "status": "ok",
-                    "logged_in": creds is not None,
-                    "expires_at": creds.expires_at if creds else None,
-                }
-            )
-        except CredentialsCorruptError:
-            # Corrupt credentials file — operator must re-run `llmcli xai login`.
-            # Return 200 with logged_in:false so systemd HealthCmd still succeeds
-            # and the operator can observe the state via `llmcli xai status`.
-            return web.json_response(
-                {"status": "ok", "logged_in": False, "expires_at": None},
-                status=200,
-            )
+        return web.json_response(await adapter.health())
 
     return handler
 
 
-def _proxy(adapter: OAuthAdapter):
+def _proxy(adapter: ForwardAdapter):
     """Return a catch-all proxy handler bound to *adapter*."""
 
     async def handler(request: web.Request) -> web.StreamResponse | web.Response:
@@ -118,32 +101,20 @@ def _proxy(adapter: OAuthAdapter):
         if path not in ALLOWED_PATHS:
             return web.Response(status=404)
 
-        body = await request.read()
+        raw = await request.read()
+        body = adapter.transform_request(raw, path)
         fwd_headers = _filter_request_headers(request.headers)
+        fwd_headers.update(adapter.extra_headers())
+        upstream_url = f"{adapter.api_base.rstrip('/')}{path}"
+        if request.query_string:
+            upstream_url = f"{upstream_url}?{request.query_string}"
 
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=300)
         ) as session:
-
-            async def request_fn(token: str) -> aiohttp.ClientResponse:
-                upstream_url = f"{adapter.api_base.rstrip('/')}{path}"
-                if request.query_string:
-                    upstream_url = f"{upstream_url}?{request.query_string}"
-                headers = {**fwd_headers, "Authorization": f"Bearer {token}"}
-                return await session.request(
-                    request.method,
-                    upstream_url,
-                    data=body if body else None,
-                    headers=headers,
-                    allow_redirects=False,
-                )
-
             try:
-                upstream_resp = await lazy_retry_on_401(
-                    request_fn,
-                    adapter.refresh,
-                    lambda: store.load(adapter.credential_path),
-                    lambda c: store.save(c, adapter.credential_path),
+                upstream_resp = await adapter.execute(
+                    session, request.method, upstream_url, body, fwd_headers
                 )
             except CredentialsCorruptError:
                 return web.Response(
@@ -152,8 +123,9 @@ def _proxy(adapter: OAuthAdapter):
                     text="credentials corrupted — re-run llmcli xai login",
                 )
             except RuntimeError:
-                logger.warning("proxy: token refresh failed for %s — re-auth required", request.path)
-                # ¬log the exc — its message may contain response.text from auth.x.ai
+                logger.warning(
+                    "proxy: token refresh failed for %s — re-auth required", request.path
+                )
                 return web.Response(
                     status=401,
                     headers={"X-Llmcli-Reauth": "required"},
@@ -193,11 +165,11 @@ def _proxy(adapter: OAuthAdapter):
 # ---------------------------------------------------------------------------
 
 
-def create_app(adapter: OAuthAdapter) -> web.Application:
+def create_app(adapter: ForwardAdapter) -> web.Application:
     """Build the aiohttp Application for *adapter*.
 
     Routes:
-    - GET /health  → credential presence check (always 200).
+    - GET /health  → adapter health check (always 200).
     - *   /{path}  → proxy to upstream (404 if path not in ALLOWED_PATHS).
     """
     app = web.Application()
@@ -217,7 +189,7 @@ def main() -> None:
     Environment variables
     ---------------------
     LLMCLI_FORWARDER_PROVIDER : str, default "xai"
-        Which OAuth adapter to use. Currently only "xai" is supported.
+        Which adapter to use. Supported: 'xai', 'fireworks'.
     LLMCLI_FORWARDER_PORT : int, default 18645
         TCP port to bind on 0.0.0.0.
     """
@@ -229,11 +201,14 @@ def main() -> None:
     if provider == "xai":
         from .xai_adapter import XaiAdapter
 
-        adapter: OAuthAdapter = XaiAdapter()
+        adapter: ForwardAdapter = XaiAdapter()
+    elif provider == "fireworks":
+        from .fireworks_adapter import FireworksAdapter  # type: ignore[import-not-found]
+
+        adapter = FireworksAdapter()
     else:
         raise ValueError(
-            f"Unknown LLMCLI_FORWARDER_PROVIDER={provider!r}. "
-            "Supported: 'xai'."
+            f"Unknown LLMCLI_FORWARDER_PROVIDER={provider!r}. Supported: 'xai', 'fireworks'."
         )
 
     logger.info("llmcli-forwarder: provider=%s port=%d", provider, port)

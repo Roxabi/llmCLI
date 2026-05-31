@@ -21,13 +21,41 @@ general_settings:
   # Fireworks /v1/messages → forward as-is to Fireworks Anthropic-compatible
   # endpoint. Used by Claude Code aliases (ccfg/ccfk) that speak Anthropic
   # protocol and route to Fireworks via this proxy.
+  #
+  # --- fw-anthropic toggle: two mutually exclusive modes ---
+  #
+  # MODE OFF — direct upstream (default, active below):
+  #   target: "https://api.fireworks.ai/inference"
+  #   headers.Authorization MUST be present (client supplies the key via env).
+  #
+  # MODE ON — route through fw-forwarder (system-user relabel active):
+  #   target: "http://llmcli-fw-forwarder:18646"
+  #   headers block MUST be REMOVED — the forwarder injects FIREWORKS_API_KEY
+  #   server-side, so the client must NOT send an Authorization header here.
+  #   Container DNS `llmcli-fw-forwarder` resolves on roxabi.network.
+  #
+  # To flip ON:  set target to http://llmcli-fw-forwarder:18646, remove headers,
+  #              then `systemctl --user restart llmcli`.
+  #
+  # --- Revert sequence (order matters) ---
+  # Reverting from ON back to OFF (upstream):
+  #   1. Edit this file: restore target → https://api.fireworks.ai/inference
+  #                      and restore the headers.Authorization block below.
+  #   2. systemctl --user restart llmcli
+  #   3. systemctl --user stop llmcli-fw-forwarder
+  #   4. ONLY NOW drop MAX_THINKING_TOKENS=0 from the ccfk alias in
+  #      ~/.claude/dotfiles/bash_aliases — doing it before step 2 causes 403s.
   pass_through_endpoints:
     - path: "/fw-anthropic"
+      # MODE OFF (active): direct upstream — requires FIREWORKS_API_KEY in env.
       target: "https://api.fireworks.ai/inference"
+      # MODE ON (commented out): uncomment this target, remove headers block below.
+      # target: "http://llmcli-fw-forwarder:18646"
       include_subpath: true
       forward_headers: false
       headers:
         # secrets MUST use os.environ/FOO — literal values leak verbatim to the merged config on disk.
+        # NOTE: remove this entire headers block when MODE ON (forwarder injects the key itself).
         Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
 
 litellm_settings:

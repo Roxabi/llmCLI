@@ -122,7 +122,7 @@ fi
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
-for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container; do
+for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container llmcli-fw-forwarder.container; do
   src="${SCRIPT_DIR}/quadlet/${unit}"
   dst="${QUADLET_DIR}/${unit}"
   if [ ! -f "$src" ]; then
