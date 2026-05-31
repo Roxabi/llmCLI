@@ -1,7 +1,7 @@
 ---
 name: xai-research
 description: 'Research queries via xAI Grok — web search, X search, or plain chat. Triggers: "xai research" | "grok search" | "search xai" | "search x" | "search twitter" | "grok this" | "ask grok".'
-version: 0.2.0
+version: 0.1.0
 argument-hint: '<query> [--web|--X|--all]'
 allowed-tools: Bash
 ---
