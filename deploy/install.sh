@@ -122,7 +122,7 @@ fi
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
-for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container; do
+for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container llmcli-fw-forwarder.container; do
   src="${SCRIPT_DIR}/quadlet/${unit}"
   dst="${QUADLET_DIR}/${unit}"
   if [ ! -f "$src" ]; then
@@ -195,3 +195,4 @@ echo "  3. systemctl --user start llmcli               # proxy (all hosts)"
 echo "  4. systemctl --user start llmcli-nats-worker   # worker (llm-worker hosts only)"
 echo "  5. llmcli xai login                              # xAI OAuth credentials (lyra-hub / M₁ only)"
 echo "  6. systemctl --user start llmcli-xai-forwarder   # xAI OAuth forwarder (lyra-hub / M₁ only)"
+echo "  7. systemctl --user start llmcli-fw-forwarder    # Fireworks relabel forwarder — optional, MODE ON only (M₁/lyra-hub)"

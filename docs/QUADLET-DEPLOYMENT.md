@@ -5,12 +5,14 @@ description: Install, operate, and rotate secrets for llmCLI Quadlet services (p
 
 # llmCLI Quadlet Deployment Runbook
 
-Two Quadlet services ship with llmCLI:
+Four Quadlet units ship with llmCLI:
 
 | Service | Unit | Host role | Port |
 |---|---|---|---|
 | LiteLLM proxy | `llmcli.container` | any (all hosts) | 18091 |
 | NATS worker | `llmcli-nats-worker.container` | `llm-worker` only | — (host network) |
+| xAI OAuth forwarder | `llmcli-xai-forwarder.container` | M₁ (lyra-hub) only | 18645 (internal) |
+| Fireworks system-user relabel forwarder | `llmcli-fw-forwarder.container` | M₁ (lyra-hub) only | 18646 (internal) |
 
 ---
 
@@ -172,6 +174,83 @@ rm /tmp/llm-worker.seed
 
 # 3. Restart worker
 systemctl --user restart llmcli-nats-worker
+```
+
+---
+
+## Fireworks forwarder (`llmcli-fw-forwarder`)
+
+> **M₁ (roxabituwer / lyra-hub host) only.** The Fireworks forwarder Quadlet runs on M₁.
+
+The `llmcli-fw-forwarder` Quadlet relabels `role:"system"` messages to `role:"user"` inline
+before forwarding requests to the Fireworks native Anthropic-compatible endpoint. This is
+required for native Fireworks thinking + streaming traffic from Claude Code: the Fireworks
+`/v1/messages` route rejects `system` role entries when `thinking` is active, so any
+unrelabeled request errors with HTTP 400.
+
+The forwarder is **keyless from the client side** — it injects `FIREWORKS_API_KEY` from
+`~/.roxabi/llmcli/env/proxy.env` server-side. No `Authorization` header reaches the upstream
+from the proxy when this mode is active.
+
+### Network topology
+
+The unit has **no `PublishPort`** — it is internal to `roxabi.network` only. The LiteLLM
+proxy container (`llmcli`) reaches it as `http://llmcli-fw-forwarder:18646` via container
+DNS. It is never directly reachable from the host or external network.
+
+### Enable / disable
+
+The `/fw-anthropic` pass-through in `proxy-base.yaml` has two mutually exclusive modes
+controlled by the `target` field. See `deploy/proxy-base.yaml.example` for the full toggle
+comment and revert sequence.
+
+**Enable (MODE ON — route through forwarder):**
+
+```bash
+# 1. Edit ~/.roxabi/llmcli/proxy-base.yaml:
+#    - set target: "http://llmcli-fw-forwarder:18646"
+#    - remove the headers.Authorization block (forwarder injects the key)
+# 2. Start the forwarder
+systemctl --user start llmcli-fw-forwarder
+# 3. Restart the proxy so it picks up the new target
+systemctl --user restart llmcli
+```
+
+**Revert (MODE OFF — direct upstream):**
+
+The revert order matters — see the `proxy-base.yaml.example` revert sequence:
+
+```bash
+# 1. Edit proxy-base.yaml: restore target → https://api.fireworks.ai/inference
+#                           and restore the headers.Authorization block.
+# 2. Restart the proxy FIRST (before touching any client aliases)
+systemctl --user restart llmcli
+# 3. Then stop the forwarder
+systemctl --user stop llmcli-fw-forwarder
+# 4. ONLY NOW drop MAX_THINKING_TOKENS=0 from the ccfk alias in
+#    ~/.claude/dotfiles/bash_aliases (doing it before step 2 causes 403s)
+```
+
+### Status checks
+
+**1. Forwarder service health:**
+
+```bash
+systemctl --user status llmcli-fw-forwarder
+```
+
+Expected: `Active: active (running)` with `Health: healthy`.
+
+**2. Health endpoint from inside the `llmcli` proxy container** (verifies network reachability on `roxabi.network`):
+
+```bash
+podman exec llmcli curl -f http://llmcli-fw-forwarder:18646/health
+```
+
+Expected:
+
+```json
+{"status": "ok"}
 ```
 
 ---
@@ -397,6 +476,7 @@ podman exec llmcli llmcli proxy --config-out /dev/stdout
 | `deploy/quadlet/llmcli.container` | Proxy Quadlet unit |
 | `deploy/quadlet/llmcli-nats-worker.container` | Worker Quadlet unit |
 | `deploy/quadlet/llmcli-xai-forwarder.container` | xAI OAuth forwarder Quadlet unit (M₁ only) |
+| `deploy/quadlet/llmcli-fw-forwarder.container` | Fireworks system-user relabel forwarder Quadlet unit (M₁ only) |
 | `deploy/quadlet.toml` | Manifest (components, host_roles, secrets) |
 | `deploy/install.sh` | Idempotent install script |
 | `~/.roxabi/llmcli/env/proxy.env` | Proxy env file (API keys) |
