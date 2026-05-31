@@ -80,7 +80,10 @@ class ForwardAdapter(Protocol):
         ...
 
     def extra_headers(self) -> dict[str, str]:
-        """Return provider-injected request headers."""
+        """Return STATIC per-provider request headers (e.g. ``anthropic-version``, ``User-Agent``).
+
+        MUST NOT include ``Authorization`` — auth is injected inside ``execute()``.
+        """
         ...
 
     async def execute(
@@ -90,10 +93,11 @@ class ForwardAdapter(Protocol):
         url: str,
         body: bytes,
         headers: dict[str, str],
-    ) -> aiohttp.ClientResponse:
-        """Perform the upstream request (adapter injects Authorization).
+    ) -> aiohttp.ClientResponse | _Resp401:
+        """Perform the upstream request (adapter injects Authorization inside execute).
 
         May return a ``_Resp401`` stand-in when credentials are absent.
+        Authorization MUST be injected here, not in extra_headers.
         """
         ...
 
@@ -192,3 +196,8 @@ class _Resp401:
     """Minimal response stand-in for the no-credentials-found case."""
 
     status: int = 401
+    headers: dict = {}
+
+    async def release(self) -> None:
+        """No-op — no underlying connection to release."""
+        return

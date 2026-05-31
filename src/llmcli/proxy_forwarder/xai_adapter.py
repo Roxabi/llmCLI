@@ -17,7 +17,7 @@ from llmcli.auth import store
 from llmcli.auth.store import CredentialsCorruptError, XAI_CREDENTIALS_PATH, XaiCredentials
 from llmcli.auth.xai_oauth import refresh_credentials
 
-from ._common import lazy_retry_on_401
+from ._common import _Resp401, lazy_retry_on_401
 
 
 class XaiAdapter:
@@ -41,7 +41,10 @@ class XaiAdapter:
         return body
 
     def extra_headers(self) -> dict[str, str]:
-        """Return no extra headers — Authorization is injected in execute."""
+        """Return STATIC per-provider headers — xAI requires none at this level.
+
+        MUST NOT include ``Authorization`` — auth is injected inside ``execute()``.
+        """
         return {}
 
     async def execute(
@@ -51,7 +54,7 @@ class XaiAdapter:
         url: str,
         body: bytes,
         headers: dict[str, str],
-    ) -> aiohttp.ClientResponse:
+    ) -> aiohttp.ClientResponse | _Resp401:
         """Perform the upstream request with OAuth single-flight retry on 401.
 
         Authorization header is injected per-call from the current token.

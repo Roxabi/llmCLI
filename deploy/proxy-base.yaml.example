@@ -30,12 +30,14 @@ general_settings:
   #
   # MODE ON — route through fw-forwarder (system-user relabel active):
   #   target: "http://llmcli-fw-forwarder:18646"
-  #   headers block MUST be REMOVED — the forwarder injects FIREWORKS_API_KEY
-  #   server-side, so the client must NOT send an Authorization header here.
+  #   The headers block MAY be removed — the forwarder injects FIREWORKS_API_KEY
+  #   server-side and the inbound Authorization header is stripped regardless
+  #   (forwarder sets _DROP_REQUEST_HEADERS; pass_through_endpoint uses
+  #   forward_headers: false). Removal is RECOMMENDED for clarity, not required.
   #   Container DNS `llmcli-fw-forwarder` resolves on roxabi.network.
   #
-  # To flip ON:  set target to http://llmcli-fw-forwarder:18646, remove headers,
-  #              then `systemctl --user restart llmcli`.
+  # To flip ON:  set target to http://llmcli-fw-forwarder:18646, optionally
+  #              remove the headers block, then `systemctl --user restart llmcli`.
   #
   # --- Revert sequence (order matters) ---
   # Reverting from ON back to OFF (upstream):
@@ -44,7 +46,8 @@ general_settings:
   #   2. systemctl --user restart llmcli
   #   3. systemctl --user stop llmcli-fw-forwarder
   #   4. ONLY NOW drop MAX_THINKING_TOKENS=0 from the ccfk alias in
-  #      ~/.claude/dotfiles/bash_aliases — doing it before step 2 causes 403s.
+  #      ~/.claude/dotfiles/bash_aliases — doing it before step 2 causes 403s
+  #      (Fireworks' direct native route rejects thinking requests without the cap).
   pass_through_endpoints:
     - path: "/fw-anthropic"
       # MODE OFF (active): direct upstream — requires FIREWORKS_API_KEY in env.
@@ -55,7 +58,7 @@ general_settings:
       forward_headers: false
       headers:
         # secrets MUST use os.environ/FOO — literal values leak verbatim to the merged config on disk.
-        # NOTE: remove this entire headers block when MODE ON (forwarder injects the key itself).
+        # NOTE: this block MAY be removed when MODE ON (forwarder injects the key; inbound Authorization is stripped regardless).
         Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
 
 litellm_settings:

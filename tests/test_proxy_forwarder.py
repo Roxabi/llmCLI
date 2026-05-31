@@ -23,19 +23,19 @@ def test_forwardadapter_contract_members() -> None:
     # Arrange
     required_methods = {"transform_request", "extra_headers", "execute", "health"}
 
-    # Act — collect names from the Protocol (annotations + dir)
-    protocol_members = set(dir(ForwardAdapter))
+    # Act — Python 3.12 tracks Protocol abstract members in __protocol_attrs__
+    protocol_attrs = getattr(ForwardAdapter, "__protocol_attrs__", set())
 
-    # Assert — all four methods are present on the Protocol
+    # Assert — all four methods are present in the Protocol's abstract member set
     for method in required_methods:
-        assert method in protocol_members, (
-            f"ForwardAdapter Protocol is missing required method: {method!r}"
+        assert method in protocol_attrs, (
+            f"ForwardAdapter Protocol is missing required method: {method!r}; "
+            f"__protocol_attrs__={protocol_attrs}"
         )
 
-    # Assert — api_base is declared as an annotation on the Protocol
-    annotations = getattr(ForwardAdapter, "__annotations__", {})
-    assert "api_base" in annotations, (
-        f"ForwardAdapter.__annotations__ does not contain 'api_base'; got: {annotations}"
+    # Assert — api_base is declared as an abstract protocol member
+    assert "api_base" in protocol_attrs, (
+        f"ForwardAdapter.__protocol_attrs__ does not contain 'api_base'; got: {protocol_attrs}"
     )
 
 

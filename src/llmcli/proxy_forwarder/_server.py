@@ -24,7 +24,7 @@ from multidict import CIMultiDictProxy
 
 from llmcli.auth.store import CredentialsCorruptError
 
-from ._common import ALLOWED_PATHS, ForwardAdapter
+from ._common import ALLOWED_PATHS, ForwardAdapter, _Resp401
 
 logger = logging.getLogger(__name__)
 
@@ -120,16 +120,17 @@ def _proxy(adapter: ForwardAdapter):
                 return web.Response(
                     status=503,
                     headers={"X-Llmcli-Reauth": "required"},
-                    text="credentials corrupted — re-run llmcli xai login",
+                    text="credentials corrupted — re-run the provider login command",
                 )
             except RuntimeError:
                 logger.warning(
-                    "proxy: token refresh failed for %s — re-auth required", request.path
+                    "proxy: upstream authentication failed for %s — re-auth required",
+                    request.path,
                 )
                 return web.Response(
                     status=401,
                     headers={"X-Llmcli-Reauth": "required"},
-                    text="token refresh failed — re-run `llmcli xai login`",
+                    text="upstream authentication failed — check provider credentials",
                 )
             except aiohttp.ClientError as exc:
                 logger.warning("proxy: upstream connection failed: %s", exc)
@@ -137,8 +138,10 @@ def _proxy(adapter: ForwardAdapter):
             except asyncio.TimeoutError:
                 return web.Response(status=504, text="upstream request timed out")
 
-            # Still 401 after retry — operator must re-authenticate.
-            if upstream_resp.status == 401:
+            # Still 401 after retry (or a credentials-absent stand-in) — operator
+            # must re-authenticate. The isinstance check also narrows the union
+            # return type so the streaming block below sees a real ClientResponse.
+            if isinstance(upstream_resp, _Resp401) or upstream_resp.status == 401:
                 return web.Response(status=401, headers={"X-Llmcli-Reauth": "required"})
 
             # Stream response back (supports SSE on /v1/chat/completions).
@@ -203,7 +206,7 @@ def main() -> None:
 
         adapter: ForwardAdapter = XaiAdapter()
     elif provider == "fireworks":
-        from .fireworks_adapter import FireworksAdapter  # type: ignore[import-not-found]
+        from .fireworks_adapter import FireworksAdapter
 
         adapter = FireworksAdapter()
     else:

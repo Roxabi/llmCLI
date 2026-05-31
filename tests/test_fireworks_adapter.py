@@ -123,9 +123,7 @@ def test_relabel_noop_wrong_path() -> None:
     result = adapter.transform_request(body, "/v1/chat/completions")
 
     # Assert — exact bytes unchanged
-    assert result is body or result == body, (
-        "body should be returned unchanged for /v1/chat/completions"
-    )
+    assert result == body, "body should be returned unchanged for /v1/chat/completions"
 
 
 # ---------------------------------------------------------------------------
@@ -161,9 +159,7 @@ def test_relabel_noop_no_messages() -> None:
     result = adapter.transform_request(body, "/v1/messages")
 
     # Assert — exact bytes unchanged
-    assert result == b'{"model":"x"}', (
-        f"body without messages should be returned unchanged, got {result!r}"
-    )
+    assert result == body, f"body without messages should be returned unchanged, got {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -275,4 +271,85 @@ def test_fireworks_conforms_to_forwardadapter() -> None:
     # Act / Assert
     assert isinstance(adapter, ForwardAdapter), (
         f"FireworksAdapter does not satisfy the ForwardAdapter Protocol: {type(adapter)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# F9 guard-edge tests — fail when the defensive guards in transform_request
+# are removed (kills tautology risk on isinstance/get("role") guards)
+# ---------------------------------------------------------------------------
+
+
+def test_relabel_skips_non_dict_message_entries() -> None:
+    """Non-dict entries in messages are preserved; dict entries with role=system are relabelled.
+
+    Guards isinstance(msg, dict) — if removed, the string entry would cause AttributeError
+    or be incorrectly mutated, and the system dict entry relabelling would also break.
+    """
+    # Arrange
+    adapter = FireworksAdapter()
+    body = json.dumps(
+        {
+            "messages": [
+                "not-a-dict",
+                {"role": "system", "content": "x"},
+            ]
+        }
+    ).encode()
+
+    # Act — must not raise
+    result = adapter.transform_request(body, "/v1/messages")
+
+    # Assert — string entry preserved, dict system entry relabelled to user
+    parsed = json.loads(result)
+    msgs = parsed["messages"]
+    assert msgs[0] == "not-a-dict", f"non-dict entry should be preserved unchanged, got {msgs[0]!r}"
+    assert msgs[1]["role"] == "user", (
+        f"system dict entry should be relabelled to 'user', got {msgs[1]['role']!r}"
+    )
+
+
+def test_relabel_skips_message_without_role_key() -> None:
+    """Dict entries missing the role key are left untouched; entries with role=system are relabelled.
+
+    Guards msg.get("role") — if removed, a KeyError would occur on dicts without 'role',
+    or entries without a role would be incorrectly mutated.
+    """
+    # Arrange
+    adapter = FireworksAdapter()
+    body = json.dumps(
+        {
+            "messages": [
+                {"content": "no role"},
+                {"role": "system", "content": "x"},
+            ]
+        }
+    ).encode()
+
+    # Act — must not raise KeyError
+    result = adapter.transform_request(body, "/v1/messages")
+
+    # Assert — role-less entry untouched, system entry relabelled to user
+    parsed = json.loads(result)
+    msgs = parsed["messages"]
+    assert msgs[0] == {"content": "no role"}, (
+        f"entry without 'role' key should be untouched, got {msgs[0]!r}"
+    )
+    assert msgs[1]["role"] == "user", (
+        f"system entry should be relabelled to 'user', got {msgs[1]['role']!r}"
+    )
+
+
+def test_relabel_noop_empty_messages_list() -> None:
+    """transform_request on /v1/messages with an empty messages list round-trips cleanly."""
+    # Arrange
+    adapter = FireworksAdapter()
+    body = json.dumps({"messages": []}).encode()
+
+    # Act — must not raise
+    result = adapter.transform_request(body, "/v1/messages")
+
+    # Assert — round-trips to the same structure (no error, no mutation)
+    assert json.loads(result) == {"messages": []}, (
+        f"empty messages list should round-trip unchanged, got {json.loads(result)!r}"
     )

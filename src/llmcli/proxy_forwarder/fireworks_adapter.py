@@ -62,14 +62,22 @@ class FireworksAdapter:
         ):
             return body
 
+        mutated = False
         for msg in obj["messages"]:
             if isinstance(msg, dict) and msg.get("role") == "system":
                 msg["role"] = "user"
+                mutated = True
+
+        if not mutated:
+            return body
 
         return json.dumps(obj).encode("utf-8")
 
     def extra_headers(self) -> dict[str, str]:
-        """Return Fireworks-required request headers."""
+        """Return STATIC Fireworks-required request headers (``anthropic-version``, ``User-Agent``).
+
+        MUST NOT include ``Authorization`` — auth is injected inside ``execute()``.
+        """
         return {"anthropic-version": ANTHROPIC_VERSION, "User-Agent": USER_AGENT}
 
     async def execute(
@@ -88,6 +96,10 @@ class FireworksAdapter:
         so callers are keyless.
         """
         key = os.environ.get("FIREWORKS_API_KEY", "")
+        if not key:
+            raise RuntimeError(
+                "FIREWORKS_API_KEY not set — forwarder cannot authenticate to Fireworks"
+            )
         req_headers = {**headers, "Authorization": f"Bearer {key}"}
         return await session.request(
             method,
