@@ -1,0 +1,7 @@
+{
+  "name": "xai-research",
+  "description": "Research queries via xAI Grok — web search, X search, or plain chat via llmCLI OAuth forwarder.",
+  "author": {
+    "name": "Roxabi"
+  }
+}
