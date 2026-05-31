@@ -11,7 +11,7 @@ allowed-tools: Bash
 Query Grok (grok-4.3) via the llmCLI xAI forwarder. Supports plain chat, web search, and X (Twitter) search.
 
 Let:
-  S := tools/xai_research.py          — research script
+  S := ${CLAUDE_PLUGIN_ROOT}/xai_research.py   — research script
   F := http://127.0.0.1:18645         — xAI forwarder (default endpoint)
   C := ~/.roxabi/llmcli/xai-research.json — persistent config (optional)
 
@@ -45,7 +45,7 @@ No query and no stdin → DP(B) "Enter your research query:".
 Run S with `--json` for structured output:
 
 ```bash
-uv run tools/xai_research.py --json [--web|--X|--all] "<query>"
+uv run ${CLAUDE_PLUGIN_ROOT}/xai_research.py --json [--web|--X|--all] "<query>"
 ```
 
 Parse JSON response. On `error` field → report HTTP code + detail + hint from table below. On success → extract and present `output[].content[].text`.
