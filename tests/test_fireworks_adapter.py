@@ -353,3 +353,23 @@ def test_relabel_noop_empty_messages_list() -> None:
     assert json.loads(result) == {"messages": []}, (
         f"empty messages list should round-trip unchanged, got {json.loads(result)!r}"
     )
+
+
+async def test_execute_raises_without_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """execute refuses to forward a blank `Bearer ` when FIREWORKS_API_KEY is unset.
+
+    The guard fires before any upstream request, so the (dummy) session is never used.
+    """
+    # Arrange — ensure the key is absent
+    monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+    adapter = FireworksAdapter()
+
+    # Act / Assert — RuntimeError before the unused session is touched
+    with pytest.raises(RuntimeError, match="FIREWORKS_API_KEY"):
+        await adapter.execute(
+            None,  # type: ignore[arg-type]  # guard raises before session use
+            "POST",
+            "https://api.fireworks.ai/inference/v1/messages",
+            b"{}",
+            {},
+        )
