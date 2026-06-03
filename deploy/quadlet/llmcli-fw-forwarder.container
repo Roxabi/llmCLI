@@ -25,6 +25,10 @@ DropCapability=all
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=20s
+# Memory caps — contain a runaway to its cgroup instead of a global OOM freeze
+# (2026-06-01 M₂ freeze). Tiny relay; 1G/1.5G is generous.
+MemoryHigh=1G
+MemoryMax=1536M
 
 [Install]
 WantedBy=default.target

@@ -33,6 +33,11 @@ DropCapability=all
 [Service]
 Restart=on-failure
 RestartSec=10
+# Memory caps — contain a runaway to its cgroup (OOM-kill + restart) instead of
+# a global OOM death-spiral that freezes the host (2026-06-01 M₂ freeze, RAM+swap exhausted).
+# Local inference (qwen3-4b) weights go to VRAM; host-side RAM stays modest, 12G is generous.
+MemoryHigh=12G
+MemoryMax=14G
 
 [Install]
 WantedBy=default.target
