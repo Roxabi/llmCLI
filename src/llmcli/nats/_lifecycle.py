@@ -16,7 +16,7 @@ import tomllib
 from datetime import datetime, timezone
 
 from pydantic import ValidationError
-from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse
+from roxabi_contracts.llm import LifecycleRequest, LifecycleResponse, SUBJECTS as LLM_SUBJECTS
 from roxabi_contracts.errors import WorkerError
 
 from llmcli.auth.store import XAI_CREDENTIALS_PATH
@@ -39,11 +39,11 @@ _CRASH_MESSAGES: dict[str, str] = {
 _CRASH_FALLBACK = "engine start failed"
 
 LIFECYCLE_SUBJECTS = (
-    "lyra.llm.lifecycle.swap",
-    "lyra.llm.lifecycle.stop",
-    "lyra.llm.lifecycle.status",
-    "lyra.llm.lifecycle.list",
-    "lyra.llm.lifecycle.reload-catalog",
+    LLM_SUBJECTS.lifecycle_swap,
+    LLM_SUBJECTS.lifecycle_stop,
+    LLM_SUBJECTS.lifecycle_status,
+    LLM_SUBJECTS.lifecycle_list,
+    LLM_SUBJECTS.lifecycle_reload_catalog,
 )
 
 
