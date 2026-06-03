@@ -1272,8 +1272,8 @@ requires-dist = [
     { name = "openai", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "roxabi-contracts", marker = "extra == 'nats'", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-contracts&branch=staging" },
-    { name = "roxabi-nats", marker = "extra == 'nats'", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
+    { name = "roxabi-contracts", marker = "extra == 'nats'", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-contracts&branch=staging" },
+    { name = "roxabi-nats", marker = "extra == 'nats'", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "typer", extras = ["all"], specifier = ">=0.12" },
@@ -1290,8 +1290,8 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-timeout", specifier = ">=0.5" },
     { name = "radon", specifier = ">=6.0.1" },
-    { name = "roxabi-contracts", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-contracts&branch=staging" },
-    { name = "roxabi-nats", git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
+    { name = "roxabi-contracts", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-contracts&branch=staging" },
+    { name = "roxabi-nats", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
     { name = "ruff" },
 ]
 vllm = [{ name = "vllm", specifier = ">=0.6.0" }]
@@ -2737,16 +2737,16 @@ wheels = [
 
 [[package]]
 name = "roxabi-contracts"
-version = "0.4.0"
-source = { git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-contracts&branch=staging#0f8f5021e8c855c486cd4667efce14736f81e9c6" }
+version = "0.7.0"
+source = { git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-contracts&branch=staging#e8578e52c818dbfe46676566a032409a1345efa0" }
 dependencies = [
     { name = "pydantic" },
 ]
 
 [[package]]
 name = "roxabi-nats"
-version = "0.4.1"
-source = { git = "https://github.com/Roxabi/lyra.git?subdirectory=packages%2Froxabi-nats&branch=staging#0f8f5021e8c855c486cd4667efce14736f81e9c6" }
+version = "0.4.2"
+source = { git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-nats&branch=staging#e8578e52c818dbfe46676566a032409a1345efa0" }
 dependencies = [
     { name = "nats-py" },
     { name = "nkeys" },
