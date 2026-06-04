@@ -12,7 +12,7 @@ Four Quadlet units ship with llmCLI:
 | LiteLLM proxy | `llmcli.container` | any (all hosts) | 18091 |
 | NATS worker | `llmcli-nats-worker.container` | `llm-worker` only | — (host network) |
 | xAI OAuth forwarder | `llmcli-xai-forwarder.container` | M₁ (lyra-hub) only | 18645 (internal) |
-| Fireworks system-user relabel forwarder | `llmcli-fw-forwarder.container` | M₁ (lyra-hub) only | 18646 (internal) |
+| Fireworks keyless forwarder | `llmcli-fw-forwarder.container` | M₁ (lyra-hub) only | 18646 (internal) |
 
 ---
 
@@ -182,15 +182,14 @@ systemctl --user restart llmcli-nats-worker
 
 > **M₁ (roxabituwer / lyra-hub host) only.** The Fireworks forwarder Quadlet runs on M₁.
 
-The `llmcli-fw-forwarder` Quadlet relabels `role:"system"` messages to `role:"user"` inline
-before forwarding requests to the Fireworks native Anthropic-compatible endpoint. This is
-required for native Fireworks thinking + streaming traffic from Claude Code: the Fireworks
-`/v1/messages` route rejects `system` role entries when `thinking` is active, so any
-unrelabeled request errors with HTTP 400.
+The `llmcli-fw-forwarder` Quadlet forwards requests to the Fireworks native
+Anthropic-compatible endpoint. It is **keyless from the client side** — it injects
+`FIREWORKS_API_KEY` from `~/.roxabi/llmcli/env/proxy.env` server-side. No `Authorization`
+header reaches the upstream from the proxy when this mode is active.
 
-The forwarder is **keyless from the client side** — it injects `FIREWORKS_API_KEY` from
-`~/.roxabi/llmcli/env/proxy.env` server-side. No `Authorization` header reaches the upstream
-from the proxy when this mode is active.
+> **Note:** Fireworks previously rejected `role:"system"` entries on `/v1/messages` and
+> required a relabel to `user`. That restriction was lifted (2026-06-04); the forwarder now
+> passes the body through unchanged.
 
 ### Network topology
 

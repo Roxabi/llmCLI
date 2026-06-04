@@ -25,13 +25,13 @@ from llmcli.proxy_forwarder.fireworks_adapter import ANTHROPIC_VERSION, USER_AGE
 
 
 @pytest.mark.asyncio
-async def test_integration_forwarder_relabels_and_injects_key(
+async def test_integration_forwarder_injects_key_and_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Full end-to-end: system→user relabel, keyless client, SSE passthrough.
+    """Full end-to-end: keyless client, headers injected, SSE passthrough.
 
     Verifies:
-    1. system role relabelled to user in the body seen by the upstream.
+    1. system role is preserved (relabel removed after Fireworks patch).
     2. Inbound Authorization replaced by server-side FIREWORKS_API_KEY.
     3. anthropic-version and User-Agent headers injected by the adapter.
     4. SSE chunks streamed back to the caller verbatim.
@@ -83,9 +83,9 @@ async def test_integration_forwarder_relabels_and_injects_key(
             assert resp.status == 200
             text = await resp.text()
 
-    # 1. system → user relabel: both messages must be "user" at the upstream
+    # 1. system role preserved (relabel removed after Fireworks patch)
     roles = [m["role"] for m in captured["body"]["messages"]]
-    assert roles == ["user", "user"], f"expected ['user', 'user'], got {roles}"
+    assert roles == ["system", "user"], f"expected ['system', 'user'], got {roles}"
 
     # 2. Inbound Authorization stripped; server-side key injected
     assert captured["authorization"] == "Bearer server-side-key", (

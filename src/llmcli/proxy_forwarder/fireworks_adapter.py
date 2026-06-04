@@ -2,18 +2,18 @@
 
 Implements the ForwardAdapter Protocol for the Fireworks native Anthropic endpoint.
 
-Two responsibilities:
-1. system-role relabel — Fireworks' Anthropic-compatible endpoint does not
-   accept ``role: "system"`` in the messages array; this adapter rewrites every
-   system entry to ``role: "user"`` on ``/v1/messages`` before forwarding.
-2. keyless injection — the inbound Authorization header is stripped by _server.py
-   before the adapter sees it; this adapter re-injects the server-side
-   FIREWORKS_API_KEY as a Bearer token so clients never need the key themselves.
+Responsibility:
+- keyless injection — the inbound Authorization header is stripped by _server.py
+  before the adapter sees it; this adapter re-injects the server-side
+  FIREWORKS_API_KEY as a Bearer token so clients never need the key themselves.
+
+Note: Fireworks previously rejected ``role: "system"`` in the messages array
+and required a relabel to ``user``. That restriction was lifted (2026-06-04);
+``transform_request`` now forwards the body unchanged.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any
 
@@ -41,37 +41,14 @@ class FireworksAdapter:
     api_base: str = "https://api.fireworks.ai/inference"
 
     def transform_request(self, body: bytes, path: str) -> bytes:
-        """Relabel ``system`` roles to ``user`` on ``/v1/messages`` requests.
+        """Return request body unchanged.
 
-        Returns *body* unchanged for all other paths, non-JSON payloads, or
-        payloads that lack a ``messages`` list. Idempotent by construction
-        (system→user; re-applying leaves the already-user entry untouched).
+        Fireworks previously required ``system`` roles to be rewritten as
+        ``user`` on ``/v1/messages``. That restriction was lifted; the body
+        is now forwarded verbatim.
         """
-        if path != "/v1/messages":
-            return body
-
-        try:
-            obj = json.loads(body)
-        except (ValueError, TypeError):
-            return body
-
-        if (
-            not isinstance(obj, dict)
-            or "messages" not in obj
-            or not isinstance(obj["messages"], list)
-        ):
-            return body
-
-        mutated = False
-        for msg in obj["messages"]:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                msg["role"] = "user"
-                mutated = True
-
-        if not mutated:
-            return body
-
-        return json.dumps(obj).encode("utf-8")
+        del path  # unused — parameter kept for ForwardAdapter Protocol conformance
+        return body
 
     def extra_headers(self) -> dict[str, str]:
         """Return STATIC Fireworks-required request headers (``anthropic-version``, ``User-Agent``).
