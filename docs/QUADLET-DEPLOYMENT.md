@@ -11,8 +11,8 @@ Four Quadlet units ship with llmCLI:
 |---|---|---|---|
 | LiteLLM proxy | `llmcli.container` | any (all hosts) | 18091 |
 | NATS worker | `llmcli-nats-worker.container` | `llm-worker` only | — (host network) |
-| xAI OAuth forwarder | `llmcli-xai-forwarder.container` | M₁ (lyra-hub) only | 18645 (internal) |
-| Fireworks keyless forwarder | `llmcli-fw-forwarder.container` | M₁ (lyra-hub) only | 18646 (internal) |
+| xAI OAuth forwarder | `llmcli-xai-forwarder.container` | M₁ (factory-hub) only | 18645 (internal) |
+| Fireworks keyless forwarder | `llmcli-fw-forwarder.container` | M₁ (factory-hub) only | 18646 (internal) |
 
 ---
 
@@ -180,7 +180,7 @@ systemctl --user restart llmcli-nats-worker
 
 ## Fireworks forwarder (`llmcli-fw-forwarder`)
 
-> **M₁ (roxabituwer / lyra-hub host) only.** The Fireworks forwarder Quadlet runs on M₁.
+> **M₁ (roxabituwer / factory-hub host) only.** The Fireworks forwarder Quadlet runs on M₁.
 
 The `llmcli-fw-forwarder` Quadlet forwards requests to the Fireworks native
 Anthropic-compatible endpoint. It is **keyless from the client side** — it injects
@@ -256,7 +256,7 @@ Expected:
 
 ## xAI OAuth setup
 
-> **M₁ (roxabituwer / lyra-hub host) only.** The xAI forwarder Quadlet runs on M₁.
+> **M₁ (roxabituwer / factory-hub host) only.** The xAI forwarder Quadlet runs on M₁.
 > These steps must be performed on that host, not inside a container.
 
 The `llmcli-xai-forwarder` Quadlet forwards requests from the LiteLLM proxy (`:18091`) to
