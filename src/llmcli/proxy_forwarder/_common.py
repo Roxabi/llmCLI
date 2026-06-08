@@ -111,7 +111,63 @@ OAuthAdapter = ForwardAdapter
 
 
 # ---------------------------------------------------------------------------
-# lazy_retry_on_401 — single-flight 401 retry
+# Single-flight token refresh helpers
+# ---------------------------------------------------------------------------
+
+
+async def _refresh_if_expired(
+    store_load: Callable[[], Any],
+    store_save: Callable[[Any], None],
+    refresh_fn: Callable[[Any], Awaitable[Any]],
+) -> Any:
+    """Refresh under _REFRESH_LOCK iff the on-disk token is expired.
+
+    Dedup signal: ``expires_at``. A concurrent handler that refreshed while we
+    waited for the lock leaves a non-expired token on disk, so we skip the POST.
+    Returns fresh credentials, or None if credentials vanished mid-flight.
+    """
+    async with _REFRESH_LOCK:
+        creds = store_load()
+        if creds is None:
+            return None
+        if creds.expires_at > int(time.time()) + 5:  # someone else refreshed
+            logger.debug("_refresh_if_expired: token already fresh, skipping POST")
+            return creds
+        logger.info("_refresh_if_expired: refreshing expired token via refresh_fn")
+        new = await refresh_fn(creds)
+        store_save(new)
+        return new
+
+
+async def _refresh_after_rejection(
+    rejected_token: str,
+    store_load: Callable[[], Any],
+    store_save: Callable[[Any], None],
+    refresh_fn: Callable[[Any], Awaitable[Any]],
+) -> Any:
+    """Refresh under _REFRESH_LOCK after the upstream rejected *rejected_token*.
+
+    Dedup signal: the access_token value. A 401 can arrive for a token that is
+    NOT yet expired (revoked server-side, clock skew), so expiry is not a valid
+    signal here — we refresh unless the on-disk token already differs from the
+    one that was rejected (another handler refreshed it while we waited).
+    Returns fresh credentials, or None if credentials vanished mid-flight.
+    """
+    async with _REFRESH_LOCK:
+        creds = store_load()
+        if creds is None:
+            return None
+        if creds.access_token != rejected_token:  # another handler refreshed
+            logger.debug("_refresh_after_rejection: token already rotated, skipping POST")
+            return creds
+        logger.info("_refresh_after_rejection: refreshing rejected token via refresh_fn")
+        new = await refresh_fn(creds)
+        store_save(new)
+        return new
+
+
+# ---------------------------------------------------------------------------
+# lazy_retry_on_401 — proactive expiry refresh + reactive 401 retry
 # ---------------------------------------------------------------------------
 
 
@@ -121,20 +177,20 @@ async def lazy_retry_on_401(
     store_load: Callable[[], Any],
     store_save: Callable[[Any], None],
 ) -> Any:
-    """Call *request_fn* with the current access_token; refresh once on 401.
+    """Call *request_fn* with a valid access_token; refresh proactively + on 401.
 
     Algorithm
     ---------
-    1. Load credentials from store; call request_fn(access_token).
-    2. If response is not 401, return immediately.
-    3. Acquire _REFRESH_LOCK (only one coroutine refreshes at a time):
-       a. Re-read credentials from store — another handler may have already
-          refreshed the token while we waited for the lock.
-       b. If the access_token changed (another handler refreshed), skip the
-          POST and retry with the already-refreshed token.
-       c. Otherwise call refresh_fn(creds), persist via store_save, and
-          retry with the new token.
-    4. Return the retry response; the caller maps a still-401 to
+    1. Load credentials. None → return ``_Resp401`` (caller adds reauth header).
+    2. **Proactive**: if the access_token is already expired, refresh BEFORE
+       sending. Some providers (xAI) reject an expired token with **403**, never
+       401 — so a reactive-only retry would never fire and every request would
+       fail despite a valid ``refresh_token`` on disk. Single-flight via
+       ``_REFRESH_LOCK``, deduped on ``expires_at``.
+    3. Send the request. A non-401 response is returned as-is.
+    4. **Reactive**: a 401 on a non-expired token means it was rejected anyway
+       (revoked, clock skew). Refresh once (deduped on the rejected token value)
+       and retry. A still-401 is returned for the caller to map to
        ``X-Llmcli-Reauth: required``.
 
     Parameters
@@ -153,38 +209,26 @@ async def lazy_retry_on_401(
     creds = store_load()
     if creds is None:
         # No credentials at all — propagate as 401 so caller can add header.
-        # We build a minimal stand-in response object.
         return _Resp401()
+
+    # Proactive — never send a token we already know is expired (xAI → 403).
+    if creds.expires_at <= int(time.time()) + 5:  # 5s skew tolerance
+        creds = await _refresh_if_expired(store_load, store_save, refresh_fn)
+        if creds is None:
+            return _Resp401()
 
     resp = await request_fn(creds.access_token)
     if resp.status != 401:
         return resp
 
-    # 401 received — enter the single-flight refresh path.
-    logger.info("lazy_retry_on_401: received 401, acquiring refresh lock")
-
-    async with _REFRESH_LOCK:
-        # Re-read creds after acquiring the lock; another handler may have
-        # already written fresh tokens to disk while we waited.
-        fresh_creds = store_load()
-
-        if fresh_creds is None:
-            # Credentials disappeared mid-flight; propagate 401.
-            return _Resp401()
-
-        # Spec-mandated: if another handler already refreshed and the new token
-        # is not expired, skip the POST and retry with the already-refreshed token.
-        if fresh_creds.expires_at > int(time.time()) + 5:  # 5s skew tolerance
-            logger.debug("lazy_retry_on_401: token refreshed by another handler, skipping POST")
-            resp = await request_fn(fresh_creds.access_token)
-        else:
-            # Token is still expired — we are responsible for refreshing.
-            logger.info("lazy_retry_on_401: refreshing token via refresh_fn")
-            new_creds = await refresh_fn(fresh_creds)
-            store_save(new_creds)
-            resp = await request_fn(new_creds.access_token)
-
-    return resp
+    # Reactive — token rejected despite not being (clock-) expired.
+    logger.info("lazy_retry_on_401: received 401, refreshing and retrying once")
+    refreshed = await _refresh_after_rejection(
+        creds.access_token, store_load, store_save, refresh_fn
+    )
+    if refreshed is None:
+        return _Resp401()
+    return await request_fn(refreshed.access_token)
 
 
 # ---------------------------------------------------------------------------

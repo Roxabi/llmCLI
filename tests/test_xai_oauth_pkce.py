@@ -112,9 +112,7 @@ def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert "state=state_xyz" in auth_url, f"state missing from URL: {auth_url}"
     assert "nonce=nonce_123" in auth_url, f"nonce missing from URL: {auth_url}"
     # F11 — assert client_id constant (not hardcoded literal)
-    assert f"client_id={XAI_OAUTH_CLIENT_ID}" in auth_url, (
-        f"client_id missing from URL: {auth_url}"
-    )
+    assert f"client_id={XAI_OAUTH_CLIENT_ID}" in auth_url, f"client_id missing from URL: {auth_url}"
 
 
 # ---------------------------------------------------------------------------
@@ -123,17 +121,19 @@ def test_pkce_code_exchange(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_lazy_refresh_on_401(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """lazy_retry_on_401 retries once on 401; new credentials persisted to disk."""
-    # Arrange — initial (expired) credentials on disk
+async def test_lazy_refresh_on_401(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """lazy_retry_on_401 retries once on a 401 for a non-expired token; new creds persisted.
+
+    The token is NOT clock-expired (so the proactive path is skipped) but the
+    upstream rejects it with 401 — exercising the reactive refresh path.
+    """
+    # Arrange — valid (non-expired) credentials that the upstream nonetheless 401s
     creds_file = tmp_path / "xai.json"
     monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
     # F8 — isolate _REFRESH_LOCK per test
     monkeypatch.setattr("llmcli.proxy_forwarder._common._REFRESH_LOCK", asyncio.Lock())
 
-    old_creds = _make_fake_creds(access_token="OLD_ATK", expires_delta=-60)
+    old_creds = _make_fake_creds(access_token="OLD_ATK")  # default expires_delta=+3600
     auth_store.save(old_creds, path=creds_file)
 
     new_token_resp = {
@@ -207,10 +207,13 @@ async def test_lazy_refresh_on_401(
 
 
 @pytest.mark.asyncio
-async def test_concurrent_refresh_dedup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """5 concurrent 401s result in exactly ONE refresh POST (asyncio.Lock dedup)."""
+async def test_concurrent_refresh_dedup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """5 concurrent requests on an expired token result in exactly ONE refresh POST.
+
+    With proactive refresh, an expired token is refreshed BEFORE sending — so the
+    real-world dedup scenario is N concurrent callers finding the token expired
+    and racing on _REFRESH_LOCK. Exactly one wins the POST; the rest reuse it.
+    """
     # Arrange — expired credentials on disk
     creds_file = tmp_path / "xai.json"
     monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
@@ -223,24 +226,21 @@ async def test_concurrent_refresh_dedup(
     api_call_count = 0
     refresh_call_count = 0
     lock = asyncio.Lock()
+    tokens_sent: list[str] = []
 
     async def request_fn(token: str) -> MagicMock:
         nonlocal api_call_count
         async with lock:
             api_call_count += 1
-            current_count = api_call_count
+            tokens_sent.append(token)
         resp = MagicMock()
-        # First 5 calls return 401; subsequent calls (retries with new token) return 200
-        if current_count <= 5:
-            resp.status = 401
-        else:
-            resp.status = 200
+        resp.status = 200  # token is valid post-refresh — never 401/403
         return resp
 
     async def refresh_fn(creds: XaiCredentials) -> XaiCredentials:
         nonlocal refresh_call_count
         refresh_call_count += 1
-        # Small delay to make race condition visible
+        # Small delay to make the race condition visible
         await asyncio.sleep(0.01)
         return XaiCredentials(
             access_token="REFRESHED_ATK",
@@ -254,7 +254,7 @@ async def test_concurrent_refresh_dedup(
     store_load = lambda: auth_store.load(path=creds_file)  # noqa: E731
     store_save = lambda c: auth_store.save(c, path=creds_file)  # noqa: E731
 
-    # Act — 5 concurrent callers all hit 401 simultaneously
+    # Act — 5 concurrent callers all find the token expired simultaneously
     await asyncio.gather(
         *[lazy_retry_on_401(request_fn, refresh_fn, store_load, store_save) for _ in range(5)]
     )
@@ -269,9 +269,68 @@ async def test_concurrent_refresh_dedup(
     assert persisted is not None
     assert persisted.access_token == "REFRESHED_ATK"
 
-    assert api_call_count >= 5, (
-        f"expected ≥5 api calls (initial 401s), got {api_call_count}"
+    # Each caller sends exactly one request, all with the refreshed token —
+    # the expired OLD_ATK is NEVER sent upstream.
+    assert api_call_count == 5, f"expected 5 api calls, got {api_call_count}"
+    assert tokens_sent == ["REFRESHED_ATK"] * 5, f"expired token leaked upstream: {tokens_sent}"
+
+
+# ---------------------------------------------------------------------------
+# Test 3b — proactive refresh: an expired token is refreshed BEFORE sending
+# (regression for xAI replying 403 — not 401 — to an expired access_token,
+#  which a reactive-only retry never catches)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proactive_refresh_never_sends_expired_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired token is refreshed up front; the stale token never reaches upstream.
+
+    Models the xAI behaviour: an expired access_token is rejected with 403 (not
+    401). request_fn therefore raises if it ever receives the expired token —
+    the test passes only because proactive refresh runs before the first send.
+    """
+    creds_file = tmp_path / "xai.json"
+    monkeypatch.setattr("llmcli.auth.store.XAI_CREDENTIALS_PATH", creds_file)
+    monkeypatch.setattr("llmcli.proxy_forwarder._common._REFRESH_LOCK", asyncio.Lock())
+
+    expired = _make_fake_creds(access_token="EXPIRED_ATK", expires_delta=-60)
+    auth_store.save(expired, path=creds_file)
+
+    api_calls = 0
+    refresh_calls = 0
+    tokens_sent: list[str] = []
+
+    async def request_fn(token: str) -> MagicMock:
+        nonlocal api_calls
+        api_calls += 1
+        tokens_sent.append(token)
+        # xAI would 403 an expired token — assert we never send it.
+        assert token != "EXPIRED_ATK", "expired token was sent upstream (the bug)"
+        resp = MagicMock()
+        resp.status = 200
+        return resp
+
+    async def refresh_fn(creds: XaiCredentials) -> XaiCredentials:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        return _make_fake_creds(access_token="FRESH_ATK", expires_delta=3600)
+
+    resp = await lazy_retry_on_401(
+        request_fn,
+        refresh_fn,
+        lambda: auth_store.load(path=creds_file),
+        lambda c: auth_store.save(c, path=creds_file),
     )
+
+    # Assert — exactly one proactive refresh, one request, no 401 round-trip
+    assert resp.status == 200, f"expected 200, got {resp.status}"
+    assert refresh_calls == 1, f"expected 1 proactive refresh, got {refresh_calls}"
+    assert api_calls == 1, f"expected 1 api call (no reactive retry), got {api_calls}"
+    assert tokens_sent == ["FRESH_ATK"], f"unexpected tokens sent: {tokens_sent}"
+    assert auth_store.load(path=creds_file).access_token == "FRESH_ATK"
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +338,7 @@ async def test_concurrent_refresh_dedup(
 # ---------------------------------------------------------------------------
 
 
-def test_credentials_corrupted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_credentials_corrupted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """store.load() raises CredentialsCorruptError when xai.json contains partial JSON."""
     # Arrange — write malformed JSON to the credentials file
     xai_creds = tmp_path / "xai.json"
