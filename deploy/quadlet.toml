@@ -21,11 +21,11 @@ host_overrides.roxabitower = { model = "qwen3-4b" }
 container = "llmcli-xai-forwarder.container"
 required_secrets = []
 # credentials via bind-mount (rw) — not Podman secrets
-host_roles = ["lyra-hub"]
+host_roles = ["factory-hub"]
 # M₁ only — 24/7 cloud relay. xAI OAuth credentials at ~/.roxabi/llmcli/credentials/
 
 [component.fw-forwarder]
 container = "llmcli-fw-forwarder.container"
 required_secrets = []
 env_file = "~/.roxabi/llmcli/env/proxy.env"
-host_roles = ["lyra-hub"]
+host_roles = ["factory-hub"]
