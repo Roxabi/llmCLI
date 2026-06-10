@@ -3,6 +3,7 @@
 Ported from hermes_cli/auth.py (Hermes Agent). Omits multi-account
 credential_pool — single-account only.
 """
+
 import base64
 import hashlib
 import hmac
@@ -17,7 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
-from llmcli.auth.store import XaiCredentials, XAI_CREDENTIALS_PATH, save
+from llmcli.auth.store import ReauthRequired, XaiCredentials, XAI_CREDENTIALS_PATH, save
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ _XAI_AUTHORIZE_ENDPOINT = f"{XAI_OAUTH_ISSUER}/oauth2/authorize"
 # ---------------------------------------------------------------------------
 # PKCE helpers
 # ---------------------------------------------------------------------------
+
 
 def _s256_challenge(verifier: str) -> str:
     """Compute the S256 PKCE code_challenge from a verifier string."""
@@ -74,9 +76,7 @@ def _build_authorize_url(challenge: str, state: str, nonce: str) -> str:
     MUST include plan=generic — without it auth.x.ai rejects loopback OAuth
     from non-allowlisted clients (ref: Hermes auth.py line 6393).
     """
-    redirect_uri = (
-        f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-    )
+    redirect_uri = f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
     params = {
         "response_type": "code",
         "client_id": XAI_OAUTH_CLIENT_ID,
@@ -94,6 +94,7 @@ def _build_authorize_url(challenge: str, state: str, nonce: str) -> str:
 # ---------------------------------------------------------------------------
 # Loopback callback server
 # ---------------------------------------------------------------------------
+
 
 def _loopback_server(timeout: float = 120.0) -> tuple[str, str]:
     """Run a single-request HTTP server on 127.0.0.1:56121.
@@ -126,9 +127,13 @@ def _loopback_server(timeout: float = 120.0) -> tuple[str, str]:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             if incoming.get("error"):
-                body = b"<html><body><h1>xAI authorization failed.</h1>Close this tab.</body></html>"
+                body = (
+                    b"<html><body><h1>xAI authorization failed.</h1>Close this tab.</body></html>"
+                )
             else:
-                body = b"<html><body><h1>xAI authorization received.</h1>Close this tab.</body></html>"
+                body = (
+                    b"<html><body><h1>xAI authorization received.</h1>Close this tab.</body></html>"
+                )
             self.wfile.write(body)
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — match BaseHTTPRequestHandler signature
@@ -138,7 +143,9 @@ def _loopback_server(timeout: float = 120.0) -> tuple[str, str]:
         allow_reuse_address = True
 
     server = _ReuseHTTPServer((_XAI_REDIRECT_HOST, XAI_OAUTH_REDIRECT_PORT), _CallbackHandler)
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+    )
     thread.start()
 
     deadline = time.monotonic() + timeout
@@ -164,6 +171,7 @@ def _loopback_server(timeout: float = 120.0) -> tuple[str, str]:
 # Token exchange and refresh
 # ---------------------------------------------------------------------------
 
+
 def exchange_code(code: str, verifier: str) -> XaiCredentials:
     """Exchange an authorization code for tokens via POST to auth.x.ai/oauth2/token.
 
@@ -173,9 +181,7 @@ def exchange_code(code: str, verifier: str) -> XaiCredentials:
     if not verifier:
         raise ValueError("PKCE code_verifier is required for token exchange.")
 
-    redirect_uri = (
-        f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-    )
+    redirect_uri = f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
     # Recompute challenge from verifier for the defense-in-depth parameter
     challenge = _s256_challenge(verifier)
 
@@ -198,7 +204,7 @@ def exchange_code(code: str, verifier: str) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        logger.debug("xai token endpoint error body: %s", response.text)
+        logger.debug("xai token endpoint non-200: status=%d", response.status_code)
         raise RuntimeError(f"xAI token exchange failed (HTTP {response.status_code})")
     payload = response.json()
     expires_in = int(payload.get("expires_in") or 3600)
@@ -216,7 +222,10 @@ def refresh_credentials(creds: XaiCredentials) -> XaiCredentials:
     """Refresh an expired access_token using the stored refresh_token.
 
     Returns a new XaiCredentials with updated tokens.
-    Raises RuntimeError on 4xx (e.g. refresh_token expired after >30d offline).
+    Raises ReauthRequired on 4xx (refresh token rejected — e.g. rotated out of
+    its family, or expired after >30d offline) so the caller can fail loud and
+    require an interactive `llmcli xai login`. Raises a generic RuntimeError on
+    other non-200 (5xx / unexpected) which are transient and worth retrying.
     """
     response = httpx.post(
         _XAI_TOKEN_ENDPOINT,
@@ -232,7 +241,12 @@ def refresh_credentials(creds: XaiCredentials) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        logger.debug("xai token endpoint error body: %s", response.text)
+        logger.debug("xai token endpoint non-200: status=%d", response.status_code)
+        if 400 <= response.status_code < 500:
+            raise ReauthRequired(
+                f"xAI rejected the refresh token (HTTP {response.status_code}) — "
+                "run `llmcli xai login` to re-authenticate"
+            )
         raise RuntimeError(f"xAI token refresh failed (HTTP {response.status_code})")
     payload = response.json()
     expires_in = int(payload.get("expires_in") or 3600)
@@ -250,19 +264,88 @@ def refresh_credentials(creds: XaiCredentials) -> XaiCredentials:
 # Login flow orchestrator
 # ---------------------------------------------------------------------------
 
-def login_flow() -> XaiCredentials:
+
+def _parse_manual_input(raw: str) -> tuple[str, str]:
+    """Extract ``(code, state)`` from a pasted redirect URL or a bare code value.
+
+    Accepts either the full ``http://127.0.0.1:56121/callback?code=...&state=...``
+    URL copied from the browser address bar, or just the ``code`` value. A pasted
+    URL must match the registered loopback redirect (scheme/host/port/path); a
+    foreign origin is rejected. Empty input raises.
+    """
+    raw = raw.strip()
+    if not raw:
+        raise RuntimeError("no code or redirect URL provided")
+    if "code=" in raw or raw.lower().startswith("http"):
+        parsed = urlparse(raw)
+        if parsed.scheme and (
+            parsed.scheme != "http"
+            or parsed.hostname != _XAI_REDIRECT_HOST
+            or parsed.port != XAI_OAUTH_REDIRECT_PORT
+            or parsed.path != XAI_OAUTH_REDIRECT_PATH
+        ):
+            raise RuntimeError(
+                "unexpected redirect origin — expected "
+                f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+            )
+        params = parse_qs(parsed.query)
+        code = (params.get("code") or [""])[0]
+        if not code:
+            raise RuntimeError("no `code=` parameter found in the pasted URL")
+        return code, (params.get("state") or [""])[0]
+    return raw, ""
+
+
+def _login_manual(pkce: PkceVerifier, authorize_url: str) -> XaiCredentials:
+    """Headless login: print the URL, prompt for the pasted redirect code.
+
+    No loopback server is started, so a headless host needs **no SSH tunnel** —
+    the browser's redirect to ``127.0.0.1:56121`` fails to load, but its URL
+    (carrying the ``code``) is copied from the address bar and pasted here.
+    """
+    redirect = f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+    print("Open this URL in any browser and authorize:\n")
+    print(f"  {authorize_url}\n")
+    print(f"You will be redirected to {redirect}?code=...&state=...")
+    print("(that page fails to load on a headless host — expected; the code is in the URL).")
+    print("Paste the FULL redirected URL (or just the code value) below.\n")
+    code, received_state = _parse_manual_input(input("code or redirect URL: "))
+    if received_state:
+        if not hmac.compare_digest(received_state, pkce.state):
+            raise RuntimeError("OAuth state mismatch — possible CSRF")
+    else:
+        # Bare-code paste (no state in the input) — PKCE still binds the code, but
+        # the CSRF state check cannot run. Log it so the omission is auditable.
+        logger.warning(
+            "xai login --manual: no OAuth state in pasted input — "
+            "CSRF state check skipped (PKCE still binds the code)"
+        )
+    creds = exchange_code(code, pkce.code_verifier)
+    save(creds, XAI_CREDENTIALS_PATH)
+    print(f"Logged in. Credentials stored at {XAI_CREDENTIALS_PATH}")
+    print(f"  expires_at: {creds.expires_at}")
+    return creds
+
+
+def login_flow(manual: bool = False) -> XaiCredentials:
     """Run the full xAI OAuth PKCE login flow.
 
     1. Generate PKCE verifier + challenge
-    2. Spawn loopback listener on :56121
+    2. Spawn loopback listener on :56121 (skipped in ``manual`` mode)
     3. Open browser at auth.x.ai/oauth2/authorize?plan=generic&...
-    4. Wait for /callback?code=...&state=...
+    4. Wait for /callback?code=...&state=... (``manual`` mode: paste it instead)
     5. Verify state, exchange code for tokens
     6. Persist credentials to XAI_CREDENTIALS_PATH (0600)
     7. Return XaiCredentials
+
+    ``manual=True`` runs the loopback-free paste-the-code flow for headless hosts
+    (no listener, no SSH tunnel). See docs/runbooks/xai-oauth-reauth.md.
     """
     pkce = _generate_pkce_verifier()
     authorize_url = _build_authorize_url(pkce.code_challenge, pkce.state, pkce.nonce)
+
+    if manual:
+        return _login_manual(pkce, authorize_url)
 
     print(f"Opening browser at:\n  {authorize_url}")
     print(f"(loopback listener on {_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT})")

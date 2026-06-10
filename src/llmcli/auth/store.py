@@ -2,6 +2,7 @@
 
 Atomic-write with fcntl flock. Credentials dir mode 0700, file mode 0600.
 """
+
 import fcntl
 import json
 import os
@@ -14,6 +15,16 @@ XAI_CREDENTIALS_PATH = CREDENTIALS_DIR / "xai.json"
 
 class CredentialsCorruptError(RuntimeError):
     """Raised when credentials JSON cannot be parsed."""
+
+
+class ReauthRequired(RuntimeError):
+    """Raised when the refresh token is rejected (4xx) — interactive re-auth needed.
+
+    Distinct from a generic ``RuntimeError`` (transient 5xx / network) so the
+    forwarder can fail *loud* (ERROR log + 503 health) and back off instead of
+    hammering the token endpoint on every request. Subclasses ``RuntimeError``
+    for back-compat with existing ``except RuntimeError`` handlers.
+    """
 
 
 @dataclass(frozen=True)

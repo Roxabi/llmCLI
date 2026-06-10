@@ -6,10 +6,13 @@ Tests 5–7: XaiAdapter regression under the new contract (RED until T4/T7 land)
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from llmcli.auth.store import XaiCredentials
 from llmcli.proxy_forwarder._common import ALLOWED_PATHS, ForwardAdapter, OAuthAdapter
 
 
@@ -205,3 +208,251 @@ def test_xai_transform_is_identity() -> None:
 
     # Assert — no extra headers injected by xAI adapter (auth is handled in execute)
     assert headers == {}, f"XaiAdapter.extra_headers() expected {{}}, got {headers!r}"
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — fail-loud back-off: a known-dead refresh token is NOT re-POSTed (#114)
+# ---------------------------------------------------------------------------
+
+
+def _dead_creds(refresh_token: str = "DEAD_RTK") -> XaiCredentials:
+    """Expired credentials whose refresh token the token endpoint will 4xx."""
+    return XaiCredentials(
+        access_token="A",
+        refresh_token=refresh_token,
+        id_token="I",
+        expires_at=int(time.time()) - 60,  # expired → triggers proactive refresh
+        token_type="Bearer",
+        scope="openid",
+    )
+
+
+@pytest.mark.asyncio
+async def test_xai_adapter_backs_off_on_dead_refresh_token() -> None:
+    """After a 4xx proves the refresh token dead, refresh() backs off — no re-POST."""
+    # Arrange
+    from llmcli.auth.store import ReauthRequired
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    adapter = XaiAdapter()
+    dead = _dead_creds()
+
+    post_calls = 0
+
+    def _fake_post(url: str, **kwargs):  # noqa: ARG001 — signature match
+        nonlocal post_calls
+        post_calls += 1
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = "invalid_grant"
+        return resp
+
+    # Act — two refreshes of the same dead token
+    with patch("httpx.post", side_effect=_fake_post):
+        with pytest.raises(ReauthRequired):
+            await adapter.refresh(dead)  # real POST → 400 → flag set
+        with pytest.raises(ReauthRequired):
+            await adapter.refresh(dead)  # backed off → no POST
+
+    # Assert — exactly one upstream POST despite two refresh attempts
+    assert post_calls == 1, f"expected one POST (back-off), got {post_calls}"
+    assert adapter._reauth_required is True
+
+
+@pytest.mark.asyncio
+async def test_xai_adapter_clears_flag_after_reauth() -> None:
+    """A new refresh_token (operator re-authed) clears back-off and POSTs again."""
+    # Arrange — drive the adapter into the dead state first
+    from llmcli.auth.store import ReauthRequired
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    adapter = XaiAdapter()
+
+    def _post_400(url: str, **kwargs):  # noqa: ARG001
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = "invalid_grant"
+        return resp
+
+    with patch("httpx.post", side_effect=_post_400):
+        with pytest.raises(ReauthRequired):
+            await adapter.refresh(_dead_creds("DEAD_RTK"))
+    assert adapter._reauth_required is True
+
+    # Act — operator re-authed: a DIFFERENT refresh_token now succeeds
+    token_resp = {
+        "access_token": "NEW_ATK",
+        "refresh_token": "NEW_RTK",
+        "id_token": "NEW_ITK",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+        "scope": "openid",
+    }
+
+    def _post_ok(url: str, **kwargs):  # noqa: ARG001
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = token_resp
+        return resp
+
+    with patch("httpx.post", side_effect=_post_ok):
+        new = await adapter.refresh(_dead_creds("NEW_RTK"))
+
+    # Assert — refreshed + flag cleared
+    assert new.access_token == "NEW_ATK"
+    assert adapter._reauth_required is False
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — /health returns 503 when re-auth required (deterministic unhealthy) (#114)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_503_when_reauth_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /health → 503 (not 200) when the adapter flags reauth_required."""
+    # Arrange
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    adapter = XaiAdapter()
+    # Absent creds → _sync_reauth_state cannot clear the flag (no fresh token on disk).
+    monkeypatch.setattr(adapter, "credential_path", tmp_path / "absent.json")
+    adapter._reauth_required = True
+    adapter._dead_refresh_token = "DEAD_RTK"
+
+    app = create_app(adapter)
+
+    # Act
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/health")
+
+        # Assert — 503 so the container HEALTHCHECK flips unhealthy
+        assert resp.status == 503, f"expected 503, got {resp.status}"
+        body = await resp.json()
+    assert body["reauth_required"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — proxy maps ReauthRequired → 503 + X-Llmcli-Reauth header (#114)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxy_503_on_reauth_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ReauthRequired from execute() surfaces as HTTP 503 + X-Llmcli-Reauth: required."""
+    # Arrange
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.auth.store import ReauthRequired
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    adapter = XaiAdapter()
+
+    async def _boom(*_args, **_kwargs):
+        raise ReauthRequired("refresh token dead")
+
+    monkeypatch.setattr(adapter, "execute", _boom)
+
+    app = create_app(adapter)
+
+    # Act
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/chat/completions", data=b"{}")
+
+        # Assert — hard 503 (not a soft 401) + the re-auth signal header
+        assert resp.status == 503, f"expected 503, got {resp.status}"
+        assert resp.headers.get("X-Llmcli-Reauth") == "required"
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — /health 503 on corrupted creds (review fix #114)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_503_on_corrupted_creds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Corrupted xai.json → /health 503 (was 200) so monitoring sees unhealthy."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    creds_file = tmp_path / "xai.json"
+    creds_file.write_text('{"access_token": "abc"')  # partial JSON → CredentialsCorruptError
+    adapter = XaiAdapter()
+    monkeypatch.setattr(adapter, "credential_path", creds_file)
+
+    app = create_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/health")
+        assert resp.status == 503, f"expected 503, got {resp.status}"
+        body = await resp.json()
+    assert body["status"] == "corrupted"
+    assert body["logged_in"] is False
+
+
+# ---------------------------------------------------------------------------
+# Test 12 — transient (non-ReauthRequired) refresh failure → 502, no reauth header
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_proxy_502_on_transient_refresh_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plain RuntimeError (auth.x.ai 5xx) → 502, NOT 401+reauth (creds not known-bad)."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    adapter = XaiAdapter()
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("xAI token refresh failed (HTTP 503)")
+
+    monkeypatch.setattr(adapter, "execute", _boom)
+
+    app = create_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/chat/completions", data=b"{}")
+        assert resp.status == 502, f"expected 502, got {resp.status}"
+        assert resp.headers.get("X-Llmcli-Reauth") is None
+
+
+# ---------------------------------------------------------------------------
+# Test 13 — /health self-heals once the operator re-auths (new refresh_token)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_health_selfheal_clears_flag_on_new_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After re-auth (new refresh_token on disk), /health flips 503 → 200."""
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from llmcli.auth import store
+    from llmcli.proxy_forwarder._server import create_app
+    from llmcli.proxy_forwarder.xai_adapter import XaiAdapter
+
+    creds_file = tmp_path / "xai.json"
+    adapter = XaiAdapter()
+    monkeypatch.setattr(adapter, "credential_path", creds_file)
+    # Simulate a prior dead-token episode, then the operator re-authing (new token).
+    store.save(_dead_creds("NEW_RTK"), path=creds_file)
+    adapter._reauth_required = True
+    adapter._dead_refresh_token = "OLD_DEAD_RTK"
+
+    app = create_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/health")
+        assert resp.status == 200, f"expected self-heal to 200, got {resp.status}"
+        body = await resp.json()
+    assert body["reauth_required"] is False

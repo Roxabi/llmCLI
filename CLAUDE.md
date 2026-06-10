@@ -73,9 +73,11 @@ llmCLI does **not** own the proxy. `llmcli register-proxy` emits/maintains a nam
 - M₂ is on-demand — local inference can disappear at any time.
 - New engine = +1 file composing `engines/_common.py` — never re-implement stage logic.
 - `llmcli register-proxy` only touches the `# --- llmCLI managed block` in `~/.litellm/config.yaml`.
+- xAI OAuth: each host holds its **own** grant family — never copy/sync `xai.json` between hosts (shared family → rotation clobber, #114).
 
 ## Gotchas
 
 - `llmcli serve` is removed — use `systemctl --user start llmcli-nats-worker` instead.
 - `vllm` engine requires `uv sync --group vllm` and is dev-only (M₂).
 - TQ3_4S models require the `llamacpp_tq3` engine (TurboQuant fork), not vanilla llama.cpp.
+- xAI forwarder `unhealthy` / grok 401 / `auth.x.ai/oauth2/token 400` → dead refresh token; re-auth (headless M₁: `llmcli xai login --manual`). Runbook: [docs/runbooks/xai-oauth-reauth.md](docs/runbooks/xai-oauth-reauth.md).

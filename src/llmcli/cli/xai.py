@@ -1,4 +1,5 @@
 """xAI / SuperGrok OAuth credentials CLI subcommands."""
+
 from __future__ import annotations
 
 import json
@@ -13,9 +14,16 @@ xai_app = typer.Typer(help="xAI / SuperGrok OAuth credentials")
 
 
 @xai_app.command("login")
-def login_cmd() -> None:
+def login_cmd(
+    manual: bool = typer.Option(
+        False,
+        "--manual",
+        help="Headless mode: print the auth URL and paste the redirected code "
+        "(no loopback listener / SSH tunnel needed).",
+    ),
+) -> None:
     """Run PKCE OAuth flow against auth.x.ai; stores credentials at xai.json."""
-    creds = login_flow()
+    creds = login_flow(manual=manual)
     console.print(f"[green]✓[/green] Logged in. expires_at={creds.expires_at}")
 
 
@@ -38,4 +46,6 @@ def status_cmd() -> None:
         console.print(json.dumps({"logged_in": False}))
         raise typer.Exit(1)
     # AC3: stdout must NOT contain eyJ (JWT prefix) or xai- substring
-    console.print(json.dumps({"logged_in": True, "expires_at": creds.expires_at, "scope": creds.scope}))
+    console.print(
+        json.dumps({"logged_in": True, "expires_at": creds.expires_at, "scope": creds.scope})
+    )
