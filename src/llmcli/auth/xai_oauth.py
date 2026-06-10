@@ -204,7 +204,7 @@ def exchange_code(code: str, verifier: str) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        logger.debug("xai token endpoint error body: %s", response.text)
+        logger.debug("xai token endpoint non-200: status=%d", response.status_code)
         raise RuntimeError(f"xAI token exchange failed (HTTP {response.status_code})")
     payload = response.json()
     expires_in = int(payload.get("expires_in") or 3600)
@@ -241,7 +241,7 @@ def refresh_credentials(creds: XaiCredentials) -> XaiCredentials:
         timeout=30.0,
     )
     if response.status_code != 200:
-        logger.debug("xai token endpoint error body: %s", response.text)
+        logger.debug("xai token endpoint non-200: status=%d", response.status_code)
         if 400 <= response.status_code < 500:
             raise ReauthRequired(
                 f"xAI rejected the refresh token (HTTP {response.status_code}) — "
@@ -269,11 +269,26 @@ def _parse_manual_input(raw: str) -> tuple[str, str]:
     """Extract ``(code, state)`` from a pasted redirect URL or a bare code value.
 
     Accepts either the full ``http://127.0.0.1:56121/callback?code=...&state=...``
-    URL copied from the browser address bar, or just the ``code`` value.
+    URL copied from the browser address bar, or just the ``code`` value. A pasted
+    URL must match the registered loopback redirect (scheme/host/port/path); a
+    foreign origin is rejected. Empty input raises.
     """
     raw = raw.strip()
+    if not raw:
+        raise RuntimeError("no code or redirect URL provided")
     if "code=" in raw or raw.lower().startswith("http"):
-        params = parse_qs(urlparse(raw).query)
+        parsed = urlparse(raw)
+        if parsed.scheme and (
+            parsed.scheme != "http"
+            or parsed.hostname != _XAI_REDIRECT_HOST
+            or parsed.port != XAI_OAUTH_REDIRECT_PORT
+            or parsed.path != XAI_OAUTH_REDIRECT_PATH
+        ):
+            raise RuntimeError(
+                "unexpected redirect origin — expected "
+                f"http://{_XAI_REDIRECT_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+            )
+        params = parse_qs(parsed.query)
         code = (params.get("code") or [""])[0]
         if not code:
             raise RuntimeError("no `code=` parameter found in the pasted URL")
@@ -295,8 +310,16 @@ def _login_manual(pkce: PkceVerifier, authorize_url: str) -> XaiCredentials:
     print("(that page fails to load on a headless host — expected; the code is in the URL).")
     print("Paste the FULL redirected URL (or just the code value) below.\n")
     code, received_state = _parse_manual_input(input("code or redirect URL: "))
-    if received_state and not hmac.compare_digest(received_state, pkce.state):
-        raise RuntimeError("OAuth state mismatch — possible CSRF")
+    if received_state:
+        if not hmac.compare_digest(received_state, pkce.state):
+            raise RuntimeError("OAuth state mismatch — possible CSRF")
+    else:
+        # Bare-code paste (no state in the input) — PKCE still binds the code, but
+        # the CSRF state check cannot run. Log it so the omission is auditable.
+        logger.warning(
+            "xai login --manual: no OAuth state in pasted input — "
+            "CSRF state check skipped (PKCE still binds the code)"
+        )
     creds = exchange_code(code, pkce.code_verifier)
     save(creds, XAI_CREDENTIALS_PATH)
     print(f"Logged in. Credentials stored at {XAI_CREDENTIALS_PATH}")

@@ -48,6 +48,14 @@ class XaiAdapter:
         # Flipped once a 4xx refresh proves the refresh token is dead. While set,
         # the adapter backs off (no re-POST to auth.x.ai) and /health reports 503.
         # Cleared when the operator re-auths (refresh_token on disk changes).
+        #
+        # Single-threaded asyncio (no data race), but the flag is read/written
+        # both inside _REFRESH_LOCK (refresh()) and outside it (health()'s
+        # _sync_reauth_state). Two bounded, benign windows, each ≤1 healthcheck
+        # interval: (a) a health poll may report ok while a 4xx is in-flight;
+        # (b) /health may stay 503 briefly after re-auth if traffic (fresh token,
+        # no refresh) arrives before the next poll. Neither wrongly clears the
+        # flag — _sync_reauth_state only clears on a *changed* refresh_token.
         self._reauth_required: bool = False
         self._dead_refresh_token: str | None = None
 

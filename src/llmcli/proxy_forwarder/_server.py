@@ -88,10 +88,11 @@ def _health(adapter: ForwardAdapter):
 
     async def handler(request: web.Request) -> web.Response:  # noqa: ARG001 — handler signature
         payload = await adapter.health()
-        # 503 when the adapter needs re-auth — a flat 200 leaves the container
-        # HEALTHCHECK (HTTP-reachability only) green on dead credentials.
-        status = 503 if payload.get("reauth_required") else 200
-        return web.json_response(payload, status=status)
+        # 503 when the adapter needs re-auth OR creds are corrupted — a flat 200
+        # leaves the container HEALTHCHECK (HTTP-reachability only) green on dead
+        # or unreadable credentials.
+        unhealthy = payload.get("reauth_required") or payload.get("status") == "corrupted"
+        return web.json_response(payload, status=503 if unhealthy else 200)
 
     return handler
 
@@ -135,15 +136,14 @@ def _proxy(adapter: ForwardAdapter):
                     headers={"X-Llmcli-Reauth": "required"},
                     text="re-auth required — run `llmcli xai login` on this host",
                 )
-            except RuntimeError:
-                logger.warning(
-                    "proxy: upstream authentication failed for %s — re-auth required",
-                    request.path,
-                )
+            except RuntimeError as exc:
+                # Non-ReauthRequired refresh/upstream failure (e.g. auth.x.ai 5xx).
+                # Transient → 502 (bad gateway), NOT 401 + reauth header: the
+                # credentials are not known-bad, so do not tell the caller to re-auth.
+                logger.warning("proxy: transient upstream auth error for %s: %s", request.path, exc)
                 return web.Response(
-                    status=401,
-                    headers={"X-Llmcli-Reauth": "required"},
-                    text="upstream authentication failed — check provider credentials",
+                    status=502,
+                    text="upstream auth endpoint error — transient, retry",
                 )
             except aiohttp.ClientError as exc:
                 logger.warning("proxy: upstream connection failed: %s", exc)
@@ -185,7 +185,8 @@ def create_app(adapter: ForwardAdapter) -> web.Application:
     """Build the aiohttp Application for *adapter*.
 
     Routes:
-    - GET /health  → adapter health check (always 200).
+    - GET /health  → adapter health check (200, or 503 when re-auth required
+      or credentials are corrupted).
     - *   /{path}  → proxy to upstream (404 if path not in ALLOWED_PATHS).
     """
     app = web.Application()
