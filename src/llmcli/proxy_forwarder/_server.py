@@ -22,7 +22,7 @@ import aiohttp
 from aiohttp import web
 from multidict import CIMultiDictProxy
 
-from llmcli.auth.store import CredentialsCorruptError
+from llmcli.auth.store import CredentialsCorruptError, ReauthRequired
 
 from ._common import ALLOWED_PATHS, ForwardAdapter, _Resp401
 
@@ -87,7 +87,11 @@ def _health(adapter: ForwardAdapter):
     """Return a GET /health handler bound to *adapter*."""
 
     async def handler(request: web.Request) -> web.Response:  # noqa: ARG001 — handler signature
-        return web.json_response(await adapter.health())
+        payload = await adapter.health()
+        # 503 when the adapter needs re-auth — a flat 200 leaves the container
+        # HEALTHCHECK (HTTP-reachability only) green on dead credentials.
+        status = 503 if payload.get("reauth_required") else 200
+        return web.json_response(payload, status=status)
 
     return handler
 
@@ -121,6 +125,15 @@ def _proxy(adapter: ForwardAdapter):
                     status=503,
                     headers={"X-Llmcli-Reauth": "required"},
                     text="credentials corrupted — re-run the provider login command",
+                )
+            except ReauthRequired:
+                # Refresh token rejected (4xx). The adapter already logged ERROR
+                # once + set its flag; respond 503 (hard failure, not a soft 401
+                # to retry) so callers and monitoring see re-auth is required.
+                return web.Response(
+                    status=503,
+                    headers={"X-Llmcli-Reauth": "required"},
+                    text="re-auth required — run `llmcli xai login` on this host",
                 )
             except RuntimeError:
                 logger.warning(

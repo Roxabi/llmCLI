@@ -9,15 +9,23 @@ module for token refresh.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 import aiohttp
 
 from llmcli.auth import store
-from llmcli.auth.store import CredentialsCorruptError, XAI_CREDENTIALS_PATH, XaiCredentials
+from llmcli.auth.store import (
+    CredentialsCorruptError,
+    ReauthRequired,
+    XAI_CREDENTIALS_PATH,
+    XaiCredentials,
+)
 from llmcli.auth.xai_oauth import refresh_credentials
 
 from ._common import _Resp401, lazy_retry_on_401
+
+logger = logging.getLogger(__name__)
 
 
 class XaiAdapter:
@@ -35,6 +43,24 @@ class XaiAdapter:
 
     api_base: str = "https://api.x.ai"
     credential_path = XAI_CREDENTIALS_PATH
+
+    def __init__(self) -> None:
+        # Flipped once a 4xx refresh proves the refresh token is dead. While set,
+        # the adapter backs off (no re-POST to auth.x.ai) and /health reports 503.
+        # Cleared when the operator re-auths (refresh_token on disk changes).
+        self._reauth_required: bool = False
+        self._dead_refresh_token: str | None = None
+
+    def _sync_reauth_state(self, creds: XaiCredentials | None) -> None:
+        """Clear the re-auth flag once the operator has re-authed (token changed)."""
+        if (
+            self._reauth_required
+            and creds is not None
+            and creds.refresh_token != self._dead_refresh_token
+        ):
+            logger.info("xai forwarder: fresh credentials detected — re-auth flag cleared")
+            self._reauth_required = False
+            self._dead_refresh_token = None
 
     def transform_request(self, body: bytes, path: str) -> bytes:  # noqa: ARG002
         """Return body unchanged — xAI does not require request body mutation."""
@@ -89,31 +115,51 @@ class XaiAdapter:
         """
         try:
             creds = store.load(self.credential_path)
-            return {
-                "status": "ok",
-                "logged_in": creds is not None,
-                "expires_at": creds.expires_at if creds else None,
-            }
         except CredentialsCorruptError:
-            return {"status": "ok", "logged_in": False, "expires_at": None}
+            return {
+                "status": "corrupted",
+                "logged_in": False,
+                "expires_at": None,
+                "reauth_required": self._reauth_required,
+            }
+        self._sync_reauth_state(creds)
+        return {
+            "status": "reauth_required" if self._reauth_required else "ok",
+            "logged_in": creds is not None,
+            "expires_at": creds.expires_at if creds else None,
+            "reauth_required": self._reauth_required,
+        }
 
     async def refresh(self, creds: XaiCredentials) -> XaiCredentials:
-        """Refresh *creds* via the xAI token endpoint.
+        """Refresh *creds* via the xAI token endpoint (off-loop executor).
 
-        Delegates to the synchronous ``refresh_credentials`` function via
-        ``run_in_executor`` to avoid blocking the event loop during the
-        HTTPS POST to auth.x.ai.
+        Backs off when the refresh token is already known-dead: re-POSTing a
+        rejected token on every request hammers auth.x.ai and starves the event
+        loop — the silent 42 h failure mode of issue #114. On a fresh 4xx, logs
+        ERROR once and flips the re-auth flag; on success, clears it.
 
-        Parameters
-        ----------
-        creds:
-            Credentials whose ``refresh_token`` will be exchanged for a new
-            ``access_token``.
-
-        Returns
-        -------
-        XaiCredentials
-            Fresh credentials with updated ``access_token`` and ``expires_at``.
+        Raises
+        ------
+        ReauthRequired
+            When the refresh token is rejected (4xx), now or previously.
         """
+        # Back-off — refresh token already proven dead and unchanged on disk.
+        if self._reauth_required and creds.refresh_token == self._dead_refresh_token:
+            raise ReauthRequired(
+                "xAI re-auth required — run `llmcli xai login` (cached; not re-POSTing)"
+            )
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, refresh_credentials, creds)
+        try:
+            new = await loop.run_in_executor(None, refresh_credentials, creds)
+        except ReauthRequired:
+            if not self._reauth_required:
+                logger.error(
+                    "RE-AUTH REQUIRED: xAI rejected the refresh token (HTTP 4xx). "
+                    "Run `llmcli xai login` on this host — serving 503 until re-auth."
+                )
+            self._reauth_required = True
+            self._dead_refresh_token = creds.refresh_token
+            raise
+        self._reauth_required = False
+        self._dead_refresh_token = None
+        return new

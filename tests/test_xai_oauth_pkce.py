@@ -11,11 +11,14 @@ import pytest
 
 # F1 — direct imports (no try/except guards)
 from llmcli.auth import store as auth_store
-from llmcli.auth.store import CredentialsCorruptError, XaiCredentials
+from llmcli.auth.store import CredentialsCorruptError, ReauthRequired, XaiCredentials
 from llmcli.auth.xai_oauth import (
     XAI_OAUTH_CLIENT_ID,
     _build_authorize_url,
+    _parse_manual_input,
     exchange_code,
+    login_flow,
+    refresh_credentials,
 )
 from llmcli.proxy_forwarder._common import _REFRESH_LOCK, lazy_retry_on_401  # noqa: F401
 
@@ -471,3 +474,123 @@ async def test_lazy_refresh_still_401_propagates(
     )
     assert resp.status == 401, f"expected final 401, got {resp.status}"
     assert api_calls == 2, f"expected 2 api calls (initial + retry), got {api_calls}"
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — refresh_credentials maps 4xx → ReauthRequired, 5xx → RuntimeError (#114)
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_4xx_raises_reauth_required() -> None:
+    """A 4xx from the token endpoint means the refresh token is dead → ReauthRequired."""
+    # Arrange
+    creds = _make_fake_creds(refresh_token="DEAD_RTK", expires_delta=-60)
+
+    def _fake_post(url: str, **kwargs):  # noqa: ARG001 — signature match
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = "invalid_grant"
+        return resp
+
+    # Act + Assert
+    with patch("httpx.post", side_effect=_fake_post):
+        with pytest.raises(ReauthRequired):
+            refresh_credentials(creds)
+
+
+def test_refresh_5xx_raises_generic_runtimeerror() -> None:
+    """A 5xx is transient — generic RuntimeError, NOT ReauthRequired (no back-off)."""
+    # Arrange
+    creds = _make_fake_creds(refresh_token="RTK", expires_delta=-60)
+
+    def _fake_post(url: str, **kwargs):  # noqa: ARG001 — signature match
+        resp = MagicMock()
+        resp.status_code = 503
+        resp.text = "upstream busy"
+        return resp
+
+    # Act + Assert
+    with patch("httpx.post", side_effect=_fake_post):
+        with pytest.raises(RuntimeError) as exc_info:
+            refresh_credentials(creds)
+    assert not isinstance(exc_info.value, ReauthRequired), (
+        "a 5xx must surface as a transient RuntimeError, not ReauthRequired"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test 10 — _parse_manual_input (--manual paste flow, #114)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_manual_input_full_url() -> None:
+    """A pasted redirect URL yields (code, state)."""
+    code, state = _parse_manual_input("http://127.0.0.1:56121/callback?code=ABC123&state=XYZ")
+    assert code == "ABC123"
+    assert state == "XYZ"
+
+
+def test_parse_manual_input_bare_code() -> None:
+    """A bare code value yields (code, '')."""
+    code, state = _parse_manual_input("  ABC123  ")
+    assert code == "ABC123"
+    assert state == ""
+
+
+def test_parse_manual_input_url_without_code_raises() -> None:
+    """A redirect URL missing the code param is an error."""
+    with pytest.raises(RuntimeError):
+        _parse_manual_input("http://127.0.0.1:56121/callback?state=XYZ")
+
+
+# ---------------------------------------------------------------------------
+# Test 11 — login_flow(manual=True): loopback-free paste flow (#114)
+# ---------------------------------------------------------------------------
+
+
+def test_login_flow_manual_bare_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """manual login: paste a bare code → exchange → persist (no loopback / SSH tunnel)."""
+    # Arrange
+    creds_file = tmp_path / "xai.json"
+    monkeypatch.setattr("llmcli.auth.xai_oauth.XAI_CREDENTIALS_PATH", creds_file)
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "PASTED_CODE")
+
+    token_resp = {
+        "access_token": "MATK",
+        "refresh_token": "MRTK",
+        "id_token": "MITK",
+        "expires_in": 3600,
+        "token_type": "Bearer",
+        "scope": "openid",
+    }
+
+    def _fake_post(url: str, **kwargs):  # noqa: ARG001 — signature match
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = token_resp
+        return resp
+
+    # Act
+    with patch("httpx.post", side_effect=_fake_post):
+        creds = login_flow(manual=True)
+
+    # Assert — credentials exchanged + persisted to the (patched) path
+    assert creds.access_token == "MATK"
+    assert creds_file.exists()
+    saved = auth_store.load(path=creds_file)
+    assert saved is not None and saved.refresh_token == "MRTK"
+
+
+def test_login_flow_manual_state_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """manual login rejects a pasted state that doesn't match the PKCE state (CSRF guard)."""
+    # Arrange — paste a URL whose state cannot match the random per-flow PKCE state
+    creds_file = tmp_path / "xai.json"
+    monkeypatch.setattr("llmcli.auth.xai_oauth.XAI_CREDENTIALS_PATH", creds_file)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt="": "http://127.0.0.1:56121/callback?code=C&state=WRONG_STATE",
+    )
+
+    # Act + Assert — raises before any token exchange
+    with pytest.raises(RuntimeError, match="state mismatch"):
+        login_flow(manual=True)
