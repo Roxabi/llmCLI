@@ -351,3 +351,111 @@ async def test_stream_only_done_emits_empty_response_warning(
     assert any("empty response" in m for m in warning_msgs), (
         f"Expected 'empty response' warning, got: {warning_msgs}"
     )
+
+
+# ---------- Issue #1840 — job_id echo on response models ----------
+
+
+@pytest.mark.asyncio
+async def test_blocking_response_echoes_job_id(adapter, fake_msg_factory, make_request_payload):
+    """LlmResponse carries job_id when the request payload includes one."""
+    payload = make_request_payload(stream=False, job_id="job-abc-123")
+    msg = fake_msg_factory(payload)
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.json = MagicMock(return_value={"choices": [{"message": {"content": "hi"}}]})
+    adapter._client.post.return_value = fake_resp
+
+    await adapter.handle(msg, payload)
+
+    assert adapter._nc.publish.await_count == 1
+    body = _decode_publish(adapter._nc.publish.await_args_list[0])
+    assert body["ok"] is True
+    assert body["job_id"] == "job-abc-123"
+
+
+@pytest.mark.asyncio
+async def test_blocking_response_no_crash_without_job_id(
+    adapter, fake_msg_factory, make_request_payload
+):
+    """LlmResponse must not crash when job_id is absent (default_factory fires)."""
+    payload = make_request_payload(stream=False)
+    msg = fake_msg_factory(payload)
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.json = MagicMock(return_value={"choices": [{"message": {"content": "hi"}}]})
+    adapter._client.post.return_value = fake_resp
+
+    await adapter.handle(msg, payload)
+
+    assert adapter._nc.publish.await_count == 1
+    body = _decode_publish(adapter._nc.publish.await_args_list[0])
+    assert body["ok"] is True
+    # job_id must be present (default_factory generates one) and non-empty
+    assert body.get("job_id")
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_echo_job_id(
+    adapter, fake_msg_factory, make_request_payload, stream_lines
+):
+    """LlmChunkEvent (delta + done terminator) both carry job_id from the request."""
+    payload = make_request_payload(stream=True, job_id="job-stream-xyz")
+    msg = fake_msg_factory(payload)
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.aiter_lines = lambda: stream_lines(["hello", " world"])
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=fake_resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    adapter._client.stream.return_value = cm
+
+    await adapter.handle(msg, payload)
+
+    # 2 delta chunks + 1 done terminator = 3 publishes
+    assert adapter._nc.publish.await_count == 3
+    bodies = [_decode_publish(c) for c in adapter._nc.publish.await_args_list]
+    for body in bodies:
+        assert body["job_id"] == "job-stream-xyz", f"job_id missing or wrong in: {body}"
+
+
+@pytest.mark.asyncio
+async def test_stream_chunks_no_crash_without_job_id(
+    adapter, fake_msg_factory, make_request_payload, stream_lines
+):
+    """Streaming path must not crash when job_id is absent (default_factory fires)."""
+    payload = make_request_payload(stream=True)
+    msg = fake_msg_factory(payload)
+
+    fake_resp = MagicMock()
+    fake_resp.raise_for_status = MagicMock()
+    fake_resp.aiter_lines = lambda: stream_lines(["hi"])
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=fake_resp)
+    cm.__aexit__ = AsyncMock(return_value=None)
+    adapter._client.stream.return_value = cm
+
+    await adapter.handle(msg, payload)
+
+    assert adapter._nc.publish.await_count == 2  # 1 delta + 1 terminator
+    bodies = [_decode_publish(c) for c in adapter._nc.publish.await_args_list]
+    for body in bodies:
+        # default_factory generates a job_id; must be non-empty
+        assert body.get("job_id"), f"job_id must be non-empty, got: {body}"
+
+
+@pytest.mark.asyncio
+async def test_error_response_echoes_job_id(adapter, fake_msg_factory, make_request_payload):
+    """Error path (LlmResponse ok=False) also echoes job_id when present."""
+    payload = make_request_payload(stream=False, job_id="job-err-456")
+    msg = fake_msg_factory(payload)
+    adapter._client.post.side_effect = httpx.TimeoutException("upstream timeout")
+
+    await adapter.handle(msg, payload)
+
+    body = _decode_publish(adapter._nc.publish.await_args_list[-1])
+    assert body["ok"] is False
+    assert body["job_id"] == "job-err-456"

@@ -19,7 +19,6 @@ import httpx
 
 from roxabi_contracts.envelope import CONTRACT_VERSION
 from roxabi_contracts.errors import WorkerError
-from roxabi_contracts.llm.builders import build_llm_chunk, build_llm_response
 from roxabi_contracts.llm.models import LlmChunkEvent, LlmResponse
 
 if TYPE_CHECKING:
@@ -69,6 +68,11 @@ class GenerationMixin:
         safe_id = rid if _REQUEST_ID_RE.match(rid) else "unknown"
         trace_id = payload.get("trace_id") or safe_id
         # builders.py does not accept worker_error= — build envelope manually.
+        # Conditional kwarg exclusion: omit job_id entirely when absent so
+        # default_factory fires instead of passing None to _validate_job_id.
+        job_id_kwargs: dict = {}
+        if job_id := payload.get("job_id"):
+            job_id_kwargs["job_id"] = job_id
         if stream:
             return (
                 LlmChunkEvent(
@@ -80,6 +84,7 @@ class GenerationMixin:
                     is_error=True,
                     error=we.message,
                     worker_error=we,
+                    **job_id_kwargs,
                 )
                 .model_dump_json(exclude_none=True)
                 .encode()
@@ -93,6 +98,7 @@ class GenerationMixin:
                 ok=False,
                 error=we.message,
                 worker_error=we,
+                **job_id_kwargs,
             )
             .model_dump_json(exclude_none=True)
             .encode()
@@ -196,9 +202,23 @@ class GenerationMixin:
                     continue
                 delta = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content")
                 if delta and msg.reply:
+                    # Conditional kwarg exclusion: omit job_id when absent so
+                    # default_factory fires instead of passing None to _validate_job_id.
+                    _jid: dict = {}
+                    if _v := payload.get("job_id"):
+                        _jid["job_id"] = _v
                     await nc.publish(
                         msg.reply,
-                        build_llm_chunk(payload, delta=delta).encode(),
+                        LlmChunkEvent(
+                            contract_version=CONTRACT_VERSION,
+                            trace_id=payload.get("trace_id") or str(payload.get("request_id", "")),
+                            issued_at=datetime.now(timezone.utc),
+                            request_id=str(payload.get("request_id", "")),
+                            delta=delta,
+                            **_jid,
+                        )
+                        .model_dump_json(exclude_none=True)
+                        .encode(),
                     )
                     chunk_count += 1
 
@@ -212,9 +232,22 @@ class GenerationMixin:
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         if msg.reply:
+            _jid2: dict = {}
+            if _v2 := payload.get("job_id"):
+                _jid2["job_id"] = _v2
             await nc.publish(
                 msg.reply,
-                build_llm_chunk(payload, done=True, duration_ms=duration_ms).encode(),
+                LlmChunkEvent(
+                    contract_version=CONTRACT_VERSION,
+                    trace_id=payload.get("trace_id") or str(payload.get("request_id", "")),
+                    issued_at=datetime.now(timezone.utc),
+                    request_id=str(payload.get("request_id", "")),
+                    done=True,
+                    duration_ms=duration_ms,
+                    **_jid2,
+                )
+                .model_dump_json(exclude_none=True)
+                .encode(),
             )
 
     async def _blocking_response(self, msg, payload: dict, body: dict, t0: float) -> None:
@@ -225,7 +258,23 @@ class GenerationMixin:
         text: str = data["choices"][0]["message"]["content"]
 
         duration_ms = int((time.monotonic() - t0) * 1000)
+        # Conditional kwarg exclusion: omit job_id when absent so
+        # default_factory fires instead of passing None to _validate_job_id.
+        _jid3: dict = {}
+        if _v3 := payload.get("job_id"):
+            _jid3["job_id"] = _v3
         await self.reply(
             msg,
-            build_llm_response(payload, ok=True, text=text, duration_ms=duration_ms).encode(),
+            LlmResponse(
+                contract_version=CONTRACT_VERSION,
+                trace_id=payload.get("trace_id") or str(payload.get("request_id", "")),
+                issued_at=datetime.now(timezone.utc),
+                request_id=str(payload.get("request_id", "")),
+                ok=True,
+                text=text,
+                duration_ms=duration_ms,
+                **_jid3,
+            )
+            .model_dump_json(exclude_none=True)
+            .encode(),
         )
