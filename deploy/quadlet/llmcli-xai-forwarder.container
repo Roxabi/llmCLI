@@ -7,15 +7,24 @@ StartLimitBurst=5
 Image=ghcr.io/roxabi/llmcli:staging
 Label=io.containers.autoupdate=registry
 ContainerName=llmcli-xai-forwarder
-# No PublishPort — internal to roxabi.network only (reachable as
-# http://llmcli-xai-forwarder:18645 from other containers on roxabi.network)
+# Reachable two ways:
+#  - container-to-container via roxabi.network DNS (http://llmcli-xai-forwarder:18645)
+#    — used by the LiteLLM proxy container.
+#  - host loopback via PublishPort below — used by host processes such as the
+#    xai-research skill (xai_research.py -> http://127.0.0.1:18645). Bound to
+#    127.0.0.1 only: no LAN exposure of the OAuth-injecting relay.
+PublishPort=127.0.0.1:18645:18645
 Network=roxabi.network
 Volume=%h/.roxabi/llmcli/credentials:/home/llmcli/.roxabi/llmcli/credentials:rw,Z
 Environment=LLMCLI_FORWARDER_PROVIDER=xai
 Environment=LLMCLI_FORWARDER_PORT=18645
 UserNS=keep-id:uid=1502,gid=1502
 Exec=forwarder
-HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://localhost:18645/health', timeout=5)"
+# Single-quote outer / double-quote inner: podman 5.7.0 (quadlet, M₁ Ubuntu)
+# truncates a HealthCmd value that ENDS in an escaped double-quote, producing
+# `sh: Unterminated quoted string` -> permanent unhealthy. Ending in the outer
+# single quote sidesteps the bug; verified via `quadlet -dryrun` on 5.7.0 + 5.8.2.
+HealthCmd=python -c 'import urllib.request; urllib.request.urlopen("http://localhost:18645/health", timeout=5)'
 HealthInterval=30s
 HealthStartPeriod=15s
 NoNewPrivileges=true
