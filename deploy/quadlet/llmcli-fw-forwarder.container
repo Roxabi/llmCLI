@@ -15,7 +15,11 @@ Environment=LLMCLI_FORWARDER_PROVIDER=fireworks
 Environment=LLMCLI_FORWARDER_PORT=18646
 UserNS=keep-id:uid=1502,gid=1502
 Exec=forwarder
-HealthCmd=python -c "import urllib.request; urllib.request.urlopen('http://localhost:18646/health', timeout=5)"
+# NB: Quadlet strips a trailing quote from a HealthCmd value that ends in one
+# (python -c "...'...'..." → unterminated shell string → probe always errors →
+# false unhealthy, ~13d). Ending the value with a non-quote (|| exit 1) keeps the
+# inner quoting intact so this HTTP /health probe generates and runs correctly.
+HealthCmd=python -c 'import urllib.request; urllib.request.urlopen("http://localhost:18646/health", timeout=5)' || exit 1
 HealthInterval=30s
 HealthStartPeriod=15s
 NoNewPrivileges=true
