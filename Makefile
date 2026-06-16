@@ -12,8 +12,9 @@ install-quadlet:
 	@mkdir -p $(QUADLET_DIR)
 	@mkdir -p $(QUADLET_ENV_DIR)
 	@mkdir -p $(HOME)/.cache/huggingface
-	@install -m 644 deploy/quadlet/llmcli.container $(QUADLET_DIR)/llmcli.container
-	@install -m 644 deploy/quadlet/llmcli-nats-worker.container $(QUADLET_DIR)/llmcli-nats-worker.container
+	@for f in deploy/quadlet/*.container; do \
+		install -m 644 "$$f" "$(QUADLET_DIR)/"; \
+	done
 	@if [ ! -f "$(QUADLET_ENV_PROXY)" ]; then \
 	  install -m 600 /dev/null "$(QUADLET_ENV_PROXY)" ; \
 	  printf '# proxy.env — chmod 600. Populate with provider keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$(QUADLET_ENV_PROXY)" ; \
