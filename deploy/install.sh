@@ -122,11 +122,12 @@ fi
 # --- Quadlet units ---
 echo ""
 echo "--- Quadlet units ---"
-for unit in llmcli.container llmcli-nats-worker.container llmcli-xai-forwarder.container llmcli-fw-forwarder.container; do
-  src="${SCRIPT_DIR}/quadlet/${unit}"
+for src in "${SCRIPT_DIR}"/quadlet/*.container; do
+  unit="$(basename "$src")"
   dst="${QUADLET_DIR}/${unit}"
   if [ ! -f "$src" ]; then
-    echo "  [skip]  $unit (source not found: $src)"
+    # glob matched nothing → literal pattern; nothing to install
+    echo "  [skip]  no .container units found in ${SCRIPT_DIR}/quadlet/"
     continue
   fi
   if [ -f "$dst" ] && ! "$FORCE"; then
