@@ -24,6 +24,14 @@ HealthInterval=30s
 HealthStartPeriod=15s
 NoNewPrivileges=true
 DropCapability=all
+# ReadOnly rootfs — host-validated 2026-06-16 (D-6 ops-audit). Thin relay; runtime
+# writes (lib caches, /tmp) land on the tmpfs set below — 0 EROFS at boot. Uniform
+# with the proxy. mode=1777: a root-owned 0755 tmpfs EACCESes for non-root uid 1502.
+ReadOnly=true
+Tmpfs=/tmp:mode=1777
+Tmpfs=/home/llmcli/.local:mode=1777
+Tmpfs=/home/llmcli/.cache:mode=1777
+Tmpfs=/home/llmcli/.config:mode=1777
 
 [Service]
 Restart=on-failure

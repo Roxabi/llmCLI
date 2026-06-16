@@ -29,6 +29,15 @@ HealthInterval=30s
 HealthStartPeriod=15s
 NoNewPrivileges=true
 DropCapability=all
+# ReadOnly rootfs — host-validated 2026-06-16 (D-6 ops-audit). The credentials
+# Volume above is explicit :rw,Z → stays writable under ReadOnly, so xAI OAuth
+# token refresh is unaffected. Other runtime writes land on the tmpfs set below.
+# mode=1777: a root-owned 0755 tmpfs EACCESes for the non-root uid 1502.
+ReadOnly=true
+Tmpfs=/tmp:mode=1777
+Tmpfs=/home/llmcli/.local:mode=1777
+Tmpfs=/home/llmcli/.cache:mode=1777
+Tmpfs=/home/llmcli/.config:mode=1777
 
 [Service]
 Restart=on-failure
