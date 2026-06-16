@@ -24,7 +24,8 @@ Environment=NATS_NKEY_SEED_PATH=/run/secrets/llmcli-nats-worker.seed
 Environment=LLMCLI_LITELLM_URL=http://localhost:18091/v1
 # Override the model per host: add Environment=LLMCLI_MODEL=<catalog-name> in a drop-in
 Exec=llm --model qwen3-4b
-HealthCmd=pgrep -f "llmcli nats-serve"
+# NB: Quadlet ≤5.7.0 strips a trailing double-quote from HealthCmd values → sh: Unterminated quoted string → false unhealthy. Ending in non-quote (|| exit 1) keeps inner quotes intact.
+HealthCmd=pgrep -f "llmcli nats-serve" || exit 1
 HealthInterval=30s
 HealthStartPeriod=30s
 NoNewPrivileges=true

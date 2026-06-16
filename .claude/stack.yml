@@ -72,3 +72,7 @@ quality_gates:
     enabled: true
     stage: pre-push                            # pre-commit | pre-push (default pre-push; lint-imports is slow)
     config: .importlinter
+  healthcmd_quoting:
+    enabled: true
+    stage: pre-push
+    script: tools/check_healthcmd_quoting.sh
