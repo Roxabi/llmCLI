@@ -996,3 +996,73 @@ class TestProxyEnvPortMalformed:
             f"Expected 'LLMCLI_PROXY_PORT' in output; got: {combined!r}"
         )
         assert "abc" in combined, f"Expected 'abc' in output; got: {combined!r}"
+
+
+# ---------------------------------------------------------------------------
+# Model catalogue background refresh (#130)
+# ---------------------------------------------------------------------------
+
+
+class TestModelRefresh:
+    def test_parse_model_refresh_interval_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from llmcli.cli.proxy import _parse_model_refresh_interval
+
+        monkeypatch.delenv("LLMCLI_MODEL_REFRESH_SECS", raising=False)
+        assert _parse_model_refresh_interval() == 60.0
+
+    def test_parse_model_refresh_interval_rejects_negative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.cli.proxy import _parse_model_refresh_interval
+
+        monkeypatch.setenv("LLMCLI_MODEL_REFRESH_SECS", "-1")
+        with pytest.raises(typer.Exit) as exc:
+            _parse_model_refresh_interval()
+        assert exc.value.exit_code == 1
+
+    def test_reload_litellm_child_respawns_when_sighup_ignored(self) -> None:
+        from llmcli.cli.proxy import _reload_litellm_child
+
+        child = MagicMock()
+        child.poll.return_value = None
+        child.send_signal.side_effect = OSError("no sighup")
+        new_child = MagicMock()
+        with patch("llmcli.cli.proxy._spawn_litellm", return_value=new_child) as spawn:
+            result = _reload_litellm_child(child, Path("/tmp/cfg.yaml"), 18091, "0.0.0.0")
+        child.terminate.assert_called_once()
+        spawn.assert_called_once()
+        assert result is new_child
+
+    def test_model_refresh_loop_regenerates_config(self) -> None:
+        from llmcli.cli.proxy import _start_model_refresh_loop
+
+        catalog = _make_catalog()
+        target = Path("/tmp/proxy.config.yaml")
+        base: dict = {"general_settings": {}, "litellm_settings": {}}
+        child = MagicMock()
+        child.poll.return_value = None
+        child_state: dict = {"child": child, "stop": False}
+        sleep_calls = 0
+
+        def _sleep_then_stop(_interval: float) -> None:
+            nonlocal sleep_calls
+            sleep_calls += 1
+            if sleep_calls >= 2:
+                child_state["stop"] = True
+
+        with (
+            patch("llmcli.cli.proxy._write_proxy_config") as write_cfg,
+            patch("llmcli.cli.proxy._reload_litellm_child", return_value=child) as reload,
+            patch("llmcli.cli.proxy.time.sleep", side_effect=_sleep_then_stop),
+        ):
+            _start_model_refresh_loop(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=18091,
+                host="0.0.0.0",
+                interval_secs=0.01,
+            ).join(timeout=2.0)
+        write_cfg.assert_called()
+        reload.assert_called()

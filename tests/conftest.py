@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import shutil
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -28,6 +29,31 @@ def _stub_free_vram_probe():
 
 
 @pytest.fixture(autouse=True)
+def _stub_remote_upstream_probe(request: pytest.FixtureRequest):
+    # Remote TOML entries are health-gated; default to healthy so existing
+    # build_block/build_full_config tests stay deterministic without live APIs.
+    if request.node.get_closest_marker("no_probe_stub"):
+        yield
+        return
+    with patch("llmcli.support.litellm_config.probe_remote_model", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_model_discovery_cache():
+    from llmcli.support.litellm_config import (
+        _MODEL_DISCOVERY_CACHE,
+        register_model_refresh_callback,
+    )
+
+    _MODEL_DISCOVERY_CACHE.invalidate()
+    register_model_refresh_callback(None)
+    yield
+    _MODEL_DISCOVERY_CACHE.invalidate()
+    register_model_refresh_callback(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_xai_credentials_path(tmp_path_factory):
     # OAuth model injection (litellm_config.build_model_list) is gated on
     # XAI_CREDENTIALS_PATH.exists(). Point it at a tmp path so tests are
@@ -35,8 +61,14 @@ def _isolate_xai_credentials_path(tmp_path_factory):
     # host running pytest. Tests that exercise the OAuth path can re-patch.
     from pathlib import Path
     fake = tmp_path_factory.mktemp("no-xai-creds") / "xai.json"
-    with patch("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", Path(fake)), \
-         patch("llmcli.nats._lifecycle.XAI_CREDENTIALS_PATH", Path(fake)):
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", Path(fake))
+        )
+        if importlib.util.find_spec("roxabi_contracts") is not None:
+            stack.enter_context(
+                patch("llmcli.nats._lifecycle.XAI_CREDENTIALS_PATH", Path(fake))
+            )
         yield
 
 
@@ -48,6 +80,10 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "gpu: tests that require a live GPU (skipped when no GPU is available)",
+    )
+    config.addinivalue_line(
+        "markers",
+        "no_probe_stub: disable autouse upstream health probe stub",
     )
 
 

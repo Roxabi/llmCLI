@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from llmcli.config import Catalog, HostSettings, ModelSpec
 from llmcli.support.litellm_config import BLOCK_END, BLOCK_START, build_block, write_block
@@ -926,3 +926,196 @@ class TestBuildModelList:
         # Assert
         hash_after = hashlib.sha256(yaml_path.read_bytes()).hexdigest()
         assert hash_before == hash_after
+
+
+# ---------------------------------------------------------------------------
+# Unified dynamic /v1/models — forwarder discovery + health filter (#130)
+# ---------------------------------------------------------------------------
+
+
+class TestXaiModelDiscovery:
+    def test_fetch_xai_models_filters_grok_imagine(self) -> None:
+        from llmcli.support.litellm_config import fetch_xai_models
+
+        payload = {
+            "data": [
+                {"id": "grok-4.3"},
+                {"id": "grok-imagine-v1"},
+                {"id": "grok-4-fast"},
+            ]
+        }
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = payload
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            ids = fetch_xai_models("http://llmcli-xai-forwarder:18645/v1")
+        assert ids == ["grok-4.3", "grok-4-fast"]
+
+    def test_fetch_xai_models_returns_empty_on_error(self) -> None:
+        from llmcli.support.litellm_config import fetch_xai_models
+
+        with patch(
+            "llmcli.support.litellm_config.httpx.get",
+            side_effect=OSError("connection refused"),
+        ):
+            assert fetch_xai_models("http://llmcli-xai-forwarder:18645/v1") == []
+
+    @pytest.mark.no_probe_stub
+    def test_probe_remote_model_omits_on_401(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from llmcli.support.litellm_config import probe_remote_model
+
+        spec = ModelSpec(
+            name="kimi-k2.6",
+            engine="remote",
+            provider="fireworks",
+            model_id="accounts/fireworks/models/kimi-k2p6",
+            protocol="openai",
+        )
+        provider = PROVIDERS["fireworks"]
+        monkeypatch.setenv(provider.key_env, "test-key")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            assert probe_remote_model(spec, provider) is False
+
+    @pytest.mark.no_probe_stub
+    def test_build_model_list_omits_unhealthy_remote(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        catalog = _make_remote_catalog("openai")
+        provider = PROVIDERS["fireworks"]
+        monkeypatch.setenv(provider.key_env, "test-key")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        cache = ModelDiscoveryCache(ttl_secs=60)
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            model_list = build_model_list(
+                catalog, PUBLIC_BASE_URL, hostname="any-host", cache=cache
+            )
+        assert model_list == []
+
+    def test_build_model_list_machines_filter_unchanged(self) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        catalog = _make_catalog(
+            models={
+                "host-only": dict(
+                    engine="llamacpp",
+                    repo="Org/Qwen3-8B-GGUF",
+                    file="qwen3-8b-q4_k_m.gguf",
+                    port=8091,
+                    vram_gib=5.5,
+                    machines=["host-a"],
+                )
+            }
+        )
+        cache = ModelDiscoveryCache(ttl_secs=60)
+        on_a = build_model_list(catalog, PUBLIC_BASE_URL, hostname="host-a", cache=cache)
+        cache.invalidate()
+        on_b = build_model_list(catalog, PUBLIC_BASE_URL, hostname="host-b", cache=cache)
+        assert len(on_a) == 1
+        assert on_b == []
+
+    def test_build_model_list_includes_live_grok_when_creds_exist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        creds = tmp_path / "xai.json"
+        creds.write_text('{"access_token": "t", "refresh_token": "r"}')
+        monkeypatch.setattr("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", creds)
+        payload = {"data": [{"id": "grok-4.3"}]}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = payload
+        cache = ModelDiscoveryCache(ttl_secs=60)
+        catalog = _make_catalog(models={})
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            model_list = build_model_list(catalog, PUBLIC_BASE_URL, cache=cache)
+        names = [m["model_name"] for m in model_list]
+        assert "grok-4.3" in names
+
+    def test_build_model_list_no_grok_without_creds(self) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        cache = ModelDiscoveryCache(ttl_secs=60)
+        catalog = _make_catalog(models={})
+        model_list = build_model_list(catalog, PUBLIC_BASE_URL, cache=cache)
+        assert all(not n.startswith("grok") for n in (m["model_name"] for m in model_list))
+
+    def test_build_model_list_dedup_toml_over_forwarder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        creds = tmp_path / "xai.json"
+        creds.write_text('{"access_token": "t", "refresh_token": "r"}')
+        monkeypatch.setattr("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", creds)
+        catalog = _make_catalog(
+            models={
+                "grok-4.3": dict(
+                    engine="llamacpp",
+                    repo="Org/Grok-GGUF",
+                    file="grok.gguf",
+                    port=8099,
+                    vram_gib=5.0,
+                )
+            }
+        )
+        payload = {"data": [{"id": "grok-4.3"}]}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = payload
+        cache = ModelDiscoveryCache(ttl_secs=60)
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            model_list = build_model_list(catalog, PUBLIC_BASE_URL, cache=cache)
+        grok_entries = [m for m in model_list if m["model_name"] == "grok-4.3"]
+        assert len(grok_entries) == 1
+        assert grok_entries[0]["litellm_params"]["api_base"].endswith(":8099/v1")
+
+    def test_invalidate_model_cache_forces_rebuild(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import (
+            _MODEL_DISCOVERY_CACHE,
+            build_model_list,
+            invalidate_model_cache,
+        )
+
+        creds = tmp_path / "xai.json"
+        creds.write_text('{"access_token": "t", "refresh_token": "r"}')
+        monkeypatch.setattr("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", creds)
+        _MODEL_DISCOVERY_CACHE._ttl_secs = 3600  # noqa: SLF001 — test-only TTL override
+        catalog = _make_catalog(models={})
+        call_count = 0
+
+        def _fake_fetch(_base: str, *, timeout: float = 3.0) -> list[str]:
+            nonlocal call_count
+            call_count += 1
+            return ["grok-4.3"] if call_count == 1 else ["grok-4.20"]
+
+        with patch("llmcli.support.litellm_config.fetch_xai_models", side_effect=_fake_fetch):
+            first = build_model_list(catalog, PUBLIC_BASE_URL)
+            second = build_model_list(catalog, PUBLIC_BASE_URL)
+            assert first[0]["model_name"] == "grok-4.3"
+            assert second[0]["model_name"] == "grok-4.3"
+            invalidate_model_cache()
+            third = build_model_list(catalog, PUBLIC_BASE_URL)
+        assert third[0]["model_name"] == "grok-4.20"
+
+    def test_register_proxy_xai_block_includes_forwarder_models(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        creds = tmp_path / "xai.json"
+        creds.write_text('{"access_token": "t", "refresh_token": "r"}')
+        monkeypatch.setattr("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", creds)
+        payload = {"data": [{"id": "grok-4.3"}]}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = payload
+        catalog = _make_catalog(models={})
+        with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
+            block = build_block(catalog, PUBLIC_BASE_URL)
+        assert "grok-4.3" in block

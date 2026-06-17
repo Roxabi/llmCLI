@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import signal
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 import yaml
@@ -17,10 +19,14 @@ from llmcli.config import Catalog
 from llmcli.support.litellm_config import (
     build_model_list,
     emit_xai_oauth_warning_if_absent,
+    invalidate_model_cache,
     load_proxy_base,
     merge_proxy_config,
+    register_model_refresh_callback,
 )
 from llmcli.support.providers import PROVIDERS
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # register-proxy
@@ -164,11 +170,6 @@ def proxy(
         err_console.print(f"[red]proxy-base.yaml: {exc}[/red]")
         raise typer.Exit(code=1)
 
-    # 4. Build model_list + merge into layered config
-    model_list = build_model_list(catalog, catalog.host.public_base_url)
-    cfg = merge_proxy_config(base, model_list, api_key_env=catalog.host.api_key_env)
-    yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
-
     # 4. Choose target path
     if config_out is not None:
         target = config_out
@@ -185,16 +186,8 @@ def proxy(
             )
             raise typer.Exit(127)
 
-    # 5. Write with 0o700 dir mode, 0o600 file mode
-    # Atomic create with restrictive perms (no write_text→chmod race window).
-    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(yaml_text)
-    target.chmod(0o600)  # defense-in-depth: enforce exact mode regardless of process umask
-
-    # 5b. Write custom auth module so LiteLLM can resolve it
-    _write_custom_auth_module(target.parent)
+    # 5. Build model_list + merge into layered config and write to disk
+    _write_proxy_config(catalog, target, base)
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
@@ -205,10 +198,38 @@ def proxy(
         console.print(f"[green]Wrote proxy config to {target}[/green]")
         raise typer.Exit(0)
 
-    # 7. Spawn litellm, install signal handlers, wait, propagate exit code
-    child = _spawn_litellm(target, resolved_port, host)
-    _install_signal_handlers(child)
-    returncode = child.wait()
+    # 7. Spawn litellm, background refresh, install signal handlers, wait
+    child_state: dict[str, Any] = {"child": _spawn_litellm(target, resolved_port, host), "stop": False}
+
+    def _refresh_now() -> None:
+        try:
+            invalidate_model_cache()
+            _write_proxy_config(catalog, target, base)
+            child_state["child"] = _reload_litellm_child(
+                child_state["child"], target, resolved_port, host
+            )
+        except Exception as exc:
+            log.warning("model catalogue refresh failed: %s", exc)
+
+    register_model_refresh_callback(_refresh_now)
+    refresh_interval = _parse_model_refresh_interval()
+    refresh_thread = _start_model_refresh_loop(
+        child_state,
+        catalog=catalog,
+        target=target,
+        base=base,
+        port=resolved_port,
+        host=host,
+        interval_secs=refresh_interval,
+    )
+
+    def _shutdown_handler(signum, frame):  # noqa: ARG001
+        child_state["stop"] = True
+        register_model_refresh_callback(None)
+        refresh_thread.join(timeout=2.0)
+
+    _install_signal_handlers(child_state["child"], pre_handler=_shutdown_handler)
+    returncode = child_state["child"].wait()
     # POSIX convention: negative return = killed by signal N → exit 128+N
     # Specifically, -9 (SIGKILL, e.g. OOM) → 137
     if returncode < 0:
@@ -290,7 +311,106 @@ def _spawn_litellm(config_path: Path, port: int, host: str) -> subprocess.Popen:
     )
 
 
-def _install_signal_handlers(child: subprocess.Popen, drain_timeout: float = 10.0) -> None:
+def _parse_model_refresh_interval() -> float:
+    """Parse LLMCLI_MODEL_REFRESH_SECS (default 60); reject negative values."""
+    raw = os.environ.get("LLMCLI_MODEL_REFRESH_SECS", "60")
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("LLMCLI_MODEL_REFRESH_SECS=%r invalid; using 60", raw)
+        return 60.0
+    if value < 0:
+        err_console.print(
+            f"[red]LLMCLI_MODEL_REFRESH_SECS={raw} must be non-negative.[/red]"
+        )
+        raise typer.Exit(code=1)
+    return value if value > 0 else 60.0
+
+
+def _write_proxy_config(catalog: Catalog, target: Path, base: dict[str, Any]) -> None:
+    """Build merged proxy YAML from catalog + base transport config and write to target."""
+    model_list = build_model_list(catalog, catalog.host.public_base_url)
+    cfg = merge_proxy_config(base, model_list, api_key_env=catalog.host.api_key_env)
+    yaml_text = yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False)
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(target, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(yaml_text)
+    target.chmod(0o600)
+    _write_custom_auth_module(target.parent)
+
+
+def _reload_litellm_child(
+    child: subprocess.Popen,
+    config_path: Path,
+    port: int,
+    host: str,
+    *,
+    drain_timeout: float = 5.0,
+) -> subprocess.Popen:
+    """Reload litellm by SIGHUP when possible; otherwise terminate and respawn."""
+    if child.poll() is None:
+        try:
+            child.send_signal(signal.SIGHUP)
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if child.poll() is not None:
+                    break
+                time.sleep(0.1)
+            if child.poll() is None:
+                return child
+        except OSError as exc:
+            log.debug("SIGHUP reload failed, respawning litellm child: %s", exc)
+
+    if child.poll() is None:
+        child.terminate()
+        deadline = time.monotonic() + drain_timeout
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                break
+            time.sleep(0.1)
+        if child.poll() is None:
+            child.kill()
+    return _spawn_litellm(config_path, port, host)
+
+
+def _start_model_refresh_loop(
+    child_state: dict[str, Any],
+    *,
+    catalog: Catalog,
+    target: Path,
+    base: dict[str, Any],
+    port: int,
+    host: str,
+    interval_secs: float,
+) -> threading.Thread:
+    """Daemon thread: periodic model_list regen + litellm child reload."""
+
+    def _loop() -> None:
+        while not child_state.get("stop"):
+            time.sleep(interval_secs)
+            if child_state.get("stop"):
+                break
+            try:
+                invalidate_model_cache()
+                _write_proxy_config(catalog, target, base)
+                child = child_state.get("child")
+                if child is not None and child.poll() is None:
+                    child_state["child"] = _reload_litellm_child(child, target, port, host)
+            except Exception as exc:
+                log.warning("background model refresh failed: %s", exc)
+
+    thread = threading.Thread(target=_loop, name="llmcli-model-refresh", daemon=True)
+    thread.start()
+    return thread
+
+
+def _install_signal_handlers(
+    child: subprocess.Popen,
+    drain_timeout: float = 10.0,
+    *,
+    pre_handler: Any | None = None,
+) -> None:
     """Forward SIGTERM/SIGINT to the litellm child with a poll-loop drain.
 
     First signal: child.terminate() → poll child.poll() in 0.1s ticks until
@@ -302,6 +422,8 @@ def _install_signal_handlers(child: subprocess.Popen, drain_timeout: float = 10.
     drain_state = {"active": False}
 
     def handler(signum, frame):  # noqa: ARG001 (signature required by signal.signal)
+        if pre_handler is not None:
+            pre_handler(signum, frame)
         if drain_state["active"] and signum == signal.SIGINT:
             child.kill()
             raise SystemExit(130)
