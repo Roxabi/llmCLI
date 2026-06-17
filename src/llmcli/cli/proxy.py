@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import shutil
@@ -188,7 +190,7 @@ def proxy(
             raise typer.Exit(127)
 
     # 5. Build model_list + merge into layered config and write to disk
-    _write_proxy_config(catalog, target, base)
+    initial_model_list = _write_proxy_config(catalog, target, base)
 
     # 6. If --config-out, dry-run exit
     if config_out is not None:
@@ -205,6 +207,7 @@ def proxy(
         "stop": False,
         "refresh_lock": threading.Lock(),
         "last_xai_token": xai_credentials_cache_token(),
+        "last_model_list_hash": _hash_model_list(initial_model_list),
     }
 
     def _refresh_now() -> None:
@@ -235,23 +238,12 @@ def proxy(
     def _shutdown_handler(signum, frame):  # noqa: ARG001
         child_state["stop"] = True
         register_model_refresh_callback(None)
+        with child_state["refresh_lock"]:
+            pass
         refresh_thread.join(timeout=2.0)
 
     _install_signal_handlers(child_state, pre_handler=_shutdown_handler)
-    returncode = 0
-    while True:
-        child = child_state["child"]
-        returncode = child.wait()
-        if child_state.get("stop"):
-            break
-        current = child_state.get("child")
-        if (
-            current is not None
-            and current is not child
-            and current.poll() is None
-        ):
-            continue
-        break
+    returncode = _wait_for_litellm_child(child_state)
     # POSIX convention: negative return = killed by signal N → exit 128+N
     # Specifically, -9 (SIGKILL, e.g. OOM) → 137
     if returncode < 0:
@@ -349,7 +341,13 @@ def _parse_model_refresh_interval() -> float:
     return value if value > 0 else 60.0
 
 
-def _write_proxy_config(catalog: Catalog, target: Path, base: dict[str, Any]) -> None:
+def _hash_model_list(model_list: list[dict[str, Any]]) -> str:
+    """Stable SHA-256 digest of model_list for change detection."""
+    payload = json.dumps(model_list, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _write_proxy_config(catalog: Catalog, target: Path, base: dict[str, Any]) -> list[dict[str, Any]]:
     """Build merged proxy YAML from catalog + base transport config and write to target."""
     model_list = build_model_list(catalog, catalog.host.public_base_url)
     cfg = merge_proxy_config(base, model_list, api_key_env=catalog.host.api_key_env)
@@ -360,6 +358,24 @@ def _write_proxy_config(catalog: Catalog, target: Path, base: dict[str, Any]) ->
         f.write(yaml_text)
     target.chmod(0o600)
     _write_custom_auth_module(target.parent)
+    return model_list
+
+
+def _wait_for_litellm_child(child_state: dict[str, Any]) -> int:
+    """Block until the litellm child exits; continue waiting after catalogue respawn."""
+    while True:
+        child = child_state["child"]
+        returncode = child.wait()
+        if child_state.get("stop"):
+            return returncode
+        current = child_state.get("child")
+        if (
+            current is not None
+            and current is not child
+            and current.poll() is None
+        ):
+            continue
+        return returncode
 
 
 def _run_catalogue_refresh(
@@ -374,12 +390,26 @@ def _run_catalogue_refresh(
     """Regenerate proxy config and reload litellm child (single-flight)."""
     lock = child_state["refresh_lock"]
     with lock:
+        if child_state.get("stop"):
+            return
         clear_model_cache()
-        _write_proxy_config(catalog, target, base)
+        model_list = _write_proxy_config(catalog, target, base)
+        new_hash = _hash_model_list(model_list)
+        prev_hash = child_state.get("last_model_list_hash")
+        child_state["last_model_list_hash"] = new_hash
+        child_state["last_xai_token"] = xai_credentials_cache_token()
+        if child_state.get("stop"):
+            return
         child = child_state.get("child")
+        if (
+            prev_hash == new_hash
+            and child is not None
+            and child.poll() is None
+        ):
+            log.debug("model_list unchanged; skipping litellm reload")
+            return
         if child is not None and child.poll() is None:
             child_state["child"] = _reload_litellm_child(child, target, port, host)
-        child_state["last_xai_token"] = xai_credentials_cache_token()
 
 
 def _reload_litellm_child(
@@ -440,6 +470,8 @@ def _start_model_refresh_loop(
                     port=port,
                     host=host,
                 )
+            except typer.Exit as exc:
+                log.warning("background model refresh aborted: litellm unavailable (%s)", exc)
             except Exception as exc:
                 log.warning("background model refresh failed: %s", exc)
 
