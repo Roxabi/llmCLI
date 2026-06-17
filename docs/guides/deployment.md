@@ -700,6 +700,15 @@ pattern to the Quadlet-managed `llmcli proxy`:
    Use `127.0.0.1` explicitly — rootless Podman on M₁ does not resolve IPv6 `::1` for
    `localhost`.
 
+7b. **Smoke (xAI Grok pass-through)** — requires `llmcli-xai-forwarder` running and
+   `llmcli xai login` complete (M₁ only):
+   ```bash
+   curl -sS -H "Authorization: Bearer $LLMCLI_API_KEY" \
+     http://127.0.0.1:18091/xai/v1/models | jq '.data[].id'
+   ```
+   The `/xai` path forwards to `llmcli-xai-forwarder:18645` with live model discovery —
+   no proxy restart needed when xAI ships new Grok versions.
+
 8. **Migrate Claude Code aliases** — point `~/.bash_aliases` `_cc_fireworks()` /
    `_cc_nvidia()` / `cccc` / `cnd` to `127.0.0.1:18091` (and `/fw-anthropic` for the
    Fireworks pass-through if you use it). See issue #52 for the full alias migration.

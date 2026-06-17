@@ -339,6 +339,27 @@ Expected:
 {"status": "ok", "logged_in": true, "expires_at": 1748454131}
 ```
 
+**4. Live Grok via proxy pass-through** (verifies `/xai` route in `proxy-base.yaml`):
+
+```bash
+curl -sS -H "Authorization: Bearer $LLMCLI_API_KEY" \
+  http://127.0.0.1:18091/xai/v1/models | jq '.data[].id'
+```
+
+Expected: the same model ids as `curl http://llmcli-xai-forwarder:18645/v1/models` from
+inside the `llmcli` container (e.g. `grok-4.3`, `grok-4.20-*`). The `/xai` path is a
+raw pass-through to `llmcli-xai-forwarder:18645` — the forwarder owns OAuth injection;
+the proxy only validates `LLMCLI_API_KEY` at the edge.
+
+Smoke a completion:
+
+```bash
+curl -sS -H "Authorization: Bearer $LLMCLI_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{"model":"grok-4.3","max_tokens":16,"messages":[{"role":"user","content":"ok"}]}' \
+  http://127.0.0.1:18091/xai/v1/chat/completions
+```
+
 ---
 
 ### Refresh expiry behavior
