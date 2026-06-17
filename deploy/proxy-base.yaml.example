@@ -61,6 +61,15 @@ general_settings:
         # NOTE: this block MAY be removed when MODE ON (forwarder injects the key; inbound Authorization is stripped regardless).
         Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
 
+    # xAI Grok — live catalogue via OAuth forwarder (no LiteLLM reload).
+    # Consumers point at http://<host>:18091/xai/v1 (OpenAI-compatible).
+    # The forwarder injects/refreshes SuperGrok OAuth server-side; no client key needed.
+    # Container DNS `llmcli-xai-forwarder` resolves on roxabi.network (M₁).
+    - path: "/xai"
+      target: "http://llmcli-xai-forwarder:18645"
+      include_subpath: true
+      forward_headers: false
+
 litellm_settings:
   # Drop unsupported provider-specific kwargs instead of erroring.
   drop_params: true

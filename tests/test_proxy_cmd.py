@@ -830,6 +830,16 @@ class TestMergeProxyConfig:
         assert result["router_settings"] == {"timeout": 600}
         assert result["environment_variables"] == {"FOO": "bar"}
 
+    def test_proxy_base_example_includes_xai_pass_through(self) -> None:
+        """deploy/proxy-base.yaml.example exposes /xai → xAI OAuth forwarder."""
+        example = Path(__file__).parent.parent / "deploy" / "proxy-base.yaml.example"
+        data = yaml.safe_load(example.read_text())
+        endpoints = data["general_settings"]["pass_through_endpoints"]
+        xai = next(ep for ep in endpoints if ep["path"] == "/xai")
+        assert xai["target"] == "http://llmcli-xai-forwarder:18645"
+        assert xai["include_subpath"] is True
+        assert xai["forward_headers"] is False
+
 
 # ---------------------------------------------------------------------------
 # TestProxyEnvPortMalformed
