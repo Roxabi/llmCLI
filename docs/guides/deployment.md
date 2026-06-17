@@ -708,9 +708,14 @@ pattern to the Quadlet-managed `llmcli proxy`:
    ```
    The canonical `:18091/v1/models` catalogue merges TOML entries (ADR-005 `machines`
    filter) with live Grok IDs from `llmcli-xai-forwarder:18645` when `xai.json` exists.
-   Unhealthy remote upstreams (probe 401/5xx) are omitted. Refresh interval defaults to
-   60s (`LLMCLI_MODEL_REFRESH_SECS`); `llmcli xai login` / `logout` triggers immediate
-   invalidation — no `systemctl restart llmcli` required for new Grok models.
+   Unhealthy remote upstreams are omitted via a **provider-level** probe (`GET
+   {provider}/models` returns 401/5xx or times out) — not per-model health. A model
+   can still fail at completion time even when its provider lists 200. Refresh interval
+   defaults to 60s (`LLMCLI_MODEL_REFRESH_SECS`; `0` is treated as default 60). Config
+   reload uses terminate+respawn of the litellm child (SIGHUP is not relied upon).
+   `llmcli xai login` / `logout` triggers immediate invalidation — no `systemctl restart
+   llmcli` required for new Grok models. Manual edits to `~/.roxabi/llmcli/credentials/xai.json`
+   are picked up via file mtime in the catalogue cache key.
 
    The interim `/xai` pass-through remains available:
    ```bash

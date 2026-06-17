@@ -347,20 +347,7 @@ def _reload_litellm_child(
     *,
     drain_timeout: float = 5.0,
 ) -> subprocess.Popen:
-    """Reload litellm by SIGHUP when possible; otherwise terminate and respawn."""
-    if child.poll() is None:
-        try:
-            child.send_signal(signal.SIGHUP)
-            deadline = time.monotonic() + 1.0
-            while time.monotonic() < deadline:
-                if child.poll() is not None:
-                    break
-                time.sleep(0.1)
-            if child.poll() is None:
-                return child
-        except OSError as exc:
-            log.debug("SIGHUP reload failed, respawning litellm child: %s", exc)
-
+    """Reload litellm by graceful terminate + respawn (LiteLLM ignores SIGHUP config reload)."""
     if child.poll() is None:
         child.terminate()
         deadline = time.monotonic() + drain_timeout

@@ -159,13 +159,26 @@ def fetch_xai_models(forwarder_base: str, *, timeout: float = _XAI_FETCH_TIMEOUT
     return ids
 
 
+def _xai_credentials_cache_token() -> str:
+    """Cache-bust token for xai.json presence and mtime (manual edits outside CLI)."""
+    try:
+        stat = _XAI_CREDENTIALS_PATH.stat()
+    except OSError:
+        return "absent"
+    return f"present:{stat.st_mtime_ns}"
+
+
 def probe_remote_model(
     spec: ModelSpec,
     provider: Provider,
     *,
     timeout: float = _PROBE_TIMEOUT_SECS,
 ) -> bool:
-    """Return True when the remote provider responds 2xx to a lightweight probe."""
+    """Return True when the provider's ``GET /models`` endpoint responds 2xx.
+
+    Provider-level liveness only — a 200 here does not guarantee a specific
+    ``model_id`` (e.g. ``kimi-k2.6``) succeeds at completion time.
+    """
     if provider.key_env == "_OAUTH_MANAGED":
         return True
     api_key = os.environ.get(provider.key_env)
@@ -282,7 +295,8 @@ def build_model_list(
     effective_hostname = hostname if hostname is not None else socket.gethostname()
     cache_key = (
         f"{effective_hostname}:{public_base_url}:"
-        f"{','.join(sorted(catalog.models))}:{catalog.host.api_key_env}"
+        f"{','.join(sorted(catalog.models))}:{catalog.host.api_key_env}:"
+        f"{_xai_credentials_cache_token()}"
     )
 
     def _builder() -> list[dict[str, Any]]:

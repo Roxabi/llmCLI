@@ -1020,18 +1020,36 @@ class TestModelRefresh:
             _parse_model_refresh_interval()
         assert exc.value.exit_code == 1
 
-    def test_reload_litellm_child_respawns_when_sighup_ignored(self) -> None:
+    def test_reload_litellm_child_always_respawns(self) -> None:
         from llmcli.cli.proxy import _reload_litellm_child
 
         child = MagicMock()
         child.poll.return_value = None
-        child.send_signal.side_effect = OSError("no sighup")
         new_child = MagicMock()
         with patch("llmcli.cli.proxy._spawn_litellm", return_value=new_child) as spawn:
             result = _reload_litellm_child(child, Path("/tmp/cfg.yaml"), 18091, "0.0.0.0")
         child.terminate.assert_called_once()
+        child.send_signal.assert_not_called()
         spawn.assert_called_once()
         assert result is new_child
+
+    def test_invalidate_model_cache_invokes_registered_callback(self) -> None:
+        from llmcli.support.litellm_config import (
+            invalidate_model_cache,
+            register_model_refresh_callback,
+        )
+
+        calls: list[str] = []
+
+        def _cb() -> None:
+            calls.append("refresh")
+
+        register_model_refresh_callback(_cb)
+        try:
+            invalidate_model_cache()
+        finally:
+            register_model_refresh_callback(None)
+        assert calls == ["refresh"]
 
     def test_model_refresh_loop_regenerates_config(self) -> None:
         from llmcli.cli.proxy import _start_model_refresh_loop
