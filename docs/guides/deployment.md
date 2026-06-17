@@ -704,10 +704,25 @@ pattern to the Quadlet-managed `llmcli proxy`:
    `llmcli xai login` complete (M₁ only):
    ```bash
    curl -sS -H "Authorization: Bearer $LLMCLI_API_KEY" \
+     http://127.0.0.1:18091/v1/models | jq '.data[].id'
+   ```
+   The canonical `:18091/v1/models` catalogue merges TOML entries (ADR-005 `machines`
+   filter) with live Grok IDs from `llmcli-xai-forwarder:18645` when `xai.json` exists.
+   Unhealthy remote upstreams are omitted via a **provider-level** probe (`GET
+   {provider}/models` returns 401/5xx or times out) — not per-model health. A model
+   can still fail at completion time even when its provider lists 200. Refresh interval
+   defaults to 60s (`LLMCLI_MODEL_REFRESH_SECS`; `0` is treated as default 60). Config
+   reload uses terminate+respawn of the litellm child when the merged `model_list`
+   changes (SIGHUP is not relied upon; unchanged catalogues skip respawn).
+   `llmcli xai login` / `logout` updates `xai.json` mtime; the proxy refresh loop polls
+   that token every ~1s and regen-reloads within one second (no `systemctl restart llmcli`
+   required). Manual edits to `~/.roxabi/llmcli/credentials/xai.json` use the same path.
+
+   The interim `/xai` pass-through remains available:
+   ```bash
+   curl -sS -H "Authorization: Bearer $LLMCLI_API_KEY" \
      http://127.0.0.1:18091/xai/v1/models | jq '.data[].id'
    ```
-   The `/xai` path forwards to `llmcli-xai-forwarder:18645` with live model discovery —
-   no proxy restart needed when xAI ships new Grok versions.
 
 8. **Migrate Claude Code aliases** — point `~/.bash_aliases` `_cc_fireworks()` /
    `_cc_nvidia()` / `cccc` / `cnd` to `127.0.0.1:18091` (and `/fw-anthropic` for the

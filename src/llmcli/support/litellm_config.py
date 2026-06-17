@@ -2,23 +2,29 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 import socket
 import subprocess
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import yaml
 
 from llmcli.auth.store import XAI_CREDENTIALS_PATH as _XAI_CREDENTIALS_PATH
-from llmcli.config import Catalog
-from llmcli.support.providers import PROVIDERS
+from llmcli.config import Catalog, ModelSpec
+from llmcli.support.providers import PROVIDERS, Provider
 
 log = logging.getLogger(__name__)
 
 LITELLM_CONFIG = Path.home() / ".litellm" / "config.yaml"
 
-# xAI OAuth — hardcoded model list (forwarder-routed; NOT in per-host TOML catalog)
-_XAI_OAUTH_MODELS: list[str] = ["grok-4", "grok-4-fast"]
+_DEFAULT_MODEL_REFRESH_SECS = 60.0
+_PROBE_TIMEOUT_SECS = 3.0
+_XAI_FETCH_TIMEOUT_SECS = 3.0
 BLOCK_START = "# --- llmCLI managed block start ---"
 BLOCK_END = "# --- llmCLI managed block end ---"
 
@@ -75,7 +81,144 @@ def merge_proxy_config(
     return result
 
 
-def build_model_list(
+class ModelDiscoveryCache:
+    """Thread-safe in-memory cache for merged model_list entries."""
+
+    def __init__(self, *, ttl_secs: float = _DEFAULT_MODEL_REFRESH_SECS) -> None:
+        self._ttl_secs = ttl_secs
+        self._lock = threading.Lock()
+        self._entries: list[dict[str, Any]] | None = None
+        self._cache_key: str | None = None
+        self._fetched_at: float = 0.0
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._entries = None
+            self._cache_key = None
+            self._fetched_at = 0.0
+
+    def get_or_refresh(
+        self,
+        cache_key: str,
+        builder: Callable[[], list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            now = time.monotonic()
+            if (
+                self._entries is not None
+                and self._cache_key == cache_key
+                and (now - self._fetched_at) < self._ttl_secs
+            ):
+                return copy.deepcopy(self._entries)
+        built = builder()
+        with self._lock:
+            self._entries = copy.deepcopy(built)
+            self._cache_key = cache_key
+            self._fetched_at = time.monotonic()
+            return copy.deepcopy(built)
+
+
+_MODEL_DISCOVERY_CACHE = ModelDiscoveryCache()
+_refresh_callback: Callable[[], None] | None = None
+
+
+def register_model_refresh_callback(callback: Callable[[], None] | None) -> None:
+    """Register a hook invoked after cache invalidation (e.g. proxy immediate refresh)."""
+    global _refresh_callback
+    _refresh_callback = callback
+
+
+def clear_model_cache() -> None:
+    """Clear cached model_list without invoking the refresh callback."""
+    _MODEL_DISCOVERY_CACHE.invalidate()
+
+
+def invalidate_model_cache() -> None:
+    """Clear cached model_list; trigger optional immediate refresh callback."""
+    clear_model_cache()
+    if _refresh_callback is not None:
+        _refresh_callback()
+
+
+def fetch_xai_models(forwarder_base: str, *, timeout: float = _XAI_FETCH_TIMEOUT_SECS) -> list[str]:
+    """Fetch live Grok model IDs from the xAI OAuth forwarder."""
+    url = f"{forwarder_base.rstrip('/')}/models"
+    try:
+        resp = httpx.get(url, timeout=timeout)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as exc:
+        log.warning("xAI forwarder model fetch failed (%s): %s", url, exc)
+        return []
+    ids: list[str] = []
+    for item in payload.get("data", []):
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            model_id = item["id"]
+            if not model_id.startswith("grok-imagine-"):
+                ids.append(model_id)
+    return ids
+
+
+def xai_credentials_cache_token() -> str:
+    """Cache-bust token for xai.json presence and mtime (manual edits outside CLI)."""
+    try:
+        stat = _XAI_CREDENTIALS_PATH.stat()
+    except OSError:
+        return "absent"
+    return f"present:{stat.st_mtime_ns}"
+
+
+def _catalog_spec_fingerprint(catalog: Catalog) -> str:
+    """Stable fingerprint of routing-relevant model spec fields for cache invalidation."""
+    parts: list[str] = []
+    for name in sorted(catalog.models):
+        spec = catalog.models[name]
+        machines = ",".join(spec.machines)
+        parts.append(
+            f"{name}:{spec.engine}:{spec.port}:{spec.provider}:{spec.model_id}:"
+            f"{spec.protocol}:{machines}"
+        )
+    return "|".join(parts)
+
+
+def probe_remote_model(
+    spec: ModelSpec,
+    provider: Provider,
+    *,
+    timeout: float = _PROBE_TIMEOUT_SECS,
+) -> bool:
+    """Return True when the provider's ``GET /models`` endpoint responds 2xx.
+
+    Provider-level liveness only — a 200 here does not guarantee a specific
+    ``model_id`` (e.g. ``kimi-k2.6``) succeeds at completion time.
+    """
+    if provider.key_env == "_OAUTH_MANAGED":
+        return True
+    api_key = os.environ.get(provider.key_env)
+    if not api_key:
+        return False
+    url = f"{provider.api_base.rstrip('/')}/models"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        resp = httpx.get(url, headers=headers, timeout=timeout)
+        return 200 <= resp.status_code < 300
+    except Exception as exc:
+        log.debug("upstream probe failed for %s: %s", spec.name, exc)
+        return False
+
+
+def _xai_model_entry(model_name: str, api_base: str) -> dict[str, Any]:
+    return {
+        "model_name": model_name,
+        "litellm_params": {
+            "model": f"openai/responses/{model_name}",
+            "api_base": api_base,
+            "api_key": "dummy",
+        },
+    }
+
+
+def _build_model_list_uncached(
     catalog: Catalog, public_base_url: str, *, hostname: str | None = None
 ) -> list[dict[str, Any]]:
     """Build the model_list entries from the catalog.
@@ -105,6 +248,8 @@ def build_model_list(
                     f"Valid providers: {sorted(PROVIDERS.keys())}."
                 )
             provider = provider_cfg
+            if not probe_remote_model(spec, provider):
+                continue
             if spec.protocol == "anthropic":
                 entry: dict[str, Any] = {
                     "model_name": name,
@@ -135,27 +280,42 @@ def build_model_list(
             }
         model_list.append(entry)
 
-    # Inject OAuth-managed models (not in catalog — forwarder-routed)
-    # Gate on credentials presence; silently skip when absent.
+    existing_names = {entry["model_name"] for entry in model_list}
     xai_provider = PROVIDERS.get("xai-oauth")
-    if xai_provider is not None and xai_provider.key_env == "_OAUTH_MANAGED":
-        if _XAI_CREDENTIALS_PATH.exists():
-            for model_name in _XAI_OAUTH_MODELS:
-                model_list.append(
-                    {
-                        "model_name": model_name,
-                        "litellm_params": {
-                            # `responses/` prefix triggers LiteLLM's Chat→Responses bridge
-                            # (litellm/main.py:responses_api_bridge_check). Grok-CLI OAuth
-                            # tokens are accepted only at /v1/responses, not /v1/chat/completions.
-                            "model": f"openai/responses/{model_name}",
-                            "api_base": xai_provider.api_base,
-                            "api_key": "dummy",  # LiteLLM requires non-empty; forwarder ignores
-                        },
-                    }
-                )
+    if (
+        xai_provider is not None
+        and xai_provider.key_env == "_OAUTH_MANAGED"
+        and _XAI_CREDENTIALS_PATH.exists()
+    ):
+        for model_name in fetch_xai_models(xai_provider.api_base):
+            if model_name in existing_names:
+                continue
+            model_list.append(_xai_model_entry(model_name, xai_provider.api_base))
+            existing_names.add(model_name)
 
     return model_list
+
+
+def build_model_list(
+    catalog: Catalog,
+    public_base_url: str,
+    *,
+    hostname: str | None = None,
+    cache: ModelDiscoveryCache | None = None,
+) -> list[dict[str, Any]]:
+    """Build merged model_list from catalog, health probes, and live xAI discovery."""
+    effective_cache = cache if cache is not None else _MODEL_DISCOVERY_CACHE
+    effective_hostname = hostname if hostname is not None else socket.gethostname()
+    cache_key = (
+        f"{effective_hostname}:{public_base_url}:"
+        f"{_catalog_spec_fingerprint(catalog)}:{catalog.host.api_key_env}:"
+        f"{xai_credentials_cache_token()}"
+    )
+
+    def _builder() -> list[dict[str, Any]]:
+        return _build_model_list_uncached(catalog, public_base_url, hostname=hostname)
+
+    return effective_cache.get_or_refresh(cache_key, _builder)
 
 
 def build_full_config(

@@ -9,6 +9,7 @@ import typer
 from llmcli.auth import login_flow, store
 from llmcli.auth.store import CredentialsCorruptError
 from llmcli.cli._app import console, err_console
+from llmcli.support.litellm_config import invalidate_model_cache
 
 xai_app = typer.Typer(help="xAI / SuperGrok OAuth credentials")
 
@@ -24,6 +25,7 @@ def login_cmd(
 ) -> None:
     """Run PKCE OAuth flow against auth.x.ai; stores credentials at xai.json."""
     creds = login_flow(manual=manual)
+    invalidate_model_cache()
     console.print(f"[green]✓[/green] Logged in. expires_at={creds.expires_at}")
 
 
@@ -31,6 +33,7 @@ def login_cmd(
 def logout_cmd() -> None:
     """Delete cached xai.json credentials (silent no-op if absent)."""
     store.XAI_CREDENTIALS_PATH.unlink(missing_ok=True)
+    invalidate_model_cache()
     console.print("[green]✓[/green] Credentials removed.")
 
 

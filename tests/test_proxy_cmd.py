@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -245,7 +246,7 @@ class TestSignalForwarding:
         monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
 
         # Act — register handlers, then invoke captured SIGTERM handler
-        _install_signal_handlers(child, drain_timeout=0.5)
+        _install_signal_handlers({"child": child}, drain_timeout=0.5)
         handler = captured_handlers[signal.SIGTERM]
         handler(signal.SIGTERM, None)
 
@@ -253,6 +254,36 @@ class TestSignalForwarding:
         assert child.terminate.called is True
         assert child.poll.call_count >= 1
         assert child.kill.called is False
+
+    def test_signal_handler_targets_current_child_after_reload(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After catalogue reload, SIGTERM must terminate the new litellm child."""
+        import signal
+        import subprocess
+
+        import llmcli.cli.proxy as proxy_mod
+        from llmcli.cli.proxy import _install_signal_handlers
+
+        old_child = MagicMock(spec=subprocess.Popen)
+        old_child.poll.return_value = None
+        new_child = MagicMock(spec=subprocess.Popen)
+        new_child.poll.return_value = None
+        child_state: dict = {"child": new_child}
+
+        captured_handlers: dict = {}
+
+        def fake_signal_signal(signum, handler):
+            captured_handlers[signum] = handler
+
+        monkeypatch.setattr(proxy_mod.signal, "signal", fake_signal_signal)
+        monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
+
+        _install_signal_handlers(child_state, drain_timeout=0.5)
+        captured_handlers[signal.SIGTERM](signal.SIGTERM, None)
+
+        new_child.terminate.assert_called_once()
+        old_child.terminate.assert_not_called()
 
     def test_drain_timeout_exceeded_kills_child(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Handler calls kill when child does not exit within drain_timeout."""
@@ -278,7 +309,7 @@ class TestSignalForwarding:
         monkeypatch.setattr(proxy_mod.time, "sleep", lambda _: None)
 
         # Act — drain_timeout=0.0 → deadline expires immediately, loop skipped
-        _install_signal_handlers(child, drain_timeout=0.0)
+        _install_signal_handlers({"child": child}, drain_timeout=0.0)
         handler = captured_handlers[signal.SIGTERM]
         handler(signal.SIGTERM, None)
 
@@ -311,7 +342,7 @@ class TestSignalForwarding:
 
         # Act — zero timeout so first SIGINT drains immediately and finishes
         # then second SIGINT hits the reentrant path
-        _install_signal_handlers(child, drain_timeout=0.0)
+        _install_signal_handlers({"child": child}, drain_timeout=0.0)
         handler = captured_handlers[signal.SIGINT]
 
         # First SIGINT: triggers drain (timeout=0 so kill is called, but
@@ -996,3 +1027,222 @@ class TestProxyEnvPortMalformed:
             f"Expected 'LLMCLI_PROXY_PORT' in output; got: {combined!r}"
         )
         assert "abc" in combined, f"Expected 'abc' in output; got: {combined!r}"
+
+
+# ---------------------------------------------------------------------------
+# Model catalogue background refresh (#130)
+# ---------------------------------------------------------------------------
+
+
+class TestModelRefresh:
+    def test_parse_model_refresh_interval_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from llmcli.cli.proxy import _parse_model_refresh_interval
+
+        monkeypatch.delenv("LLMCLI_MODEL_REFRESH_SECS", raising=False)
+        assert _parse_model_refresh_interval() == 60.0
+
+    def test_parse_model_refresh_interval_rejects_negative(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.cli.proxy import _parse_model_refresh_interval
+
+        monkeypatch.setenv("LLMCLI_MODEL_REFRESH_SECS", "-1")
+        with pytest.raises(typer.Exit) as exc:
+            _parse_model_refresh_interval()
+        assert exc.value.exit_code == 1
+
+    def test_parse_model_refresh_interval_zero_treated_as_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.cli.proxy import _parse_model_refresh_interval
+
+        monkeypatch.setenv("LLMCLI_MODEL_REFRESH_SECS", "0")
+        assert _parse_model_refresh_interval() == 60.0
+
+    def test_reload_litellm_child_always_respawns(self) -> None:
+        from llmcli.cli.proxy import _reload_litellm_child
+
+        child = MagicMock()
+        child.poll.return_value = None
+        new_child = MagicMock()
+        with patch("llmcli.cli.proxy._spawn_litellm", return_value=new_child) as spawn:
+            result = _reload_litellm_child(child, Path("/tmp/cfg.yaml"), 18091, "0.0.0.0")
+        child.terminate.assert_called_once()
+        child.send_signal.assert_not_called()
+        spawn.assert_called_once()
+        assert result is new_child
+
+    def test_invalidate_model_cache_invokes_registered_callback(self) -> None:
+        from llmcli.support.litellm_config import (
+            invalidate_model_cache,
+            register_model_refresh_callback,
+        )
+
+        calls: list[str] = []
+
+        def _cb() -> None:
+            calls.append("refresh")
+
+        register_model_refresh_callback(_cb)
+        try:
+            invalidate_model_cache()
+        finally:
+            register_model_refresh_callback(None)
+        assert calls == ["refresh"]
+
+    def test_model_refresh_loop_regenerates_config(self) -> None:
+        from llmcli.cli.proxy import _start_model_refresh_loop
+
+        catalog = _make_catalog()
+        target = Path("/tmp/proxy.config.yaml")
+        base: dict = {"general_settings": {}, "litellm_settings": {}}
+        child = MagicMock()
+        child.poll.return_value = None
+        child_state: dict = {
+            "child": child,
+            "stop": False,
+            "refresh_lock": __import__("threading").Lock(),
+            "last_xai_token": "absent",
+        }
+        def _refresh(*_args, **_kwargs) -> None:
+            child_state["stop"] = True
+
+        with (
+            patch("llmcli.cli.proxy._run_catalogue_refresh", side_effect=_refresh) as refresh,
+            patch("llmcli.cli.proxy.time.sleep", lambda _: None),
+            patch("llmcli.cli.proxy.xai_credentials_cache_token", return_value="absent"),
+            patch("llmcli.cli.proxy.time.monotonic", side_effect=[0.0, 0.0, 1.0]),
+        ):
+            _start_model_refresh_loop(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=18091,
+                host="0.0.0.0",
+                interval_secs=0.01,
+            ).join(timeout=2.0)
+        refresh.assert_called()
+
+    def test_model_refresh_loop_wakes_on_xai_token_change(self) -> None:
+        from llmcli.cli.proxy import _start_model_refresh_loop
+
+        catalog = _make_catalog()
+        target = Path("/tmp/proxy.config.yaml")
+        base: dict = {"general_settings": {}, "litellm_settings": {}}
+        child = MagicMock()
+        child.poll.return_value = None
+        child_state: dict = {
+            "child": child,
+            "stop": False,
+            "refresh_lock": __import__("threading").Lock(),
+            "last_xai_token": "absent",
+        }
+        token_reads = 0
+
+        def _token() -> str:
+            nonlocal token_reads
+            token_reads += 1
+            return "present:1" if token_reads >= 2 else "absent"
+
+        def _refresh(*_args, **_kwargs) -> None:
+            child_state["stop"] = True
+
+        with (
+            patch("llmcli.cli.proxy._run_catalogue_refresh", side_effect=_refresh) as refresh,
+            patch("llmcli.cli.proxy.time.sleep", lambda _: None),
+            patch("llmcli.cli.proxy.xai_credentials_cache_token", side_effect=_token),
+        ):
+            _start_model_refresh_loop(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=18091,
+                host="0.0.0.0",
+                interval_secs=60.0,
+            ).join(timeout=2.0)
+        refresh.assert_called_once()
+
+    def test_wait_for_litellm_child_continues_after_respawn(self) -> None:
+        from llmcli.cli.proxy import _wait_for_litellm_child
+
+        old_child = MagicMock()
+        new_child = MagicMock()
+        new_child.poll.return_value = None
+        new_child.wait.return_value = 0
+        child_state: dict = {"child": old_child, "stop": False}
+
+        def _old_wait() -> int:
+            child_state["child"] = new_child
+            return 0
+
+        old_child.wait.side_effect = _old_wait
+
+        assert _wait_for_litellm_child(child_state) == 0
+        old_child.wait.assert_called_once()
+        new_child.wait.assert_called_once()
+
+    def test_run_catalogue_refresh_skips_reload_when_unchanged(self) -> None:
+        from llmcli.cli.proxy import _hash_model_list, _run_catalogue_refresh
+
+        catalog = _make_catalog()
+        target = Path("/tmp/proxy.config.yaml")
+        base: dict = {"general_settings": {}, "litellm_settings": {}}
+        child = MagicMock()
+        child.poll.return_value = None
+        model_list = [{"model_name": "qwen3-4b", "litellm_params": {}}]
+        child_state: dict = {
+            "child": child,
+            "stop": False,
+            "refresh_lock": threading.Lock(),
+            "last_model_list_hash": _hash_model_list(model_list),
+            "last_xai_token": "absent",
+        }
+
+        with (
+            patch("llmcli.cli.proxy._write_proxy_config", return_value=model_list),
+            patch("llmcli.cli.proxy._reload_litellm_child") as reload,
+            patch("llmcli.cli.proxy.xai_credentials_cache_token", return_value="absent"),
+        ):
+            _run_catalogue_refresh(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=18091,
+                host="0.0.0.0",
+            )
+        reload.assert_not_called()
+
+    def test_run_catalogue_refresh_skips_reload_when_stopping(self) -> None:
+        from llmcli.cli.proxy import _hash_model_list, _run_catalogue_refresh
+
+        catalog = _make_catalog()
+        target = Path("/tmp/proxy.config.yaml")
+        base: dict = {"general_settings": {}, "litellm_settings": {}}
+        child = MagicMock()
+        child.poll.return_value = None
+        model_list = [{"model_name": "qwen3-4b", "litellm_params": {}}]
+        child_state: dict = {
+            "child": child,
+            "stop": True,
+            "refresh_lock": threading.Lock(),
+            "last_model_list_hash": _hash_model_list([]),
+            "last_xai_token": "absent",
+        }
+
+        with (
+            patch("llmcli.cli.proxy._write_proxy_config", return_value=model_list) as write_cfg,
+            patch("llmcli.cli.proxy._reload_litellm_child") as reload,
+        ):
+            _run_catalogue_refresh(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=18091,
+                host="0.0.0.0",
+            )
+        write_cfg.assert_not_called()
+        reload.assert_not_called()

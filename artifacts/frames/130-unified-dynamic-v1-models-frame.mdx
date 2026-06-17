@@ -1,0 +1,81 @@
+---
+title: "feat(proxy): unified dynamic /v1/models — merge TOML catalog + xAI forwarder discovery"
+issue: 130
+status: approved
+tier: F-lite
+date: 2026-06-17
+---
+
+## Problem
+
+`GET :18091/v1/models` today lists only **static** entries from `build_model_list()` — TOML `models/*.toml` filtered by `machines` (ADR-005) plus a hardcoded `_XAI_OAUTH_MODELS` pair (`grok-4`, `grok-4-fast`) when credentials exist. The xAI forwarder at `llmcli-xai-forwarder:18645` exposes a **live** catalogue (`grok-4.3`, `grok-4.20-*`, …) that never reaches the canonical proxy surface.
+
+#129 shipped an interim fix: `pass_through_endpoints` `/xai` exposes Grok on a **separate path** (`:18091/xai/v1/models`). Consumers that discover models via the standard OpenAI endpoint (`:18091/v1/models`) — omp factory `discovery: openai-models-list`, Claude Code, lyra — still see stale or incomplete catalogues. Operators must know two base URLs and manually reconcile model lists.
+
+The pain is operational and consumer-facing: new Grok models appear on the forwarder but not in the unified catalogue; unhealthy upstream models (e.g. `kimi-k2.6` → 401) remain listed until a full Podman restart regenerates config.
+
+## Who
+
+- **Primary:** Mickael and Roxabi agents (Claude Code, lyra, factory omp) that call `:18091/v1/models` for model discovery before routing completions.
+- **Secondary:** Operators maintaining per-host TOML catalogs — they expect ADR-005 `machines` parity and health-aware listings without restart churn.
+
+## Constraints
+
+- ADR-005 `machines` host filter must continue to apply to TOML-derived entries.
+- No Postgres / LiteLLM `/model/new` hot-add — rejected ops model (config-file generation only).
+- Refresh without `systemctl restart llmcli` — in-memory cache + periodic poll (~60s) and invalidation on `xai login` / `xai logout`.
+- Exclude `grok-imagine-*` from merged Grok entries (image models, not chat).
+- Health filter: omit (or mark unhealthy) models whose upstream probe fails.
+- Spike recommends **Option A** first: extend `build_model_list()` + background refresh — no upstream LiteLLM blocker (#20064). Option B (wildcard + `check_provider_endpoint`) is a future migration path.
+- F-lite ceiling: single domain (proxy config generation), ~3–5 files touched.
+
+## Out of Scope
+
+- Postgres-backed LiteLLM model registry or `/model/new` hot-add.
+- Replacing LiteLLM with OpenRouter/Bifrost.
+- Removing the `/xai` pass-through path (#129) — may deprecate later once unified catalogue is proven; not required for this issue.
+- Image-generation Grok models (`grok-imagine-*`).
+
+## Approach (high-level)
+
+```
+TOML catalog (machines filter)
+        │
+        ▼
+build_model_list() ──► merge ◄── GET forwarder:18645/v1/models
+        │                    │         (exclude grok-imagine-*)
+        │                    │
+        ▼                    ▼
+   health probes ──► unified model_list
+        │
+        ▼
+   in-memory cache (60s TTL + login/logout invalidation)
+        │
+        ▼
+   LiteLLM child config regen (no Podman restart)
+```
+
+Option A: fetch forwarder `/v1/models` inside config builder, inject entries alongside TOML models, background task refreshes cache and triggers config regen.
+
+## Premise Validity
+
+**Success in 6 months:** A single `curl :18091/v1/models` returns TOML cloud entries (e.g. `deepseek-v4-pro`) **and** live Grok models (e.g. `grok-4.3`) when the forwarder is healthy. New forwarder models appear within the refresh interval without `systemctl restart llmcli`. Factory omp `discovery: openai-models-list` on `:18091` works without a separate `/xai` base URL. Unhealthy upstreams (401 on `kimi-k2.6`) are absent from the catalogue.
+
+**Failure in 6 months (falsifiable):** Any one of:
+1. ≥2 consumer integrations still require `:18091/xai/v1/models` for Grok discovery 30 days post-merge.
+2. Operators filed ≥3 incidents where new Grok models required a full proxy restart to appear in `:18091/v1/models`.
+3. `machines` filter regression: a TOML model visible on host A incorrectly appears (or is absent) on host B per ADR-005 parity checks.
+
+**Simplest alternative:** Document that consumers must use `:18091/xai/v1/models` for Grok and `:18091/v1/models` for everything else — no code change beyond #129.
+
+**Why not simplest:** Factory omp, Claude Code, and lyra all use the standard OpenAI `GET /v1/models` discovery contract on a single base URL. A split-path model forces every consumer to special-case Grok routing and breaks the "one proxy, one catalogue" invariant the Roxabi stack is converging on.
+
+## Complexity
+
+**Tier: F-lite** — Clear scope, single domain (proxy config generation), known integration points (`build_model_list`, forwarder health, existing test module).
+
+Signals observed:
+- Issue label `size:F-lite`; ~3–5 files (`litellm_config.py`, `cli/proxy.py` or refresh hook, `tests/test_litellm_config.py`, possibly `cli/xai.py` for cache invalidation).
+- Single domain: catalog merge + cache refresh in existing proxy startup path.
+- Implementation spike already scoped in issue body (Options A/B/C); recommend A with no upstream blocker.
+- Blocker #129 closed — interim `/xai` path is live; unified merge can proceed.

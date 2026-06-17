@@ -21,7 +21,8 @@ from roxabi_contracts.errors import WorkerError
 
 from llmcli.auth.store import XAI_CREDENTIALS_PATH
 from llmcli.config import check_vram_budget, load as load_catalog
-from llmcli.support.litellm_config import _XAI_OAUTH_MODELS
+from llmcli.support.litellm_config import fetch_xai_models
+from llmcli.support.providers import PROVIDERS
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +251,9 @@ class LifecycleMixin:
             for name, spec in catalog.models.items()
         ]
         if XAI_CREDENTIALS_PATH.exists():
-            for model_name in _XAI_OAUTH_MODELS:
+            xai_provider = PROVIDERS.get("xai-oauth")
+            forwarder_base = xai_provider.api_base if xai_provider else ""
+            for model_name in fetch_xai_models(forwarder_base):
                 models.append({
                     "name": model_name,
                     "running": False,  # forwarder liveness checked via /health, not surfaced here
