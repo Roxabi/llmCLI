@@ -159,13 +159,26 @@ def fetch_xai_models(forwarder_base: str, *, timeout: float = _XAI_FETCH_TIMEOUT
     return ids
 
 
-def _xai_credentials_cache_token() -> str:
+def xai_credentials_cache_token() -> str:
     """Cache-bust token for xai.json presence and mtime (manual edits outside CLI)."""
     try:
         stat = _XAI_CREDENTIALS_PATH.stat()
     except OSError:
         return "absent"
     return f"present:{stat.st_mtime_ns}"
+
+
+def _catalog_spec_fingerprint(catalog: Catalog) -> str:
+    """Stable fingerprint of routing-relevant model spec fields for cache invalidation."""
+    parts: list[str] = []
+    for name in sorted(catalog.models):
+        spec = catalog.models[name]
+        machines = ",".join(spec.machines)
+        parts.append(
+            f"{name}:{spec.engine}:{spec.port}:{spec.provider}:{spec.model_id}:"
+            f"{spec.protocol}:{machines}"
+        )
+    return "|".join(parts)
 
 
 def probe_remote_model(
@@ -295,8 +308,8 @@ def build_model_list(
     effective_hostname = hostname if hostname is not None else socket.gethostname()
     cache_key = (
         f"{effective_hostname}:{public_base_url}:"
-        f"{','.join(sorted(catalog.models))}:{catalog.host.api_key_env}:"
-        f"{_xai_credentials_cache_token()}"
+        f"{_catalog_spec_fingerprint(catalog)}:{catalog.host.api_key_env}:"
+        f"{xai_credentials_cache_token()}"
     )
 
     def _builder() -> list[dict[str, Any]]:

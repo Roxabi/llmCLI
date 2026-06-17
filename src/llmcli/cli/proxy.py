@@ -23,6 +23,7 @@ from llmcli.support.litellm_config import (
     load_proxy_base,
     merge_proxy_config,
     register_model_refresh_callback,
+    xai_credentials_cache_token,
 )
 from llmcli.support.providers import PROVIDERS
 
@@ -199,13 +200,22 @@ def proxy(
         raise typer.Exit(0)
 
     # 7. Spawn litellm, background refresh, install signal handlers, wait
-    child_state: dict[str, Any] = {"child": _spawn_litellm(target, resolved_port, host), "stop": False}
+    child_state: dict[str, Any] = {
+        "child": _spawn_litellm(target, resolved_port, host),
+        "stop": False,
+        "refresh_lock": threading.Lock(),
+        "last_xai_token": xai_credentials_cache_token(),
+    }
 
     def _refresh_now() -> None:
         try:
-            _write_proxy_config(catalog, target, base)
-            child_state["child"] = _reload_litellm_child(
-                child_state["child"], target, resolved_port, host
+            _run_catalogue_refresh(
+                child_state,
+                catalog=catalog,
+                target=target,
+                base=base,
+                port=resolved_port,
+                host=host,
             )
         except Exception as exc:
             log.warning("model catalogue refresh failed: %s", exc)
@@ -227,8 +237,21 @@ def proxy(
         register_model_refresh_callback(None)
         refresh_thread.join(timeout=2.0)
 
-    _install_signal_handlers(child_state["child"], pre_handler=_shutdown_handler)
-    returncode = child_state["child"].wait()
+    _install_signal_handlers(child_state, pre_handler=_shutdown_handler)
+    returncode = 0
+    while True:
+        child = child_state["child"]
+        returncode = child.wait()
+        if child_state.get("stop"):
+            break
+        current = child_state.get("child")
+        if (
+            current is not None
+            and current is not child
+            and current.poll() is None
+        ):
+            continue
+        break
     # POSIX convention: negative return = killed by signal N → exit 128+N
     # Specifically, -9 (SIGKILL, e.g. OOM) → 137
     if returncode < 0:
@@ -339,6 +362,26 @@ def _write_proxy_config(catalog: Catalog, target: Path, base: dict[str, Any]) ->
     _write_custom_auth_module(target.parent)
 
 
+def _run_catalogue_refresh(
+    child_state: dict[str, Any],
+    *,
+    catalog: Catalog,
+    target: Path,
+    base: dict[str, Any],
+    port: int,
+    host: str,
+) -> None:
+    """Regenerate proxy config and reload litellm child (single-flight)."""
+    lock = child_state["refresh_lock"]
+    with lock:
+        clear_model_cache()
+        _write_proxy_config(catalog, target, base)
+        child = child_state.get("child")
+        if child is not None and child.poll() is None:
+            child_state["child"] = _reload_litellm_child(child, target, port, host)
+        child_state["last_xai_token"] = xai_credentials_cache_token()
+
+
 def _reload_litellm_child(
     child: subprocess.Popen,
     config_path: Path,
@@ -373,16 +416,30 @@ def _start_model_refresh_loop(
     """Daemon thread: periodic model_list regen + litellm child reload."""
 
     def _loop() -> None:
+        poll_chunk = min(1.0, interval_secs)
         while not child_state.get("stop"):
-            time.sleep(interval_secs)
+            deadline = time.monotonic() + interval_secs
+            while time.monotonic() < deadline:
+                if child_state.get("stop"):
+                    return
+                token = xai_credentials_cache_token()
+                if token != child_state.get("last_xai_token"):
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(poll_chunk, remaining))
             if child_state.get("stop"):
                 break
             try:
-                clear_model_cache()
-                _write_proxy_config(catalog, target, base)
-                child = child_state.get("child")
-                if child is not None and child.poll() is None:
-                    child_state["child"] = _reload_litellm_child(child, target, port, host)
+                _run_catalogue_refresh(
+                    child_state,
+                    catalog=catalog,
+                    target=target,
+                    base=base,
+                    port=port,
+                    host=host,
+                )
             except Exception as exc:
                 log.warning("background model refresh failed: %s", exc)
 
@@ -392,12 +449,15 @@ def _start_model_refresh_loop(
 
 
 def _install_signal_handlers(
-    child: subprocess.Popen,
+    child_state: dict[str, Any],
     drain_timeout: float = 10.0,
     *,
     pre_handler: Any | None = None,
 ) -> None:
-    """Forward SIGTERM/SIGINT to the litellm child with a poll-loop drain.
+    """Forward SIGTERM/SIGINT to the current litellm child with a poll-loop drain.
+
+    Resolves ``child_state["child"]`` on each signal so catalogue reloads cannot
+    leave shutdown targeting a stale (already-terminated) process handle.
 
     First signal: child.terminate() → poll child.poll() in 0.1s ticks until
     child exits or drain_timeout elapses; if still alive → child.kill().
@@ -410,6 +470,9 @@ def _install_signal_handlers(
     def handler(signum, frame):  # noqa: ARG001 (signature required by signal.signal)
         if pre_handler is not None:
             pre_handler(signum, frame)
+        child = child_state.get("child")
+        if child is None:
+            return
         if drain_state["active"] and signum == signal.SIGINT:
             child.kill()
             raise SystemExit(130)

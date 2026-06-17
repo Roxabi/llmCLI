@@ -1119,3 +1119,58 @@ class TestXaiModelDiscovery:
         with patch("llmcli.support.litellm_config.httpx.get", return_value=mock_resp):
             block = build_block(catalog, PUBLIC_BASE_URL)
         assert "grok-4.3" in block
+
+    def test_xai_credentials_mtime_busts_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        creds = tmp_path / "xai.json"
+        creds.write_text('{"access_token": "t1", "refresh_token": "r"}')
+        monkeypatch.setattr("llmcli.support.litellm_config._XAI_CREDENTIALS_PATH", creds)
+        call_count = 0
+
+        def _fake_fetch(_base: str, *, timeout: float = 3.0) -> list[str]:
+            nonlocal call_count
+            call_count += 1
+            return ["grok-4.3"] if call_count == 1 else ["grok-4.20"]
+
+        cache = ModelDiscoveryCache(ttl_secs=3600)
+        catalog = _make_catalog(models={})
+        with patch("llmcli.support.litellm_config.fetch_xai_models", side_effect=_fake_fetch):
+            first = build_model_list(catalog, PUBLIC_BASE_URL, cache=cache)
+            creds.write_text('{"access_token": "t2", "refresh_token": "r"}')
+            second = build_model_list(catalog, PUBLIC_BASE_URL, cache=cache)
+        assert first[0]["model_name"] == "grok-4.3"
+        assert second[0]["model_name"] == "grok-4.20"
+
+    def test_catalog_spec_change_busts_cache(self) -> None:
+        from llmcli.support.litellm_config import ModelDiscoveryCache, build_model_list
+
+        cache = ModelDiscoveryCache(ttl_secs=3600)
+        catalog_a = _make_catalog(
+            models={
+                "qwen": dict(
+                    engine="llamacpp",
+                    repo="Org/Qwen3-8B-GGUF",
+                    file="qwen3-8b-q4_k_m.gguf",
+                    port=8091,
+                    vram_gib=5.5,
+                )
+            }
+        )
+        first = build_model_list(catalog_a, PUBLIC_BASE_URL, cache=cache)
+        catalog_b = _make_catalog(
+            models={
+                "qwen": dict(
+                    engine="llamacpp",
+                    repo="Org/Qwen3-8B-GGUF",
+                    file="qwen3-8b-q4_k_m.gguf",
+                    port=8092,
+                    vram_gib=5.5,
+                )
+            }
+        )
+        second = build_model_list(catalog_b, PUBLIC_BASE_URL, cache=cache)
+        assert first[0]["litellm_params"]["api_base"].endswith(":8091/v1")
+        assert second[0]["litellm_params"]["api_base"].endswith(":8092/v1")

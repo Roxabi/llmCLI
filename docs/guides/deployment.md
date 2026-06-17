@@ -713,9 +713,9 @@ pattern to the Quadlet-managed `llmcli proxy`:
    can still fail at completion time even when its provider lists 200. Refresh interval
    defaults to 60s (`LLMCLI_MODEL_REFRESH_SECS`; `0` is treated as default 60). Config
    reload uses terminate+respawn of the litellm child (SIGHUP is not relied upon).
-   `llmcli xai login` / `logout` triggers immediate invalidation — no `systemctl restart
-   llmcli` required for new Grok models. Manual edits to `~/.roxabi/llmcli/credentials/xai.json`
-   are picked up via file mtime in the catalogue cache key.
+   `llmcli xai login` / `logout` updates `xai.json` mtime; the proxy refresh loop polls
+   that token every ~1s and regen-reloads within one second (no `systemctl restart llmcli`
+   required). Manual edits to `~/.roxabi/llmcli/credentials/xai.json` use the same path.
 
    The interim `/xai` pass-through remains available:
    ```bash
