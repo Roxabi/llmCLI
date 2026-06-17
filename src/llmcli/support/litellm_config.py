@@ -128,9 +128,14 @@ def register_model_refresh_callback(callback: Callable[[], None] | None) -> None
     _refresh_callback = callback
 
 
+def clear_model_cache() -> None:
+    """Clear cached model_list without invoking the refresh callback."""
+    _MODEL_DISCOVERY_CACHE.invalidate()
+
+
 def invalidate_model_cache() -> None:
     """Clear cached model_list; trigger optional immediate refresh callback."""
-    _MODEL_DISCOVERY_CACHE.invalidate()
+    clear_model_cache()
     if _refresh_callback is not None:
         _refresh_callback()
 

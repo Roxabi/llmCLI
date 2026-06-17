@@ -18,8 +18,8 @@ from llmcli.cli._app import app, console, err_console
 from llmcli.config import Catalog
 from llmcli.support.litellm_config import (
     build_model_list,
+    clear_model_cache,
     emit_xai_oauth_warning_if_absent,
-    invalidate_model_cache,
     load_proxy_base,
     merge_proxy_config,
     register_model_refresh_callback,
@@ -203,7 +203,6 @@ def proxy(
 
     def _refresh_now() -> None:
         try:
-            invalidate_model_cache()
             _write_proxy_config(catalog, target, base)
             child_state["child"] = _reload_litellm_child(
                 child_state["child"], target, resolved_port, host
@@ -392,7 +391,7 @@ def _start_model_refresh_loop(
             if child_state.get("stop"):
                 break
             try:
-                invalidate_model_cache()
+                clear_model_cache()
                 _write_proxy_config(catalog, target, base)
                 child = child_state.get("child")
                 if child is not None and child.poll() is None:
