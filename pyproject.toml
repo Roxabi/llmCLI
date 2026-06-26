@@ -61,18 +61,21 @@ vllm = [
 
 [project.optional-dependencies]
 nats = [
+    "roxabi-satellite",
     "nats-py>=2.6,<3",
     "nkeys>=0.1",
-    "roxabi-nats",
-    "roxabi-contracts",
 ]
 proxy = [
-    "litellm[proxy]>=1.86",
+    "grpcio>=1.80.0",
+    "litellm[proxy]>=1.89",
+    "opentelemetry-api>=1.41.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.41.0",
+    "opentelemetry-instrumentation-fastapi>=0.62b0",
+    "opentelemetry-sdk>=1.41.0",
 ]
 
 [tool.uv.sources]
-roxabi-nats      = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }
-roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "staging" }
 
 [tool.pyright]
 venvPath = "."

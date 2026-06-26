@@ -861,6 +861,47 @@ class TestMergeProxyConfig:
         assert result["router_settings"] == {"timeout": 600}
         assert result["environment_variables"] == {"FOO": "bar"}
 
+    def test_merge_adds_otel_callback_when_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
+
+        monkeypatch.setenv("LLMCLI_OTEL_ENABLED", "1")
+        result = merge_proxy_config({}, [])
+        assert result["litellm_settings"]["callbacks"] == ["otel"]
+
+    def test_merge_preserves_existing_callbacks_when_otel_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
+
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
+        base = {"litellm_settings": {"callbacks": ["langfuse"]}}
+        result = merge_proxy_config(base, [])
+        assert result["litellm_settings"]["callbacks"] == ["langfuse", "otel"]
+
+    def test_merge_skips_otel_callback_when_v2_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
+
+        monkeypatch.setenv("LITELLM_OTEL_V2", "true")
+        monkeypatch.setenv("LLMCLI_OTEL_ENABLED", "1")
+        monkeypatch.setenv("OTEL_ENDPOINT", "http://collector:4317")
+        result = merge_proxy_config({}, [])
+        assert "callbacks" not in result.get("litellm_settings", {})
+
+    def test_merge_skips_v1_callback_when_v2_and_legacy_endpoint_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from llmcli.support.litellm_config import merge_proxy_config  # lazy
+
+        monkeypatch.setenv("LITELLM_OTEL_V2", "1")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317")
+        base = {"litellm_settings": {"callbacks": ["langfuse"]}}
+        result = merge_proxy_config(base, [])
+        assert result["litellm_settings"]["callbacks"] == ["langfuse"]
+
     def test_proxy_base_example_includes_xai_pass_through(self) -> None:
         """deploy/proxy-base.yaml.example exposes /xai → xAI OAuth forwarder."""
         example = Path(__file__).parent.parent / "deploy" / "proxy-base.yaml.example"

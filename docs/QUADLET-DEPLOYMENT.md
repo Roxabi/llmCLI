@@ -65,6 +65,14 @@ This:
 $EDITOR ~/.roxabi/llmcli/env/proxy.env
 # Fill in: LLMCLI_API_KEY, FIREWORKS_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, NVIDIA_API_KEY
 
+# Optional — OTel traces to factory Langfuse stack (factory-hub / M₁):
+#   LITELLM_OTEL_V2=true
+#   OTEL_EXPORTER=otlp_grpc
+#   OTEL_ENDPOINT=http://factory-otel-collector:4317
+#   OTEL_SERVICE_NAME=llmcli-proxy
+#   OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
+# See deploy/proxy.env.example and roxabi-factory docs/runbooks/otel-traces.md
+
 # Worker — llm-worker hosts only
 $EDITOR ~/.roxabi/llmcli/env/worker.env
 # Fill in: LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222
@@ -499,6 +507,7 @@ podman exec llmcli llmcli proxy --config-out /dev/stdout
 | `deploy/quadlet/llmcli-fw-forwarder.container` | Fireworks system-user relabel forwarder Quadlet unit (M₁ only) |
 | `deploy/quadlet.toml` | Manifest (components, host_roles, secrets) |
 | `deploy/install.sh` | Idempotent install script |
+| `deploy/proxy.env.example` | Proxy env template (keys + optional OTel block) |
 | `~/.roxabi/llmcli/env/proxy.env` | Proxy env file (API keys) |
 | `~/.roxabi/llmcli/env/worker.env` | Worker env file (NATS URL) |
 | `~/.roxabi/llmcli/llmcli.toml` | LLM catalog (model list, host settings) |
