@@ -64,8 +64,7 @@ class GenerationMixin:
         return build_llm_error_reply(payload, we, stream=stream)
 
     async def _err(self, msg, payload: dict, worker_error: WorkerError) -> None:
-        data = build_llm_error_reply(payload, worker_error, stream=False)
-        await self.reply(msg, data)
+        await self.reply(msg, self._build_error_response(payload, worker_error, stream=False))
 
     # ------------------------------------------------------------------
     # Generation dispatch
