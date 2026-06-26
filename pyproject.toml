@@ -75,7 +75,7 @@ proxy = [
 ]
 
 [tool.uv.sources]
-roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "feat/roxabi-satellite" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "staging" }
 
 [tool.pyright]
 venvPath = "."
