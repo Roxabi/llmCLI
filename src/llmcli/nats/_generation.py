@@ -20,6 +20,7 @@ import httpx
 from roxabi_contracts.envelope import CONTRACT_VERSION
 from roxabi_contracts.errors import WorkerError
 from roxabi_contracts.llm.models import LlmChunkEvent, LlmResponse
+from roxabi_satellite.llm.replies import build_llm_error_reply
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -60,52 +61,10 @@ class GenerationMixin:
 
     @staticmethod
     def _build_error_response(payload: dict, we: WorkerError, *, stream: bool) -> bytes:
-        """Build and serialize an error envelope (LlmChunkEvent or LlmResponse).
-
-        Sanitizes request_id to prevent Pydantic validation errors from illegal chars.
-        """
-        rid = str(payload.get("request_id", "unknown"))[:128]
-        safe_id = rid if _REQUEST_ID_RE.match(rid) else "unknown"
-        trace_id = payload.get("trace_id") or safe_id
-        # builders.py does not accept worker_error= — build envelope manually.
-        # Conditional kwarg exclusion: omit job_id entirely when absent so
-        # default_factory fires instead of passing None to _validate_job_id.
-        job_id_kwargs: dict = {}
-        if job_id := payload.get("job_id"):
-            job_id_kwargs["job_id"] = job_id
-        if stream:
-            return (
-                LlmChunkEvent(
-                    contract_version=CONTRACT_VERSION,
-                    trace_id=trace_id,
-                    issued_at=datetime.now(timezone.utc),
-                    request_id=safe_id,
-                    done=True,
-                    is_error=True,
-                    error=we.message,
-                    worker_error=we,
-                    **job_id_kwargs,
-                )
-                .model_dump_json(exclude_none=True)
-                .encode()
-            )
-        return (
-            LlmResponse(
-                contract_version=CONTRACT_VERSION,
-                trace_id=trace_id,
-                issued_at=datetime.now(timezone.utc),
-                request_id=safe_id,
-                ok=False,
-                error=we.message,
-                worker_error=we,
-                **job_id_kwargs,
-            )
-            .model_dump_json(exclude_none=True)
-            .encode()
-        )
+        return build_llm_error_reply(payload, we, stream=stream)
 
     async def _err(self, msg, payload: dict, worker_error: WorkerError) -> None:
-        data = self._build_error_response(payload, worker_error, stream=False)
+        data = build_llm_error_reply(payload, worker_error, stream=False)
         await self.reply(msg, data)
 
     # ------------------------------------------------------------------

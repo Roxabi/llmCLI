@@ -61,18 +61,16 @@ vllm = [
 
 [project.optional-dependencies]
 nats = [
+    "roxabi-satellite",
     "nats-py>=2.6,<3",
     "nkeys>=0.1",
-    "roxabi-nats",
-    "roxabi-contracts",
 ]
 proxy = [
     "litellm[proxy]>=1.86",
 ]
 
 [tool.uv.sources]
-roxabi-nats      = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }
-roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "feat/roxabi-satellite" }
 
 [tool.pyright]
 venvPath = "."
