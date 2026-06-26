@@ -154,7 +154,21 @@ if [ ! -f "$PROXY_ENV" ] || "$FORCE"; then
   fi
   run install -m 600 /dev/null "$PROXY_ENV"
   if ! "$DRY_RUN"; then
-    printf '# proxy.env — chmod 600. Fill in keys before starting.\nLLMCLI_API_KEY=\nFIREWORKS_API_KEY=\nANTHROPIC_API_KEY=\nOPENAI_API_KEY=\nNVIDIA_API_KEY=\n' >> "$PROXY_ENV"
+    cat >>"$PROXY_ENV" <<'EOF'
+# proxy.env — chmod 600. Fill in keys before starting.
+LLMCLI_API_KEY=
+FIREWORKS_API_KEY=
+ANTHROPIC_API_KEY=
+OPENAI_API_KEY=
+NVIDIA_API_KEY=
+
+# OTel v2 → factory-otel-collector (uncomment on factory-hub with Langfuse stack)
+# LITELLM_OTEL_V2=true
+# OTEL_EXPORTER=otlp_grpc
+# OTEL_ENDPOINT=http://factory-otel-collector:4317
+# OTEL_SERVICE_NAME=llmcli-proxy
+# OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
+EOF
   fi
   echo "  [created] $PROXY_ENV"
 else
