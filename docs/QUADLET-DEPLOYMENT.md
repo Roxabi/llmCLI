@@ -66,11 +66,11 @@ $EDITOR ~/.roxabi/llmcli/env/proxy.env
 # Fill in: LLMCLI_API_KEY, FIREWORKS_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, NVIDIA_API_KEY
 
 # Optional — OTel traces to factory Langfuse stack (factory-hub / M₁):
-#   LLMCLI_OTEL_ENABLED=1
-#   OTEL_EXPORTER_OTLP_ENDPOINT=http://factory-otel-collector:4317
-#   OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+#   LITELLM_OTEL_V2=true
+#   OTEL_EXPORTER=otlp_grpc
+#   OTEL_ENDPOINT=http://factory-otel-collector:4317
 #   OTEL_SERVICE_NAME=llmcli-proxy
-#   OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT
+#   OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
 # See deploy/proxy.env.example and roxabi-factory docs/runbooks/otel-traces.md
 
 # Worker — llm-worker hosts only

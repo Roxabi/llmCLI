@@ -67,7 +67,7 @@ nats = [
 ]
 proxy = [
     "grpcio>=1.80.0",
-    "litellm[proxy]>=1.86",
+    "litellm[proxy]>=1.89",
     "opentelemetry-api>=1.41.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.41.0",
     "opentelemetry-instrumentation-fastapi>=0.62b0",

@@ -60,15 +60,24 @@ def load_proxy_base(path: Path) -> dict[str, Any]:
     return parsed
 
 
-def _otel_export_enabled() -> bool:
-    """True when proxy should register LiteLLM's otel callback (ADR-092)."""
+def _litellm_otel_v2_enabled() -> bool:
+    """True when LiteLLM's native OTel v2 integration should run (>=1.89)."""
+    flag = os.environ.get("LITELLM_OTEL_V2", "").strip().lower()
+    return flag in {"1", "true", "yes"}
+
+
+def _otel_v1_callback_enabled() -> bool:
+    """True when proxy should register LiteLLM's legacy otel callback (ADR-092).
+
+    v1 and v2 are mutually exclusive — v2 reads ``LITELLM_OTEL_V2`` and ``OTEL_*``
+    env vars directly; injecting ``callbacks: [\"otel\"]`` would double-export.
+    """
+    if _litellm_otel_v2_enabled():
+        return False
     flag = os.environ.get("LLMCLI_OTEL_ENABLED", "").strip().lower()
     if flag in {"1", "true", "yes"}:
         return True
-    return bool(
-        os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-        or os.environ.get("OTEL_ENDPOINT")
-    )
+    return bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
 
 
 def merge_proxy_config(
@@ -88,7 +97,7 @@ def merge_proxy_config(
     gs.setdefault("custom_auth", "proxy_custom_auth.custom_auth")
     ls = result.setdefault("litellm_settings", {})
     ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
-    if _otel_export_enabled():
+    if _otel_v1_callback_enabled():
         callbacks = list(ls.get("callbacks") or [])
         if "otel" not in callbacks:
             ls["callbacks"] = [*callbacks, "otel"]
