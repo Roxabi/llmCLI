@@ -162,12 +162,12 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 NVIDIA_API_KEY=
 
-# OTel v2 → factory-otel-collector (uncomment on factory-hub with Langfuse stack)
-# LITELLM_OTEL_V2=true
-# OTEL_EXPORTER=otlp_grpc
-# OTEL_ENDPOINT=http://factory-otel-collector:4317
+# OTel v1 → factory-otel-collector (uncomment on factory-hub with Langfuse stack)
+# LLMCLI_OTEL_ENABLED=1
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://factory-otel-collector:4317
+# OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 # OTEL_SERVICE_NAME=llmcli-proxy
-# OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
+# OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=NO_CONTENT
 EOF
   fi
   echo "  [created] $PROXY_ENV"

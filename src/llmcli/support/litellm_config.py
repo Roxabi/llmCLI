@@ -60,6 +60,17 @@ def load_proxy_base(path: Path) -> dict[str, Any]:
     return parsed
 
 
+def _otel_export_enabled() -> bool:
+    """True when proxy should register LiteLLM's otel callback (ADR-092)."""
+    flag = os.environ.get("LLMCLI_OTEL_ENABLED", "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    return bool(
+        os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        or os.environ.get("OTEL_ENDPOINT")
+    )
+
+
 def merge_proxy_config(
     base: dict[str, Any],
     model_list: list[dict[str, Any]],
@@ -77,6 +88,10 @@ def merge_proxy_config(
     gs.setdefault("custom_auth", "proxy_custom_auth.custom_auth")
     ls = result.setdefault("litellm_settings", {})
     ls.setdefault("drop_params", _DEFAULT_PROXY_BASE["litellm_settings"]["drop_params"])
+    if _otel_export_enabled():
+        callbacks = list(ls.get("callbacks") or [])
+        if "otel" not in callbacks:
+            ls["callbacks"] = [*callbacks, "otel"]
     result["model_list"] = model_list
     return result
 
