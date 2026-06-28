@@ -6,7 +6,7 @@ uid = 1502
 container = "llmcli.container"
 required_secrets = ["llmcli-litellm-key"]
 env_file = "~/.roxabi/llmcli/env/proxy.env"
-host_roles = ["any"]
+host_roles = ["llm-worker"]
 
 [component.worker]
 container = "llmcli-nats-worker.container"
