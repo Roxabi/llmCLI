@@ -403,9 +403,9 @@ systemctl --user start llmcli
 ## Running `llmcli proxy` (managed LiteLLM portal)
 
 `llmcli proxy` reads the llmcli catalog (`~/.roxabi/llmcli/llmcli.toml`), builds a
-complete LiteLLM config, and spawns `litellm` as a supervised foreground process on
-`:18091` by default. This replaces the hand-maintained `~/.litellm/config.yaml` + lyra
-supervisor pattern for new deployments.
+complete LiteLLM config, and spawns `litellm` as a foreground process on
+`:18091` by default (managed by the `llmcli` Quadlet unit). This replaces the legacy
+hand-maintained `~/.litellm/config.yaml` pattern.
 
 ### Invocation
 
@@ -651,10 +651,10 @@ If `proxy-base.yaml` is absent, `llmcli proxy` generates a minimal default confi
 The Quadlet unit sets `Environment=LLMCLI_PROXY_HOST=0.0.0.0` so the container listens on
 all interfaces; override in `~/.roxabi/llmcli/env/proxy.env` to restrict.
 
-### Migration recipe (:4000 lyra-supervisor → :18091 Quadlet)
+### Migration recipe (legacy `:4000` → `:18091` Quadlet)
 
-Migrating from the legacy hand-maintained `~/.litellm/config.yaml` + lyra-supervisor
-pattern to the Quadlet-managed `llmcli proxy`:
+Migrating from the legacy hand-maintained `~/.litellm/config.yaml` + `:4000` proxy
+to the Quadlet-managed `llmcli proxy`:
 
 1. **Pre-flight** — confirm `~/.roxabi/llmcli/llmcli.toml` exists and `[host]` has a
    sensible `public_base_url`. Add `port = NNNN` to `[host]` if you need a non-default
@@ -730,9 +730,9 @@ pattern to the Quadlet-managed `llmcli proxy`:
 
 9. **Retire `:4000`** —
    ```bash
-   make litellm stop     # on the lyra hub
+   systemctl --user stop llmcli   # if still running the old unit
    ```
-   Then remove the supervisor program entry. See issue #51.
+   Confirm no legacy `litellm` process binds `:4000`. See issue #51.
 
 10. **Rollback** —
     ```bash
