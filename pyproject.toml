@@ -62,6 +62,8 @@ vllm = [
 [project.optional-dependencies]
 nats = [
     "roxabi-satellite",
+    "roxabi-nats",
+    "roxabi-otel",
     "nats-py>=2.6,<3",
     "nkeys>=0.1",
 ]
@@ -75,7 +77,10 @@ proxy = [
 ]
 
 [tool.uv.sources]
-roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "staging" }
+roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "feat/2069-otel-raw-telemetry" }
+roxabi-nats = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats", branch = "feat/2069-otel-raw-telemetry" }
+roxabi-otel = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-otel", branch = "feat/2069-otel-raw-telemetry" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "feat/2069-otel-raw-telemetry" }
 
 [tool.pyright]
 venvPath = "."

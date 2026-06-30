@@ -75,6 +75,8 @@ def nats_serve_llm(
         litellm_url,
     )
 
+    from llmcli.obs.otel_wiring import build_lifecycle_hooks
+
     adapter = LlmNatsAdapter(
         model_name=model,
         litellm_url=litellm_url,
@@ -83,6 +85,7 @@ def nats_serve_llm(
         reject_when_full=reject_when_full,
         heartbeat_interval=heartbeat_interval,
         drain_timeout=drain_timeout,
+        lifecycle_hooks=build_lifecycle_hooks("llmcli-worker"),
     )
 
     asyncio.run(adapter.run(nats_url))
