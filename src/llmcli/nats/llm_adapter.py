@@ -114,8 +114,7 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
         self, payload: dict, result: object | None
     ) -> dict[str, str]:
         del result
-        model = payload.get("model") or self._loaded_model or self._model_name
-        return {ATTR_MODEL: str(model)}
+        return {ATTR_MODEL: str(self._loaded_model or self._model_name)}
 
     def _engine_for_spec(self, spec):
         """Dispatch on spec.engine — same remote-guard as daemon._engine_for_spec."""

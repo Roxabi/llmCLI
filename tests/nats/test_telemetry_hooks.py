@@ -39,5 +39,5 @@ class TestLlmTelemetryHooks:
 
         spans = recorder.finished_spans()
         assert len(spans) == 1
-        assert spans[0].attributes[ATTR_MODEL] == "grok-4-fast"
+        assert spans[0].attributes[ATTR_MODEL] == "qwen3-4b"
         assert "messages" not in spans[0].attributes
