@@ -82,16 +82,10 @@ that `llama-server` validates on each request.
 LLMCLI_API_KEY=$(cat ~/.roxabi/llmcli/api_key)
 ```
 
-**Prod (`roxabituwer`):** add to the supervisor env block in
-`~/projects/lyra/deploy/supervisor/conf.d/lyra_hub.conf`:
+**Prod (`roxabituwer`):** set in the Quadlet env file `~/.roxabi/llmcli/env/proxy.env`
+(or factory hub env if routing through factory):
 
-```ini
-environment =
-    LLMCLI_API_KEY="%(ENV_LLMCLI_API_KEY)s",
-    ...other vars...
-```
-
-Then set the var in `~/projects/lyra/.env` on prod (sourced by `run_*.sh` wrappers):
+Then set the var on prod:
 
 ```bash
 LLMCLI_API_KEY=<the-same-key-in-~/.roxabi/llmcli/api_key>
@@ -105,11 +99,9 @@ accept (`LLMCLI_API_KEY` in the llmCLI catalog's `api_key_env` field).
 lyra makes no attempt to start llmCLI. Ensure the daemon is up before starting lyra:
 
 ```bash
-# Local
-make llm          # starts llmcli_serve via supervisor
-
-# Prod — started automatically by lyra.service linger (autostart=true)
-make remote status
+# Local / prod — Quadlet user unit
+systemctl --user start llmcli
+systemctl --user status llmcli
 ```
 
 ---
@@ -199,7 +191,7 @@ Pattern for prod-always-on lyra deployments:
 
 ```python
 fallbacks=[
-    # Fallback 1: prod small model (always-on, auto-restart via supervisor)
+    # Fallback 1: prod small model (always-on Quadlet unit)
     {
         "model": "openai/qwen3-8b-q4",
         "base_url": "http://roxabituwer.lan:8091/v1",
@@ -238,11 +230,10 @@ local heavy model with a prod fallback.
 
 | Variable | Required | Where set | Description |
 |---|---|---|---|
-| `LLMCLI_API_KEY` | Yes | `lyra/.env`, supervisor env | Bearer token for llama-server auth |
-| `ANTHROPIC_API_KEY` | Yes (if Anthropic fallback) | `lyra/.env`, supervisor env | Anthropic hosted fallback |
+| `LLMCLI_API_KEY` | Yes | `~/.roxabi/llmcli/env/proxy.env` | Bearer token for llama-server auth |
+| `ANTHROPIC_API_KEY` | Yes (if Anthropic fallback) | `~/.roxabi/llmcli/env/proxy.env` | Anthropic hosted fallback |
 
-Both vars are loaded by the supervisor wrapper (`run_hub.sh` sources `~/projects/lyra/.env`).
-Neither is committed to the repo — managed via `.env` files and supervisor env blocks.
+Neither is committed to the repo — managed via env files referenced by Quadlet units.
 
 ---
 

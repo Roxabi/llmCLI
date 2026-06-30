@@ -473,13 +473,11 @@ def emit_xai_oauth_warning_if_absent(err_console: Any) -> None:
 
 
 def reload_proxy() -> None:
-    """Reload the LiteLLM proxy by running 'make litellm reload' in the lyra supervisor dir.
+    """Reload the LiteLLM proxy via the Quadlet systemd user unit.
 
     This is a thin side-effect wrapper. Tests mock subprocess.run.
     """
-    litellm_dir = Path.home() / ".litellm"
     subprocess.run(  # noqa: S603
-        ["make", "litellm", "reload"],
-        cwd=litellm_dir,
+        ["systemctl", "--user", "restart", "llmcli"],
         check=True,
     )
