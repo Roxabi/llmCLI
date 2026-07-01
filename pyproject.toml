@@ -77,10 +77,10 @@ proxy = [
 ]
 
 [tool.uv.sources]
-roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "feat/2069-otel-raw-telemetry" }
-roxabi-nats = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats", branch = "feat/2069-otel-raw-telemetry" }
-roxabi-otel = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-otel", branch = "feat/2069-otel-raw-telemetry" }
-roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "feat/2069-otel-raw-telemetry" }
+roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+roxabi-nats = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats", branch = "staging" }
+roxabi-otel = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-otel", branch = "staging" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "staging" }
 
 [tool.pyright]
 venvPath = "."
