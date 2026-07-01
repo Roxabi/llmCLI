@@ -44,14 +44,17 @@ Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. M₁ catalog = cloud specs (
 
 ```
 llmcli.example.toml       — copy to ~/.roxabi/llmcli/llmcli.toml and customize
-src/llmcli/
-  cli.py                  — Typer app: pull, serve, stop, status, swap, chat, list, register-proxy
+src/llmcli/                — détail → `ls src/llmcli/`
+  cli/                    — Typer app: pull, serve, stop, status, swap, chat, list, register-proxy, xai, bench
   config.py               — TOML catalog loader (HostSettings + ModelSpec)
   engine.py               — Engine Protocol: start/stop/health/base_url + EngineInstance
-  litellm_config.py       — reads catalog → writes namespaced block in ~/.litellm/config.yaml
-  engines/
-    llamacpp.py           — vanilla llama.cpp engine
-    llamacpp_tq3.py       — TurboQuant fork engine (TQ3_4S)
+  engines/                — llamacpp (vanilla), llamacpp_tq3 (TurboQuant), vllm
+  support/                — providers catalog + litellm_config.py (catalog → namespaced block in ~/.litellm/config.yaml)
+  auth/                   — OAuth credential store (xAI)
+  proxy_forwarder/        — OAuth-managed forwarder for LiteLLM upstream calls (xAI, Fireworks)
+  nats/                   — NATS worker adapter (lyra.llm.generate.request) + lifecycle
+  gpu/                    — VRAM probing, KV-cache overhead estimation
+  obs/                    — observability (otel wiring)
 deploy/
   quadlet/llmcli.container            — LiteLLM proxy Quadlet (:18091)
   quadlet/llmcli-nats-worker.container — NATS worker Quadlet (llm-worker hosts)
