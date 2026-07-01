@@ -162,10 +162,10 @@ ANTHROPIC_API_KEY=
 OPENAI_API_KEY=
 NVIDIA_API_KEY=
 
-# OTel v2 → factory-otel-collector (uncomment on factory-hub with Langfuse stack)
+# OTel v2 → factory-otel (uncomment when factory-otel is active on roxabi.network)
 # LITELLM_OTEL_V2=true
 # OTEL_EXPORTER=otlp_grpc
-# OTEL_ENDPOINT=http://factory-otel-collector:4317
+# OTEL_ENDPOINT=http://factory-otel:4317
 # OTEL_SERVICE_NAME=llmcli-proxy
 # OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
 EOF
@@ -183,7 +183,16 @@ if [ ! -f "$WORKER_ENV" ] || "$FORCE"; then
   fi
   run install -m 600 /dev/null "$WORKER_ENV"
   if ! "$DRY_RUN"; then
-    printf '# worker.env — chmod 600. Set LLMCLI_NATS_URL before starting.\n# LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222\nLLMCLI_NATS_URL=\n' >> "$WORKER_ENV"
+    cat >>"$WORKER_ENV" <<'EOF'
+# worker.env — chmod 600. Set LLMCLI_NATS_URL before starting.
+# LLMCLI_NATS_URL=nats://<hub-tailnet-ip>:4222
+LLMCLI_NATS_URL=
+# OTel → factory-otel (NATS worker lifecycle hooks)
+# ROXABI_OTEL_ENABLED=1
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+# OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+# FACTORY_OTEL_TOKEN_PATH=/run/secrets/factory_otel_token
+EOF
   fi
   echo "  [created] $WORKER_ENV"
 else

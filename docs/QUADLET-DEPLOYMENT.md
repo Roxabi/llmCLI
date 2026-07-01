@@ -68,7 +68,7 @@ $EDITOR ~/.roxabi/llmcli/env/proxy.env
 # Optional — OTel traces to factory Langfuse stack (factory-hub / M₁):
 #   LITELLM_OTEL_V2=true
 #   OTEL_EXPORTER=otlp_grpc
-#   OTEL_ENDPOINT=http://factory-otel-collector:4317
+#   OTEL_ENDPOINT=http://factory-otel:4317
 #   OTEL_SERVICE_NAME=llmcli-proxy
 #   OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=no_content
 # See deploy/proxy.env.example and roxabi-factory docs/runbooks/otel-traces.md

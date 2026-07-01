@@ -19,6 +19,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+from roxabi_contracts.telemetry import ATTR_MODEL, MessageLifecycleHooks
 from roxabi_nats.adapter_base import NatsAdapterBase
 
 from llmcli.config import load as load_catalog
@@ -51,6 +52,7 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
         reject_when_full: bool = False,
         heartbeat_interval: float = 5.0,
         drain_timeout: float = 30.0,
+        lifecycle_hooks: MessageLifecycleHooks | None = None,
     ) -> None:
         super().__init__(
             SUBJECTS.generate_request,
@@ -62,6 +64,7 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
             drain_timeout=drain_timeout,
             inbox_prefix="_inbox.llmcli-llm",
             wait_ready=False,  # C2: workers skip JetStream KV probe
+            lifecycle_hooks=lifecycle_hooks,
         )
         self.__init_lifecycle__()  # sets _draining + _lifecycle_lock
         self._model_name = model_name
@@ -106,6 +109,12 @@ class LlmNatsAdapter(LifecycleMixin, GenerationMixin, NatsAdapterBase):
     # ------------------------------------------------------------------
     # NatsAdapterBase overrides
     # ------------------------------------------------------------------
+
+    def telemetry_attributes(
+        self, payload: dict, result: object | None
+    ) -> dict[str, str]:
+        del result
+        return {ATTR_MODEL: str(self._loaded_model or self._model_name)}
 
     def _engine_for_spec(self, spec):
         """Dispatch on spec.engine — same remote-guard as daemon._engine_for_spec."""
