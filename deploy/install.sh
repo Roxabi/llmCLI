@@ -189,8 +189,9 @@ if [ ! -f "$WORKER_ENV" ] || "$FORCE"; then
 LLMCLI_NATS_URL=
 # OTel → factory-otel (NATS worker lifecycle hooks)
 # ROXABI_OTEL_ENABLED=1
-# OTEL_EXPORTER_OTLP_ENDPOINT=http://factory-otel:4317
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
 # OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+# FACTORY_OTEL_TOKEN_PATH=/run/secrets/factory_otel_token
 EOF
   fi
   echo "  [created] $WORKER_ENV"
