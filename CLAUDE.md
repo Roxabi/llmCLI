@@ -36,6 +36,8 @@ axial rule: engines are thin leaves composing stage primitives from `engines/_co
 
 **Architecture HA**: M₁ doit toujours répondre (24/7 cloud relay). M₂ est dev/on-demand — off-able sans préavis. Agents Lyra appellent toujours `llmcli proxy :18091` (sur n'importe quel host) → LiteLLM route cloud par défaut; fallback local M₂ uniquement si configuré et up.
 
+**Cloud-gateway deployment → roxabi-factory** (2026-07-01): the always-on M₁ cloud gateway (LiteLLM proxy cloud-passthrough + `llmcli-xai-forwarder`/`llmcli-fw-forwarder`) is deployed and converged by **roxabi-factory** (`host_roles=["factory-hub"]`). This repo's Quadlet manifest now covers only the **M₂ local worker + its local proxy** (`llm-worker`). The image (`ghcr.io/roxabi/llmcli`) and forwarder code (`src/llmcli/proxy_forwarder/`, `src/llmcli/auth/`) stay here — factory reuses the published image, pinned by digest.
+
 Per-host catalog at `~/.roxabi/llmcli/llmcli.toml`. M₁ catalog = cloud specs (engine="remote"). M₂ catalog = mix cloud + local llama.cpp specs.
 
 ## Project Layout

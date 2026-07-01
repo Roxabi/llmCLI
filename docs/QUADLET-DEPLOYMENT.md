@@ -5,14 +5,23 @@ description: Install, operate, and rotate secrets for llmCLI Quadlet services (p
 
 # llmCLI Quadlet Deployment Runbook
 
-Four Quadlet units ship with llmCLI:
+llmCLI ships **two** Quadlet units, both for the M₂ local GPU worker (`llm-worker`):
 
 | Service | Unit | Host role | Port |
 |---|---|---|---|
-| LiteLLM proxy | `llmcli.container` | any (all hosts) | 18091 |
+| LiteLLM proxy (M₂ local hybrid) | `llmcli.container` | `llm-worker` (M₂) | 18091 |
 | NATS worker | `llmcli-nats-worker.container` | `llm-worker` only | — (host network) |
-| xAI OAuth forwarder | `llmcli-xai-forwarder.container` | M₁ (factory-hub) only | 18645 (internal) |
-| Fireworks keyless forwarder | `llmcli-fw-forwarder.container` | M₁ (factory-hub) only | 18646 (internal) |
+
+> **The M₁ cloud gateway moved to roxabi-factory.** The always-on M₁ cloud gateway —
+> the LiteLLM proxy (cloud passthrough) plus the xAI/Grok forwarder
+> (`llmcli-xai-forwarder`, :18645) and Fireworks forwarder (`llmcli-fw-forwarder`,
+> :18646) — is now deployed and converged by **roxabi-factory**
+> (`roxabi-factory/deploy/quadlet/llmcli*.container`, `host_roles=["factory-hub"]`).
+> The image (`ghcr.io/roxabi/llmcli`) and the forwarder code
+> (`src/llmcli/proxy_forwarder/`, `src/llmcli/auth/`) remain owned here — factory
+> reuses the published image, pinned by digest. The forwarder operational sections
+> below (enable / health / rotate) still describe how those factory-deployed units
+> behave; run their `systemctl --user` commands on M₁.
 
 ---
 
