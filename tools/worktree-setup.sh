@@ -5,6 +5,14 @@
 # if a branch bumps deps, `rm .venv && uv sync` inside the worktree.
 set -euo pipefail
 
+# Install git hooks first (before any early-exit venv path below): hooks land
+# in the shared common hooks dir, so every worktree creation self-heals the
+# whole repo. Non-fatal — a missing pre-commit binary must not block worktree
+# creation.
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/install-hooks.sh" ]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/install-hooks.sh" || echo "worktree-setup: hook install failed — continuing" >&2
+fi
+
 # git worktree list --porcelain always emits the main worktree first per git docs.
 MAIN_REPO=$(git worktree list --porcelain | awk '/^worktree / {print $2; exit}')
 
