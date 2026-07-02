@@ -31,7 +31,7 @@ Parse `$ARGUMENTS`:
 - Extract query string (everything that is not a flag)
 - Detect mode flag: `--web` | `--X` | `--all` | none
 
-No query and no stdin → DP(B) "Enter your research query:".
+No query and no stdin → ask user "Enter your research query:".
 
 | Flag | Tool sent to Grok |
 |---|---|
