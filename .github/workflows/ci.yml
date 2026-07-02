@@ -8,18 +8,57 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    services:
+      nats:
+        image: nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
+        ports: ["4222:4222"]
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8222/healthz"
+          --health-interval 5s
+          --health-timeout 2s
+          --health-retries 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v7
+        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
       - name: Install dependencies
         run: uv sync --frozen --all-extras
+      - name: Generate NATS auth config
+        run: |
+          python tests/nats/auth/generate_config.py --env-file /tmp/nats-creds.env
+          source /tmp/nats-creds.env
+          echo "::add-mask::$NATS_TEST_OP_PASSWORD"
+          echo "::add-mask::$NATS_TEST_BAD_PASSWORD"
+          echo "NATS_TEST_OP_PASSWORD=$NATS_TEST_OP_PASSWORD" >> "$GITHUB_ENV"
+          echo "NATS_TEST_BAD_PASSWORD=$NATS_TEST_BAD_PASSWORD" >> "$GITHUB_ENV"
+          test -f tests/nats/auth/nats-server.conf || { echo "NATS auth config not generated"; exit 1; }
+      - name: Start NATS auth broker
+        run: |
+          docker run -d --rm --name nats-auth -p 4223:4222 \
+            -v "$GITHUB_WORKSPACE/tests/nats/auth/nats-server.conf:/etc/nats/nats-server.conf" \
+            nats:2.11-alpine@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00
+          for i in {1..10}; do
+            docker exec nats-auth wget -T 2 -qO- http://localhost:8222/healthz && break
+            sleep 1
+          done
+          docker exec nats-auth wget -T 2 -qO- http://localhost:8222/healthz || { echo "NATS auth broker failed to start"; exit 1; }
+      - name: Cleanup NATS auth broker
+        if: always()
+        run: docker rm -f nats-auth 2>/dev/null || true
       - name: Lint
         run: uv run ruff check .
       - name: Typecheck
         run: uv run ruff check --select=PYI .
-      - name: Test
-        run: uv run pytest
+      - name: Test (unit)
+        run: uv run pytest -m "not nats"
+      - name: Test (nats integration)
+        run: uv run --extra nats pytest -m nats
+        env:
+          NATS_URL: nats://localhost:4222
+          NATS_AUTH_URL: nats://localhost:4223
+          # CI brokers: nats (unauthenticated) + nats-auth (ACL-enforced)
+          # for AC-7 negative tests. Adapter tests run directly and do not
+          # go through the CLI creds check.
 
   secrets:
     name: Secret scan
@@ -29,6 +68,6 @@ jobs:
         with:
           fetch-depth: 0
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@47e7b7cd74f578e1e3145d48f669f22fd1330ca6 # v3.94.3
+        uses: trufflesecurity/trufflehog@37b77001d0174ebec2fcca2bd83ff83a6d45a3ab # v3.95.3
         with:
           extra_args: --results=verified,unknown

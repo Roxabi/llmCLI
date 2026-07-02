@@ -19,7 +19,7 @@ build:
 
 testing:
   unit: pytest
-  secrets: trufflehog
+  secrets: trufflehog  # canonical CI scan (.github/workflows/ci.yml); local pre-commit hook uses gitleaks for faster dev iteration
 
 deploy:
   platform: none
@@ -31,6 +31,7 @@ commands:
   format: uv run ruff format .
   typecheck: uv run ruff check --select=PYI .
   install: uv sync
+  worktree_setup: tools/worktree-setup.sh
 
 artifacts:
   analyses: artifacts/analyses
@@ -47,4 +48,36 @@ standards:
 
 lsp:
   enabled: true
-  server: pyright
+  server: pyright  # NOTE: pre-commit `typecheck` hook uses `ruff --select=PYI` (lint-only); full pyright wiring TBD
+
+# Quality gates — Python code-hygiene contracts (opt-in).
+# When section is absent: all gates OFF (backwards-compatible).
+# When section is present but a sub-block is absent: that gate OFF.
+# Gates are installed/synced by /release-setup --force via the quality-gates cookbook
+# (plugins/dev-core/skills/release-setup/cookbooks/quality-gates.md).
+# Python-only — stack-setup skips this section when runtime != python.
+quality_gates:
+  file_length:
+    enabled: true
+    metric: sloc
+    max_lines: 300                             # default 300
+    globs: ["src/**/*.py"]
+    exemptions_file: tools/file_exemptions.txt # format: <path> <issue-url> (space-separated)
+  folder_size:
+    enabled: true
+    max_files: 12                              # default 12
+    globs: ["src/**"]
+    exemptions_file: tools/folder_exemptions.txt
+  import_layers:
+    enabled: true
+    stage: pre-push                            # pre-commit | pre-push (default pre-push; lint-imports is slow)
+    config: .importlinter
+  healthcmd_quoting:
+    enabled: true
+    stage: pre-push
+    script: tools/check_healthcmd_quoting.sh
+  quadlet_manifest_install:
+    enabled: true
+    stage: pre-push
+    script: tools/check_quadlet_manifest_install.sh
+    description: bidirectional manifest↔install — every [component.*] container in deploy/quadlet.toml has a source file installed by the deploy/quadlet/*.container glob (Makefile + install.sh), and every on-disk *.container is declared (orphan-install guard, #1901). Also enforced in CI via quadlet-lint.yml.

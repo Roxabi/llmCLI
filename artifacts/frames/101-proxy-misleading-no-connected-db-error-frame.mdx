@@ -1,0 +1,45 @@
+---
+title: proxy: misleading 'No connected db' error on invalid API key
+issue: 101
+status: approved
+tier: S
+date: 2026-05-28
+---
+
+## Problem
+
+When the LiteLLM proxy receives an invalid or unknown API key, it returns HTTP 400 with the error message "No connected db." instead of a proper authentication error (401/403). This is actively misleading — the root cause is auth failure, not a missing database connection.
+
+This masked a real production issue where Hermes was configured with the wrong `OPENAI_API_KEY` for ~6 days, sending the team down a rabbit hole investigating LiteLLM database configuration instead of checking the key.
+
+## Who
+
+- **Primary:** Operators and agents (Hermes) hitting the LiteLLM proxy with stale or wrong keys.
+- **Secondary:** On-call engineers debugging proxy failures during incidents.
+
+## Constraints
+
+- Must not break existing `master_key` auth flow.
+- Must not introduce database dependencies.
+- Should work within LiteLLM proxy behavior (config or middleware fix, not upstream fork).
+
+## Out of Scope
+
+- Upstream PR to LiteLLM itself (document or intercept only).
+- Database-backed key management (we use `master_key` only).
+- Changes to how LiteLLM handles actual DB connection failures.
+
+## Premise Validity
+
+**Success in 6 months:** Proxy returns 401/403 for invalid keys; "No connected db" never appears on auth failures; docs explain the behavior clearly.
+
+**Failure in 6 months:** After 3 proxy restarts, the same 400 error still reproduces with invalid keys; no middleware or config fix deployed.
+
+**Simplest alternative:** Document the known behavior in proxy setup docs.
+**Why not simplest:** Documentation alone doesn't fix the masked production issue; the error is actively misleading during incident response.
+
+## Complexity
+
+**Tier: S** — single domain (proxy auth), ≤3 files (config/middleware/docs), no new architecture.
+
+- Signals: clear scope, single domain, no unknowns.

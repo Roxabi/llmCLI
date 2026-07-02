@@ -1,0 +1,8 @@
+# Qwen3-14B dense — Q5_K_M. Lighter alternative, fits comfortably in 16 GB.
+engine   = "llamacpp"
+repo     = "Qwen/Qwen3-14B-GGUF"
+file     = "qwen3-14b-q5_k_m.gguf"
+port     = 8092
+vram_gib = 11
+flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
+machines = ["roxabitower"]

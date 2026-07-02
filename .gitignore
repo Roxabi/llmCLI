@@ -10,3 +10,11 @@ build/
 uv.lock.local
 
 .claude/dev-core.yml
+# CocoIndex Code (ccc)
+/.cocoindex_code/
+
+# dev-core worktree orchestration state
+.claude/worktrees/
+
+# Generated NATS auth config (ephemeral credentials)
+tests/nats/auth/nats-server.conf

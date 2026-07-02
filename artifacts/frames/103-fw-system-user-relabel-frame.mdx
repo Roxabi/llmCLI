@@ -1,0 +1,48 @@
+---
+title: "feat(proxy): toggleable system→user relabel on Fireworks route for native Claude Code traffic"
+issue: 103
+status: approved
+tier: F-lite
+date: 2026-05-31
+---
+
+## Problem
+
+Claude Code 2.1.158 sends `{"role":"system"}` entries **inline inside `messages[]`** (captured live: roles `['user','system']`, `thinking:{type:adaptive}`, `stream:true`, path `/v1/messages?beta=true`). Fireworks' native Anthropic endpoint rejects these with HTTP **400 `invalid role "system"`** — verified 12/12 across 3 model ids. The current LiteLLM translation workaround (`use_chat_completions_url_for_anthropic_messages: true`) handles plain chat but returns **403 `Fire Pass API keys are not authorized for this route`** the moment Claude Code sends `thinking`.
+
+Net: native Claude Code traffic cannot reach the Fireworks route through the prod `llmcli` proxy at `:18091` as-is. The proven fix is to relabel `role:"system"` → `role:"user"` in `messages[]` before forwarding to the FW native endpoint (verified live: 200, streams 147 SSE thinking deltas, `cache_read` hit).
+
+## Who
+
+- **Primary:** `claude-code`, routed via the `ccfk` alias → prod `llmcli` LiteLLM proxy `:18091` on M₁ (roxabituwer).
+- **Secondary:** any consumer that wants native Fireworks thinking blocks through the shared proxy without exposing the FW key client-side.
+
+## Constraints
+
+- **Keyless** — `FIREWORKS_API_KEY` stays server-side; chain on the existing `/fw-anthropic` passthrough that injects it. Never exposed to the client shell.
+- **Toggleable** — on/off via llmcli config, so the relabel reverts cleanly once Fireworks ships their upstream fix.
+- **No client-side change** — `ccfk` keeps pointing at the prod `:18091` proxy; routing requires no client edit.
+- Lives inside the existing prod `llmcli` Quadlet container (`:18091`); FW edge gates by UA (curl → 200 vs `python-urllib` → 403) — forwarder must present an accepted client.
+
+## Out of Scope
+
+- Removing `MAX_THINKING_TOKENS=0` from `ccfk` in `~/.claude/dotfiles/bash_aliases` — follow-up after the relabel route is live in prod. **Order matters:** server relabel FIRST, then clean `ccfk` (else `ccfk` 403s).
+- The A-vs-B implementation choice (LiteLLM-native `pre_call_hook` vs internal reverse-proxy) — **resolved in spec**, including validating that path A preserves thinking/stream.
+
+## Premise Validity
+
+**Success in 6 months:** Native Claude Code traffic (thinking + stream) returns 200 through the `:18091` Fireworks route; `ccfk` works with no client-side `MAX_THINKING_TOKENS=0` forcing; the toggle flips off cleanly once Fireworks ships their upstream fix.
+
+**Failure in 6 months:** A Claude Code native request carrying `thinking` still returns ≠200 through `:18091`, **or** the relabel is hardcoded with no working toggle to revert when FW fixes upstream.
+
+**Simplest alternative:** Keep the client-side `MAX_THINKING_TOKENS=0` hack in `ccfk` (the current workaround).
+**Why not simplest:** It is per-shell client config drift, suppresses native thinking blocks, forces every consumer to replicate the hack, and does not fix the underlying 400/403 at the FW route itself.
+
+## Complexity
+
+**Tier: F-lite** — single domain (proxy / LiteLLM config on M₁), clear scope, one open design question (A vs B) resolved at spec time.
+
+Signals observed:
+- Single domain: the `llmcli` LiteLLM proxy / forwarder surface.
+- ~4–10 files: config toggle, forwarder/hook, deploy config, tests.
+- One unknown: whether path A (`anthropic/` provider + FW native `api_base` via `pre_call_hook`) preserves thinking/stream — a spec-validation task, not multi-domain risk. Path B (internal reverse-proxy) is the proven fallback.

@@ -1,34 +1,28 @@
-# llmCLI catalog — per-host. Copy to ~/.config/llmcli/llmcli.toml and edit.
+# llmCLI host config — copy to ~/.roxabi/llmcli/llmcli.toml and edit.
+# Model definitions live in ~/.roxabi/llmcli/models/<name>.toml (one file per model).
+# See models/ in this repo for examples to copy and adapt.
+#
+# Cloud passthrough examples (engine="remote", no GPU required):
+#   models/kimi-k2.6.toml         — Kimi K2.6 via Fireworks AI (OpenAI protocol)
+#   models/claude-sonnet-4-6.toml — Claude Sonnet 4.6 via Anthropic API
+#
+# Per-machine filter: set machines=["hostname"] on any spec to restrict it to
+# specific hosts. Empty list (machines=[]) means all hosts — the default.
+#
+# Startup timeout: override the engine default per model spec.
+#   # startup_timeout_s = 120  # override engine default (llamacpp=60s, vllm=180s)
 
 [host]
 bind              = "0.0.0.0"
 public_base_url   = "http://roxabitower.lan"
 api_key_env       = "LLMCLI_API_KEY"
+default_model     = "qwen3_6-35b-a3b-tq3"
+vram_budget_gib   = 16.0
+# port = 18091  # default — overridden by --port flag or LLMCLI_PROXY_PORT env
 
-# --- Local (roxabitower, RTX 5070 Ti, 16 GB) --------------------------------
-
-[models.qwen3_6-35b-a3b-tq3]
-engine     = "llamacpp_tq3"
-repo       = "YTan2000/Qwen3.6-35B-A3B-TQ3_4S"
-file       = "Qwen3.6-35B-A3B-TQ3_4S.gguf"
-mmproj     = "mmproj-BF16.gguf"
-port       = 8091
-vram_gib   = 13
-flags      = ["-ngl", "99", "-c", "8192", "-ctk", "q4_0", "-ctv", "tq3_0", "-fa", "on", "--jinja"]
-
-[models.qwen3-14b-q5]
-engine   = "llamacpp"
-repo     = "Qwen/Qwen3-14B-GGUF"
-file     = "qwen3-14b-q5_k_m.gguf"
-port     = 8092
-vram_gib = 11
-flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
-
-# --- Prod (roxabituwer, RTX 3080, 10 GB) — example --------------------------
-# [models.qwen3-8b-q4]
-# engine   = "llamacpp"
-# repo     = "Qwen/Qwen3-8B-GGUF"
-# file     = "qwen3-8b-q4_k_m.gguf"
-# port     = 8091
-# vram_gib = 6
-# flags    = ["-ngl", "99", "-c", "8192", "-fa", "on", "--jinja"]
+[nats]
+# NATS URL — required for the operator CLI (swap, stop, status, list, reload-catalog).
+# The worker daemon reads LLMCLI_NATS_URL from env/worker.env; this section covers
+# the operator side (interactive commands run outside the container).
+# LLMCLI_NATS_URL env var takes precedence — CI, wrappers, and ad-hoc overrides keep working.
+url = "nats://<hub-tailnet-ip>:4222"

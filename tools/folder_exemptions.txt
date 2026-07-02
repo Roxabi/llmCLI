@@ -1,0 +1,3 @@
+# Folder size exemptions (≤12 files per folder)
+# Each entry must have a tracking issue.
+# Format: <path>  # <count> files — <issue> <description>

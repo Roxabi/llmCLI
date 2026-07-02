@@ -1,0 +1,17 @@
+{
+  "name": "llmcli-marketplace",
+  "version": "1.0.0",
+  "description": "Claude Code plugins for llmCLI — LiteLLM proxy and xAI OAuth forwarder.",
+  "owner": {
+    "name": "Roxabi",
+    "url": "https://github.com/Roxabi"
+  },
+  "plugins": [
+    {
+      "name": "xai-research",
+      "description": "Research queries via xAI Grok — web search, X search, or plain chat via llmCLI OAuth forwarder.",
+      "source": "./plugins/xai-research",
+      "category": "tools"
+    }
+  ]
+}

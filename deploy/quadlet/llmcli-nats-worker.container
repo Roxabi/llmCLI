@@ -1,0 +1,44 @@
+[Unit]
+# NOTE: Exec=llm → deploy/entrypoint.sh resolves MODE=llm → `exec llmcli nats-serve llm "$@"`.
+# HealthCmd=pgrep -f "llmcli nats-serve" matches the resolved process name.
+# No realignment change needed (paper-only mismatch). Verified 2026-05-21 per #34 spec.
+Description=llmCLI NATS worker (canonical lyra.llm.generate.request)
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Container]
+Image=ghcr.io/roxabi/llmcli:staging
+Label=io.containers.autoupdate=registry
+ContainerName=llmcli-nats-worker
+# host network — rootless podman cannot route tailnet 100.x without it
+Network=host
+Volume=%h/.cache/huggingface:/home/llmcli/.cache/huggingface
+Volume=%h/.roxabi/llmcli:/home/llmcli/.roxabi/llmcli:ro,Z
+Environment=HF_HOME=/home/llmcli/.cache/huggingface
+Secret=llmcli-nats-worker,type=mount,target=/run/secrets/llmcli-nats-worker.seed,mode=0400,uid=1502,gid=1502
+Secret=llmcli-litellm-key,type=env,target=LLMCLI_LITELLM_API_KEY
+AddDevice=nvidia.com/gpu=all
+UserNS=keep-id:uid=1502,gid=1502
+EnvironmentFile=%h/.roxabi/llmcli/env/worker.env
+Environment=NATS_NKEY_SEED_PATH=/run/secrets/llmcli-nats-worker.seed
+Environment=LLMCLI_LITELLM_URL=http://localhost:18091/v1
+# Override the model per host: add Environment=LLMCLI_MODEL=<catalog-name> in a drop-in
+Exec=llm --model qwen3-4b
+# NB: Quadlet ≤5.7.0 strips a trailing double-quote from HealthCmd values → sh: Unterminated quoted string → false unhealthy. Ending in non-quote (|| exit 1) keeps inner quotes intact.
+HealthCmd=pgrep -f "llmcli nats-serve" || exit 1
+HealthInterval=30s
+HealthStartPeriod=30s
+NoNewPrivileges=true
+DropCapability=all
+
+[Service]
+Restart=on-failure
+RestartSec=10
+# Memory caps — contain a runaway to its cgroup (OOM-kill + restart) instead of
+# a global OOM death-spiral that freezes the host (2026-06-01 M₂ freeze, RAM+swap exhausted).
+# Local inference (qwen3-4b) weights go to VRAM; host-side RAM stays modest, 12G is generous.
+MemoryHigh=12G
+MemoryMax=14G
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,80 @@
+# llmCLI proxy — hand-curated LiteLLM transport config.
+#
+# Copy to ~/.roxabi/llmcli/proxy-base.yaml (chmod 600), then edit.
+# `llmcli proxy` loads this file at startup, overlays catalog-derived
+# `model_list` on top, and spawns LiteLLM against the merged result.
+#
+# NEVER modified by llmCLI tooling — this file is yours alone.
+#
+# Secrets MUST use os.environ/FOO indirection. Literal secrets here are NOT
+# validated and will be copied verbatim into the merged config on disk (the
+# file IS chmod 600, but env indirection is still the recommended pattern).
+general_settings:
+  master_key: os.environ/LLMCLI_API_KEY
+
+  # Custom auth intercept: replaces LiteLLM's default DB key lookup with a
+  # master_key-only check. Fixes the misleading 400 "No connected db" error
+  # that LiteLLM returns for invalid keys when no database is configured.
+  # `llmcli proxy` auto-wires this; add it manually for `register-proxy` setups.
+  custom_auth: proxy_custom_auth.custom_auth
+
+  # Fireworks /v1/messages → forward as-is to Fireworks Anthropic-compatible
+  # endpoint. Used by Claude Code aliases (ccfg/ccfk) that speak Anthropic
+  # protocol and route to Fireworks via this proxy.
+  #
+  # --- fw-anthropic toggle: two mutually exclusive modes ---
+  #
+  # MODE OFF — direct upstream (default, active below):
+  #   target: "https://api.fireworks.ai/inference"
+  #   headers.Authorization MUST be present (client supplies the key via env).
+  #
+  # MODE ON — route through fw-forwarder (system-user relabel active):
+  #   target: "http://llmcli-fw-forwarder:18646"
+  #   The headers block MAY be removed — the forwarder injects FIREWORKS_API_KEY
+  #   server-side and the inbound Authorization header is stripped regardless
+  #   (forwarder sets _DROP_REQUEST_HEADERS; pass_through_endpoint uses
+  #   forward_headers: false). Removal is RECOMMENDED for clarity, not required.
+  #   Container DNS `llmcli-fw-forwarder` resolves on roxabi.network.
+  #
+  # To flip ON:  set target to http://llmcli-fw-forwarder:18646, optionally
+  #              remove the headers block, then `systemctl --user restart llmcli`.
+  #
+  # --- Revert sequence (order matters) ---
+  # Reverting from ON back to OFF (upstream):
+  #   1. Edit this file: restore target → https://api.fireworks.ai/inference
+  #                      and restore the headers.Authorization block below.
+  #   2. systemctl --user restart llmcli
+  #   3. systemctl --user stop llmcli-fw-forwarder
+  #   4. ONLY NOW drop MAX_THINKING_TOKENS=0 from the ccfk alias in
+  #      ~/.claude/dotfiles/bash_aliases — doing it before step 2 causes 403s
+  #      (Fireworks' direct native route rejects thinking requests without the cap).
+  pass_through_endpoints:
+    - path: "/fw-anthropic"
+      # MODE OFF (active): direct upstream — requires FIREWORKS_API_KEY in env.
+      target: "https://api.fireworks.ai/inference"
+      # MODE ON (commented out): uncomment this target, remove headers block below.
+      # target: "http://llmcli-fw-forwarder:18646"
+      include_subpath: true
+      forward_headers: false
+      headers:
+        # secrets MUST use os.environ/FOO — literal values leak verbatim to the merged config on disk.
+        # NOTE: this block MAY be removed when MODE ON (forwarder injects the key; inbound Authorization is stripped regardless).
+        Authorization: "Bearer os.environ/FIREWORKS_API_KEY"
+
+    # xAI Grok — live catalogue via OAuth forwarder (no LiteLLM reload).
+    # Consumers point at http://<host>:18091/xai/v1 (OpenAI-compatible).
+    # The forwarder injects/refreshes SuperGrok OAuth server-side; no client key needed.
+    # Container DNS `llmcli-xai-forwarder` resolves on roxabi.network (M₁).
+    - path: "/xai"
+      target: "http://llmcli-xai-forwarder:18645"
+      include_subpath: true
+      forward_headers: false
+
+litellm_settings:
+  # Drop unsupported provider-specific kwargs instead of erroring.
+  drop_params: true
+
+  # Auto-translate Anthropic /v1/messages → OpenAI /v1/chat/completions for
+  # any model_list entry that has chat-completions support. Lets Claude Code
+  # talk to any catalog model without provider-side Anthropic support.
+  use_chat_completions_url_for_anthropic_messages: true

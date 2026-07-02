@@ -1,0 +1,111 @@
+---
+title: "ADR-007: Digest Pinning for Fleet Quadlet Images"
+description: Replace floating :staging tags with immutable digest-pinned images across all Roxabi fleet Quadlets to close the registry-compromise auto-deploy surface.
+---
+
+## Status
+
+Accepted
+
+## Context
+
+All Roxabi fleet Quadlets (llmcli, llmcli-nats-worker, lyra services, voiceCLI, imageCLI) currently use:
+
+```ini
+Image=ghcr.io/roxabi/<tool>:staging
+Label=io.containers.autoupdate=registry
+```
+
+`podman-auto-update.timer` (systemd user) polls the registry and auto-pulls any new image that `:staging` resolves to. This means a compromise of the registry or CI pipeline can deploy arbitrary code to production hosts without an approval gate. The `:staging` tag is floating by design — every merge to `staging` branch triggers a build/push that immediately becomes candidate for auto-deploy.
+
+The fleet already contains one counter-example: `lyra-nats` pins `docker.io/library/nats:2.10.29-alpine@sha256:b83efabe3e7def1e0a4a31ec6e078999bb17c80363f881df35edc70fcb6bb927` and omits the autoupdate label (see issue #652). That precedent demonstrates digest pinning is operational in the same Podman + systemd `--user` environment.
+
+Container Deployment Standard S11 recommends autoupdate + registry label; S13 specifies `:staging` as the image tag. Both standards need revision.
+
+## Options Considered
+
+### Option A: Cosign verification (sigstore keyless OIDC)
+
+Configure `containers-policy.json` on every host to reject unsigned images. Sign images in CI with `cosign sign` using GitHub Actions OIDC (keyless).
+
+- **Pros:** Cryptographic guarantee of image provenance; industry-standard supply-chain hardening; works with floating tags because signature is verified at pull time.
+- **Cons:** Adds sigstore/cosign infrastructure to CI and host bootstrap; requires distributing and maintaining `containers-policy.json` on every fleet host; keyless OIDC depends on GitHub Actions provider availability (external dependency); debugging signature/policy failures is non-trivial for a small operator team; does NOT inherently provide an approval gate (a signed but malicious image can still auto-deploy).
+- **Verdict:** Overkill for current fleet size and threat model. The problem is lack of immutability + approval gate, not lack of cryptographic provenance.
+
+### Option B: Digest pinning + explicit bump workflow
+
+Replace `Image=ghcr.io/roxabi/<tool>:staging` with `Image=ghcr.io/roxabi/<tool>:staging@sha256:<digest>` in every `.container` file. Remove `Label=io.containers.autoupdate=registry`. Provide a `make image-bump` target that queries the GHCR registry API for the current digest of `:staging` and opens a PR (or auto-commits) to update the pinned digest.
+
+- **Pros:** Immutable — host runs exactly the bytes that were reviewed. Approval gate is the PR merging the digest bump. Already proven in fleet (`lyra-nats`). Zero new host infrastructure (no cosign, no policy files). Simple to audit (`git blame` on `.container` file shows when each digest landed). Works with existing GHCR + Podman.
+- **Cons:** Requires building and maintaining the `make image-bump` automation. Digest strings are opaque (mitigated by keeping the human-readable tag before `@sha256:`). Fleet-wide one-time churn to update every `.container` file.
+- **Verdict:** Addresses the actual problem (uncontrolled auto-deploy) with minimal operational complexity.
+
+### Option C: Drop AutoUpdate label only
+
+Remove `Label=io.containers.autoupdate=registry` but keep `Image=ghcr.io/roxabi/<tool>:staging`.
+
+- **Pros:** Smallest change. No new automation needed.
+- **Cons:** `:staging` remains floating. An operator running `podman pull` or `systemctl --user restart` still fetches whatever `:staging` currently resolves to — compromise reaches the host, just on manual action rather than auto. No immutability guarantee, no approval gate.
+- **Verdict:** Insufficient. Removes automation without adding control.
+
+## Decision
+
+**Option B — Digest pinning with explicit bump workflow.**
+
+Pin every fleet Quadlet to `ghcr.io/roxabi/<tool>:staging@sha256:<digest>`. Remove the `io.containers.autoupdate=registry` label because a pinned digest never changes on the registry; updates are driven by a deliberate `.container` file change, not a background pull.
+
+The approval gate is the PR that bumps the digest. This transforms the deploy pipeline from:
+
+```
+CI push :staging → auto-update pulls → runs (no gate)
+```
+
+to:
+
+```
+CI push :staging → make image-bump proposes digest → PR review → merge → host restart → runs (gated)
+```
+
+## Consequences
+
+### Positive
+
+- Registry or CI compromise cannot silently deploy to production; every image change requires a reviewed commit.
+- Immutable digests guarantee byte-for-byte reproducibility across hosts.
+- Aligns with existing `lyra-nats` precedent — fleet-wide consistency.
+- No new host-level infrastructure (cosign, policy.json, sigstore) to maintain.
+- `git blame` on `.container` files provides an automatic audit trail of what image was running when.
+
+### Negative
+
+- Must build and maintain `make image-bump` automation (registry API query + PR creation). If this breaks, images become stale until manually updated.
+- Digest strings are not human-readable at a glance — operators must cross-reference the tag prefix or the commit message.
+- One-time fleet-wide churn: every `.container` file in every repo (llmCLI, lyra, voiceCLI, imageCLI, roxabi-hermes) must be updated.
+- Container Deployment Standard S11 and S13 must be revised, and all repo CLAUDE.md sections updated.
+
+### Neutral
+
+- Podman still resolves the tag to the digest on first pull; the pinned digest merely prevents silent drift on subsequent pulls.
+- The `:staging` tag prefix is retained before `@sha256:` for human readability and tooling convenience; it is not used for drift.
+- `podman-auto-update.timer` continues to exist system-wide but has no effect on pinned-digest containers (autoupdate label is removed).
+
+## Fleet-wide rollout
+
+| Repo | Files to update |
+|------|----------------|
+| `llmcli` | `deploy/quadlet/llmcli.container`, `deploy/quadlet/llmcli-nats-worker.container` |
+| `lyra` | `deploy/quadlet/lyra-hub.container`, `lyra-discord.container`, `lyra-telegram.container`, `lyra-clipool.container`, `lyra-gh-helper.container` |
+| `voicecli` | `deploy/quadlet/voicecli-stt.container`, `voicecli-tts.container` |
+| `imagecli` | `deploy/quadlet/imagecli-gen.container` |
+| `roxabi-hermes` | `deploy/quadlet/hermes-personal.container`, `hermes-default.container` |
+
+### Standards to revise
+
+- **S11 (Auto-update):** Remove `io.containers.autoupdate=registry` recommendation. Replace with: autoupdate is prohibited for Roxabi-built images; permitted only for upstream images that are explicitly exempted and documented.
+- **S13 (Image tag):** Replace `:staging` with digest pinning requirement: `Image=ghcr.io/roxabi/<tool>:staging@sha256:<digest>`.
+
+## References
+
+- `lyra/deploy/quadlet/lyra-nats.container` — existing digest-pinning precedent.
+- `docs/container-deployment-standard.md` — S11, S13 to be revised.
+- Issue #47 — registry-compromise auto-deploy problem statement.

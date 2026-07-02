@@ -1,0 +1,53 @@
+[importlinter]
+root_package = llmcli
+source_root = src
+include_external_packages = True
+
+# Layer model post-ADR-004 (top → bottom): higher layers may import lower; reverse is forbidden.
+#
+#  L3 entry:     llmcli.cli, llmcli.cli_nats
+#  L2 services:  llmcli.nats, llmcli.support.litellm_config
+#  L1 impl:      llmcli.engines
+#  L0 base:      llmcli.config, llmcli.engine, llmcli.support.providers, llmcli.gpu
+#
+# Note: llmcli.daemon was removed in #34 (ADR-004 Slice 6); lifecycle folded into
+# llmcli.nats._lifecycle (LifecycleMixin on the NATS worker).
+# llmcli.gpu sits at L0 — pure utility (probe + KV calc), imported by llmcli.config
+# (kv_overhead_gib, probe_free_vram_gib) and llmcli.nats.llm_adapter (VRAMMonitor for heartbeat).
+# Contracts use forbidden-pairs to avoid sibling-detection false positives.
+
+[importlinter:contract:services-no-entry]
+name = L2 services must not import L3 entry points
+type = forbidden
+source_modules =
+    llmcli.nats
+    llmcli.support.litellm_config
+forbidden_modules =
+    llmcli.cli
+    llmcli.cli_nats
+
+[importlinter:contract:impl-no-entry-or-services]
+name = L1 impl must not import L3 entry or L2 services
+type = forbidden
+source_modules =
+    llmcli.engines
+forbidden_modules =
+    llmcli.cli
+    llmcli.cli_nats
+    llmcli.nats
+    llmcli.support.litellm_config
+
+[importlinter:contract:base-isolation]
+name = L0 base (config, engine, providers, gpu) must not import upward
+type = forbidden
+source_modules =
+    llmcli.config
+    llmcli.engine
+    llmcli.support.providers
+    llmcli.gpu
+forbidden_modules =
+    llmcli.cli
+    llmcli.cli_nats
+    llmcli.nats
+    llmcli.support.litellm_config
+    llmcli.engines

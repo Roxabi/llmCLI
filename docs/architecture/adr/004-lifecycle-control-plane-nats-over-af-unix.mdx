@@ -1,0 +1,132 @@
+---
+title: "ADR-004: Lifecycle control plane — NATS over AF_UNIX host daemon"
+description: Collapse the two control planes (NATS for inference, AF_UNIX socket for lifecycle) into a single NATS-native worker per GPU host.
+---
+
+> Implementation tracked in #34 — PR-1 ships Slices 0-5; cutover landed in #75 (Slice 6).
+
+## Status
+
+Accepted
+
+## Context
+
+llmCLI currently exposes two distinct control planes per GPU host:
+
+1. **Data plane (inference)** — `lyra.llm.generate.request` NATS subject, served by the
+   `llmcli-nats-worker` quadlet container, which forwards to LiteLLM `:4000` →
+   `llama-server`.
+2. **Control plane (lifecycle)** — AF_UNIX socket served by `src/llmcli/daemon.py`
+   on the host, used by `llmcli serve / swap / stop / status / list` to manage
+   the `llama-server` subprocess (start, hot-swap models, query state).
+
+This split has three concrete costs:
+
+- **Two deploy patterns per host.** Quadlet for the worker, supervisor (issue #33)
+  or manual invocation for the host daemon. M₂ has no clean answer today.
+- **Location asymmetry.** Inference works tailnet-wide; lifecycle requires SSH
+  to the GPU host because the socket is local-only.
+- **Two auth/observability surfaces.** NATS nkeys + JetStream metrics for one,
+  filesystem permissions + ad-hoc logs for the other.
+
+llmCLI is consumed by lyra (NATS-native, hub-spoke) and claude-code (via the
+shared LiteLLM proxy). Adding a third GPU host in the future would replicate
+both patterns. The lifecycle path is the odd one out — every other transport in
+the lyra ecosystem is NATS.
+
+A streaming check confirmed the data-plane streaming pattern (chunks published
+on a reply inbox, see `src/llmcli/nats/_generation.py`) is unaffected by adding
+lifecycle subjects: streaming is short-lived per request, lifecycle messages are
+single request/reply.
+
+## Options Considered
+
+### Option A: Wrap host daemon under supervisor (status quo of #33)
+
+Keep `daemon.py`, register it as a supervisor program on M₂ to mirror M₁.
+
+- **Pros:** Smallest change. Consistent with lyra hub supervisor pattern. No
+  refactor of contracts or worker.
+- **Cons:** Preserves both control planes. Lifecycle still requires SSH. Two
+  deploy patterns per host remain. Doesn't scale to additional hosts cleanly.
+
+### Option B: Move host daemon into its own quadlet (sibling to worker)
+
+Containerize `daemon.py`, mount the AF_UNIX socket back to the host so the
+`llmcli` CLI can reach it.
+
+- **Pros:** Single deploy pattern (quadlet). No supervisor needed.
+- **Cons:** Still two control planes. Still local-only (socket bind-mount is
+  host-scoped). Duplicates GPU/model-cache configuration across two containers.
+  Doesn't address location asymmetry.
+
+### Option C: Fold lifecycle into the existing NATS worker
+
+Add `lyra.llm.lifecycle.{swap,stop,status,list,reload-catalog}` subjects to the
+worker. Move the `EngineInstance` registry and `llama-server` subprocess
+management from `daemon.py` into a `LifecycleMixin` next to the existing
+`GenerationMixin`. Delete `daemon.py` and the AF_UNIX socket. Rewire `llmcli`
+CLI commands to publish on NATS instead of writing to the socket.
+
+- **Pros:** Single transport (NATS) for every operation. Single deploy unit
+  per host (quadlet only). Remote-by-default — `llmcli swap --host roxabituwer`
+  works from any tailnet member with valid nkey. Unified auth (nkey subject
+  permissions split "who can generate" from "who can swap"). Audit trail via
+  JetStream. Mirrors the rest of the lyra ecosystem.
+- **Cons:** Largest refactor. Needs versioned contracts in `roxabi-contracts.llm`
+  for lifecycle messages. Hot-swap atomicity moves from in-process lock to a
+  queue-group-of-1 NATS guarantee. Worker becomes stateful (owns `llama-server`
+  lifecycle, not just a NATS↔HTTP shim). Lifecycle now depends on NATS being
+  up — bigger blast radius if the worker crashes.
+
+## Decision
+
+**Option C — fold lifecycle into the NATS worker.**
+
+The architectural cost is paid once; the operational savings recur for every
+host added, every operator action taken remotely, and every audit/observability
+question asked. Options A and B both preserve the two-control-plane split,
+which is the actual problem — Option A only relocates the supervision boundary,
+Option B only relocates the deploy unit. Neither removes the SSH-to-control
+asymmetry.
+
+Streaming (verified above) imposes no constraint on this choice: the data and
+control planes use disjoint subject namespaces and disjoint message patterns
+(stream-of-N vs single request/reply).
+
+This decision supersedes issue #33 (supervisor wrap), which is closed as
+won't-fix.
+
+## Consequences
+
+### Positive
+
+- One transport, one auth model, one deploy unit per GPU host.
+- `llmcli swap --host <name>` and `llmcli status --fleet` work from any tailnet
+  member with a valid operator nkey — no SSH.
+- NATS subject permissions cleanly split inference consumers from operators.
+- JetStream gives a replayable audit trail of every lifecycle action.
+- `daemon.py` and the AF_UNIX socket disappear, removing a deployment surface.
+
+### Negative
+
+- Lifecycle ops require NATS to be up. If the worker crashes, both inference
+  and control are down (vs today, where the daemon and worker fail
+  independently).
+- Hot-swap atomicity must be enforced via NATS queue-group-of-1 for the
+  lifecycle subject, replacing the in-process lock in `daemon.py`.
+- New versioned contracts in `roxabi-contracts.llm` (lifecycle subjects +
+  payload schemas) — additional cross-repo coordination.
+- Worker container becomes stateful (owns `llama-server` lifecycle), increasing
+  its responsibility surface and test scope.
+
+### Neutral
+
+- Streaming behaviour is unchanged (already chunk-publish-on-reply-inbox).
+- LiteLLM `:4000` remains in front of `llama-server` for HTTP consumers
+  (claude-code via `ccl`/`ccp`); the worker may eventually expose `llama-server`
+  directly, but that is out of scope here.
+- `llmcli chat` continues to bypass lifecycle entirely (plain OpenAI HTTP to
+  LiteLLM).
+- Migration is staged: lifecycle subjects ship alongside the AF_UNIX path under
+  a feature flag, then cutover in a separate PR.

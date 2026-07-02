@@ -1,16 +1,20 @@
 [project]
 name = "llmcli"
-version = "0.1.0"
+version = "0.1.1"
 description = "Unified CLI for local LLM serving — llama.cpp + TurboQuant GGUF, OpenAI-compatible HTTP"
-license = "MIT"
+license = { text = "AGPL-3.0-or-later" }
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "typer[all]>=0.12",
     "httpx>=0.27",
+    "aiohttp>=3.9",
     "pyyaml>=6.0",
-    "huggingface-hub>=0.26",
+    "huggingface-hub>=1.0",
     "tomli>=2.0; python_version < '3.11'",
     "tomli-w>=1.0",
+    "openai>=1.0",
+    "rich>=13.0",
+    "nvidia-ml-py>=12.0",
 ]
 
 [project.scripts]
@@ -31,15 +35,55 @@ line-length = 100
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "no_gpu: mark test as not requiring GPU hardware (safe to run without CUDA)",
+    "gpu: tests that require a live GPU (skipped in CI)",
+    "nats: tests requiring a live NATS broker (skipped without service container or local nats:4222)",
+]
 
 [dependency-groups]
 dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout>=0.5",
     "pre-commit>=4.5.1",
     "pip-licenses>=5.5.1",
+    "import-linter>=2.1",
+    "roxabi-nats>=0.4.1",
+    "roxabi-contracts>=0.4.0",
+    "aioresponses>=0.7.8",
+    "radon>=6.0.1",
 ]
 vllm = [
     "vllm>=0.6.0",
 ]
+
+[project.optional-dependencies]
+nats = [
+    "roxabi-satellite",
+    "roxabi-nats",
+    "roxabi-otel",
+    "nats-py>=2.6,<3",
+    "nkeys>=0.1",
+]
+proxy = [
+    "grpcio>=1.80.0",
+    "litellm[proxy]>=1.89",
+    "opentelemetry-api>=1.41.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.41.0",
+    "opentelemetry-instrumentation-fastapi>=0.62b0",
+    "opentelemetry-sdk>=1.41.0",
+]
+
+[tool.uv.sources]
+roxabi-contracts = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+roxabi-nats = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-nats", branch = "staging" }
+roxabi-otel = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-otel", branch = "staging" }
+roxabi-satellite = { git = "https://github.com/Roxabi/roxabi-factory.git", subdirectory = "packages/roxabi-satellite", branch = "staging" }
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+pythonVersion = "3.12"

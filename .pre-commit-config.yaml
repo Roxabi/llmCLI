@@ -1,4 +1,16 @@
+exclude: '^uv\.lock$'
+
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
   - repo: local
     hooks:
       - id: lint
@@ -11,15 +23,42 @@ repos:
         entry: uv run ruff check --select=PYI .
         language: system
         pass_filenames: false
+      - id: check-file-length
+        name: check-file-length
+        entry: tools/check_file_length.sh
+        language: system
+        pass_filenames: false
+      - id: check-folder-size
+        name: check-folder-size
+        entry: tools/check_folder_size.sh
+        language: system
+        pass_filenames: false
+      - id: import-layers
+        name: import-layers
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
       - id: gitleaks
         name: gitleaks secret scan
-        entry: gitleaks detect --source . --no-git
+        entry: bash -c "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --source . --no-git; else echo 'gitleaks not installed; CI runs the canonical scan'; fi"
         language: system
         pass_filenames: false
         stages: [pre-push]
       - id: license
         name: license check
         entry: uv run tools/license_check.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: axial-drift
+        name: axial decomposition drift check
+        entry: tools/check_axial_drift.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: quadlet-manifest-install
+        name: quadlet manifest↔install gate
+        entry: tools/check_quadlet_manifest_install.sh
         language: system
         pass_filenames: false
         stages: [pre-push]

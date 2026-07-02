@@ -1,0 +1,1 @@
+../plugins/xai-research/skills/xai-research/xai_research.py

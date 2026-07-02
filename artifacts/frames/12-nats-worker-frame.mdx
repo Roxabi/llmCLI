@@ -1,0 +1,81 @@
+---
+title: "feat(nats): add NATS adapter — lyra.llm.request subscriber"
+issue: 12
+status: approved
+tier: F-lite
+date: 2026-05-07
+blocked_by: ["Roxabi/lyra#1104"]
+---
+
+## Problem
+
+Production root cause (lyra, 2026-04-27): Claude Code CLI OAuth access tokens expire ~1–2h server-side. After idle reaping (`idle_ttl=1200s`) the next cold spawn reads a stale token → 401 on every user message after a quiet period. Decision (epic Roxabi/lyra#987): deprecate the Anthropic API entirely. Keep `claude-cli` for agentic paths (Path A); add Path B that routes inference through NATS.
+
+Architecture target — `lyra.llm.request` is the **single canonical entry point** for all LLM calls in the lyra ecosystem. Hub, harness CLI, and any future internal service publishes to this subject. Downstream the NATS adapter forwards to **LiteLLM** (`:4000`, sibling proxy that already aggregates llmCLI local models, Fireworks, etc.). LiteLLM owns catalog / aliasing / fallback. The adapter is a thin NATS↔HTTP bridge co-located with `llama-server` so its heartbeats can carry VRAM + loaded-model state to the hub.
+
+The previous draft of issue #12 specified an ad-hoc OpenAI/SSE shape that matched neither voiceCLI/imageCLI satellites nor the canonical `roxabi-contracts.llm` envelopes. After architectural discussion (2026-05-07): ship on the **canonical pattern** (Pydantic envelopes + `NatsAdapterBase`), bundled with the lyra-side prerequisites (Roxabi/lyra#1104 — ACL canonical heartbeat subject + hub switch from legacy `NatsLlmDriver` to canonical `NatsLlmClient`).
+
+## Who
+
+- **Primary:** lyra hub on M₁ (`roxabituwer`) — calls `NatsLlmClient` per-agent for any `backend=harness-cli` agent. Without a working NATS adapter the harness path is non-functional and Path B can't ship.
+- **Secondary:**
+  - `roxabi-harness` (separate repo, tracked under epic #987 scope) — depends on this adapter existing before its smoke test passes
+  - Future llmCLI workers on M₂ — same code, same queue group, horizontal scale-out for free
+  - Any internal lyra service that wants LLM inference — gets it via the same `lyra.llm.request` subject (no per-consumer integration)
+
+## Constraints
+
+### Wire & deps (canonical pattern, ADR-039 / 044 / 046 / 047)
+
+- **Adapter base:** extend `roxabi_nats.NatsAdapterBase` (do **not** hand-roll NATS subscribe/heartbeat/queue-group/drain). Same pattern as `voicecli/src/voicecli/nats/tts_adapter.py` and `imagecli/src/imagecli/nats/adapter.py`.
+- **Envelopes:** use `roxabi_contracts.llm.{LlmRequest, LlmChunkEvent, LlmResponse}` and `roxabi_contracts.errors.WorkerError` (ADR-066). Do **not** vendor local Pydantic models.
+- **Subject literals confined to one module** (ADR-047 CI gate): `SUBJECT = "lyra.llm.request"` and `HEARTBEAT_SUBJECT = "lyra.llm.heartbeat"` live only in `src/llmcli/nats/adapter.py`.
+- **Deps via uv git source from lyra**, mirroring `voicecli/pyproject.toml`:
+  ```toml
+  [tool.uv.sources]
+  roxabi-nats      = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-nats",      branch = "staging" }
+  roxabi-contracts = { git = "https://github.com/Roxabi/lyra.git", subdirectory = "packages/roxabi-contracts", branch = "staging" }
+  ```
+
+### Downstream
+
+- Adapter's `handle()` POSTs to **LiteLLM** at `LLMCLI_LITELLM_URL` (default `http://localhost:4000/v1`) — **not** to `llama-server` directly. Reason: LiteLLM is the canonical proxy / catalog SoT (already populated by `llmcli register-proxy`). It decides whether the call lands on local llama-server, M₂, or a remote API.
+- Authentication: `LLMCLI_LITELLM_API_KEY` (LiteLLM master key or per-worker virtual key), Podman secret on M₁.
+
+### Heartbeat enrichment (the value-add of co-locating in llmCLI)
+
+- `heartbeat_payload()` overrides `super()` and adds `model_loaded`, `vram_used_mb`, `vram_free_mb`, `active_requests` — read from `llmcli.daemon` (AF_UNIX socket already in place). Mirror of `TtsNatsAdapter.heartbeat_payload()` (`voicecli/src/voicecli/nats/tts_adapter.py:91-102`).
+- Heartbeat subject `lyra.llm.heartbeat` (canonical, matches voice/image naming). Requires Roxabi/lyra#1104 to land first to update auth.conf.
+
+### Auth & ops
+
+- NATS auth via `llm-worker` nkey: `LLMCLI_NATS_NKEY_SEED` (or `_PATH`). Podman secret on M₁.
+- Worker ID default `llmcli-<hostname>` (override via `LLMCLI_WORKER_ID`).
+- Deployment: Podman Quadlet (`deploy/quadlet/llmcli-nats-worker.container`), `Network=host`, `Restart=always`.
+- Stack: Python 3.12, `nats-py` (transitively via `roxabi-nats`), Typer, Pydantic, `httpx`. Same `uv` + `hatchling` as the rest of llmCLI.
+
+### Coordination
+
+- **Bundled with Roxabi/lyra#1104** (ACL canonical heartbeat subject + hub switch `NatsLlmDriver` → `NatsLlmClient`). Both PRs opened as draft → reviewed independently → marked ready → merged in the same window. Smoke test on M₁ (hub → adapter → LiteLLM → `llama-server`) gates the merge.
+
+## Out of Scope
+
+- Per-worker score-routed subjects (`lyra.llm.generate.request.{worker_id}`) — separate issue when fan-out across hosts is needed
+- Tool-use chunks (`event_type:tool_use`) — harness CLI v1 is text-only
+- LiteLLM as NATS subscriber — not a real LiteLLM feature
+- Direct `llama-server` bypass — LiteLLM stays canonical proxy
+- vLLM engine in this PR — LiteLLM hides engine choice; vllm catalog entry separate
+- `roxabi-harness` repo creation — separate epic-#987 sub-issue
+- Removing legacy `NatsLlmDriver` from lyra — handled in the deprecation chain after lyra#1104 lands
+- ADR-045 `roxabi-nats` SDK extraction — orthogonal
+
+## Complexity
+
+**Tier: F-lite** — Clear scope, single domain (backend Python), no new architecture. Wire contract pinned to canonical Pydantic envelopes. Adapter pattern proven by voiceCLI / imageCLI. Lyra-side companion work scoped in Roxabi/lyra#1104. ~7 files: `src/llmcli/nats/adapter.py`, `src/llmcli/nats/__init__.py`, `src/llmcli/cli.py` (+`nats-worker` cmd), `pyproject.toml` (uv git sources), `deploy/quadlet/llmcli-nats-worker.container`, `tests/nats/test_adapter.py`, `tests/nats/conftest.py`.
+
+Signals:
+- Single domain (backend Python / NATS satellite)
+- Clear scope (NATS↔HTTP bridge with enriched heartbeat)
+- No new architecture (replicates voiceCLI/imageCLI satellite pattern)
+- Known unknowns bounded (LiteLLM streaming SSE → `LlmChunkEvent` translation — well-defined)
+- Cross-repo coordination is real but scoped (lyra#1104 is the only lyra-side work)

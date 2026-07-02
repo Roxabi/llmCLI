@@ -1,0 +1,12 @@
+{
+  "title": "ADRs",
+  "pages": [
+    "001-engine-wait-ready-extraction",
+    "002-vllm-availability-check",
+    "003-engine-dispatch-registry",
+    "004-lifecycle-control-plane-nats-over-af-unix",
+    "005-nats-subject-discipline-and-machines-filter",
+    "006-axis-of-decomposition",
+    "007-digest-pinning-for-fleet-quadlet-images"
+  ]
+}
