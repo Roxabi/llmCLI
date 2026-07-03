@@ -1,6 +1,12 @@
 {
   "allowlist": [
-    "llmcli"
+    "llmcli",
+    "protobuf",
+    "roxabi-blobs",
+    "roxabi-contracts",
+    "roxabi-nats",
+    "roxabi-otel",
+    "roxabi-satellite"
   ],
   "overrides": {}
 }
