@@ -41,7 +41,7 @@ jobs:
     needs: [ci-gate]
     # Run when the gate passed (staging) OR was skipped (tag push / manual dispatch).
     if: ${{ always() && needs.ci-gate.result != 'failure' && needs.ci-gate.result != 'cancelled' }}
-    uses: Roxabi/.github/.github/workflows/publish-container.yml@v1
+    uses: Roxabi/.github/.github/workflows/publish-container.yml@staging
     with:
       image_name: ghcr.io/roxabi/llmcli
       release_please_component: llmcli
