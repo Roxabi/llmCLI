@@ -1272,6 +1272,7 @@ dependencies = [
     { name = "openai" },
     { name = "pyyaml" },
     { name = "rich" },
+    { name = "roxabi-xai" },
     { name = "tomli-w" },
     { name = "typer" },
 ]
@@ -1331,6 +1332,7 @@ requires-dist = [
     { name = "roxabi-nats", marker = "extra == 'nats'", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-nats&branch=staging" },
     { name = "roxabi-otel", marker = "extra == 'nats'", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-otel&branch=staging" },
     { name = "roxabi-satellite", marker = "extra == 'nats'", git = "https://github.com/Roxabi/roxabi-factory.git?subdirectory=packages%2Froxabi-satellite&branch=staging" },
+    { name = "roxabi-xai", git = "https://github.com/Roxabi/roxabi-inference.git?subdirectory=packages%2Fxai&branch=staging" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "tomli-w", specifier = ">=1.0" },
     { name = "typer", extras = ["all"], specifier = ">=0.12" },
@@ -2896,6 +2898,15 @@ dependencies = [
     { name = "roxabi-blobs" },
     { name = "roxabi-contracts" },
     { name = "roxabi-nats" },
+]
+
+[[package]]
+name = "roxabi-xai"
+version = "0.1.0"
+source = { git = "https://github.com/Roxabi/roxabi-inference.git?subdirectory=packages%2Fxai&branch=staging#96403054d36fd6a23692fbd418d7932dbd272116" }
+dependencies = [
+    { name = "httpx" },
+    { name = "typer" },
 ]
 
 [[package]]
