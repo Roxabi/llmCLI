@@ -1,8 +1,12 @@
 {
   "enabledPlugins": {
+    "agent-browser@agent-browser": true,
+    "cocoindex-code@cocoindex-code": true,
+    "context7@context7-marketplace": true,
     "dev-core@roxabi-marketplace": true,
+    "dev-init@roxabi-marketplace": true,
     "pyright-lsp@claude-plugins-official": true,
-    "dev-init@roxabi-marketplace": true
+    "semctx@semctx-stable": true
   },
   "extraKnownMarketplaces": {
     "roxabi-marketplace": {

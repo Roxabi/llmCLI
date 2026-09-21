@@ -2,23 +2,20 @@
 # Install the repo git hooks (pre-commit + pre-push, via the pre-commit
 # framework) into the EFFECTIVE hooks directory.
 #
-# Why not `pre-commit install`: it refuses to run whenever core.hooksPath is
-# set at ANY scope ("Cowardly refusing…"), and this machine sets it both
-# globally (ccc reindex hooks) and repo-locally — which is how the repo ended
-# up with a .pre-commit-config.yaml but zero installed hooks, i.e. nothing ran
-# at commit/push time. This script writes the same `pre-commit hook-impl`
-# dispatcher wrappers `pre-commit install` would have written, directly into
-# the effective hooks dir, and installs ccc post-merge/post-rewrite/post-checkout via ~/projects/scripts/git-hooks/install-ccc-hooks.sh.
+# Why not `pre-commit install`: this repo wants its dispatchers in the COMMON
+# hooks dir (`--git-common-dir/hooks`) so a single install covers the main
+# checkout and every linked worktree, and they must coexist with the ccc
+# post-merge/post-rewrite/post-checkout hooks installed below via
+# ~/projects/scripts/git-hooks/install-ccc-hooks.sh.
 #
 # Idempotent — safe to re-run; invoked by tools/worktree-setup.sh and
 # `make install` (hooks live in the shared common hooks dir, so one install
 # covers the main checkout and every linked worktree).
 #
-# Caveats: any pre-existing non-generated hook of the managed types
+# Caveat: any pre-existing non-generated hook of the managed types
 # (pre-commit/pre-push/post-merge/post-rewrite/post-checkout) is REPLACED on each run — no
 # `.legacy` preservation (divergence from `pre-commit install`, accepted for
-# this fleet). If the repo directory moves/renames, re-run this script: the
-# pinned absolute core.hooksPath goes stale silently.
+# this fleet).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,20 +26,12 @@ if ! command -v pre-commit >/dev/null 2>&1 && [[ ! -x .venv/bin/pre-commit ]]; t
   exit 2
 fi
 
-# Resolve the hooks dir from the REPO-LOCAL scope only. On a machine where
-# core.hooksPath is set globally but not locally, the merged value would point
-# at the GLOBAL hooks dir — and writing this repo's dispatchers there would
-# fire its quality gates in EVERY repo on the machine. Never write outside the
-# repo: fall back to the common hooks dir and pin it with a local override
-# (the global chain-through below keeps the global hooks alive).
-hooks_dir="$(git config --local core.hooksPath || true)"
-if [[ -z "$hooks_dir" ]]; then
-  hooks_dir="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
-  if [[ -n "$(git config --global core.hooksPath || true)" ]]; then
-    git config core.hooksPath "$hooks_dir"
-    echo "install-hooks: global core.hooksPath detected — pinned repo-local hooksPath to ${hooks_dir}"
-  fi
-fi
+# Git's own hooks dir, shared by every linked worktree. NEVER pin it with
+# core.hooksPath: an absolute pin survives a repo move and then names a path
+# that no longer exists, at which point git runs NO hook at all — silently.
+# That fossil (left by the machine-global hooksPath retired 2026-08-02) kept
+# four repos gateless for six weeks. See ssot/conventions.ssot.md § Git hooks.
+hooks_dir="$(git rev-parse --path-format=absolute --git-common-dir)/hooks"
 mkdir -p "$hooks_dir"
 
 # Generated hooks resolve every path at RUNTIME. The heredocs use a quoted
