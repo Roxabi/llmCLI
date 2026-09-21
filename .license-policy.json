@@ -6,7 +6,8 @@
     "roxabi-contracts",
     "roxabi-nats",
     "roxabi-otel",
-    "roxabi-satellite"
+    "roxabi-satellite",
+    "roxabi-xai"
   ],
   "overrides": {}
 }
