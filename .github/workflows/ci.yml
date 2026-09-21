@@ -23,6 +23,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Install uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57 # v8.0.0
+      # roxabi-xai resolves to Roxabi/roxabi-inference, which is private, so an
+      # anonymous clone fails: "failed to fetch commit". The other git deps
+      # (roxabi-contracts/nats/otel) live in the public roxabi-factory and need
+      # nothing. CI has been red on staging since the dependency landed
+      # 2026-08-10 for exactly this reason.
+      - name: Mint a token for the private roxabi-inference dependency
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.ROXABI_CI_APP_ID }}
+          private-key: ${{ secrets.ROXABI_CI_APP_PRIVATE_KEY }}
+          owner: Roxabi
+          repositories: roxabi-inference
+      - name: Let git authenticate to Roxabi repositories
+        run: |
+          git config --global \
+            url."https://x-access-token:${{ steps.app.outputs.token }}@github.com/Roxabi/".insteadOf \
+            "https://github.com/Roxabi/"
       - name: Install dependencies
         run: uv sync --frozen --all-extras
       - name: Generate NATS auth config
