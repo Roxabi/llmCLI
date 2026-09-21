@@ -38,15 +38,28 @@ RUN UV_SKIP="--no-install-package torch \
     echo "$UV_SKIP" > /uv-skip-flags
 
 # Layer-cache: install deps before copying source.
+# roxabi-xai resolves to private Roxabi/roxabi-inference. The token is a
+# BuildKit secret, not a build-arg (build-args persist in image history).
+# gitconfig is removed in the same RUN so the token is not in the layer.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-dev --no-install-project \
+RUN --mount=type=secret,id=git_token \
+    TOKEN="$(cat /run/secrets/git_token)" && \
+    test -n "$TOKEN" || { echo "git_token build secret is required to fetch private Roxabi dependencies" >&2; exit 1; } && \
+    git config --global url."https://x-access-token:${TOKEN}@github.com/Roxabi/".insteadOf "https://github.com/Roxabi/" && \
+    uv sync --frozen --no-dev --no-install-project \
         $(cat /uv-skip-flags) \
-        --extra nats --extra proxy
+        --extra nats --extra proxy && \
+    rm -f "${HOME:-/root}/.gitconfig" /root/.gitconfig
 
 COPY src/ ./src/
-RUN uv sync --frozen --no-dev \
+RUN --mount=type=secret,id=git_token \
+    TOKEN="$(cat /run/secrets/git_token)" && \
+    test -n "$TOKEN" || { echo "git_token build secret is required to fetch private Roxabi dependencies" >&2; exit 1; } && \
+    git config --global url."https://x-access-token:${TOKEN}@github.com/Roxabi/".insteadOf "https://github.com/Roxabi/" && \
+    uv sync --frozen --no-dev \
         $(cat /uv-skip-flags) \
-        --extra nats --extra proxy
+        --extra nats --extra proxy && \
+    rm -f "${HOME:-/root}/.gitconfig" /root/.gitconfig
 
 COPY deploy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

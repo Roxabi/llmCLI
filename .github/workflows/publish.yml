@@ -37,11 +37,33 @@ jobs:
           done
           echo "::error::Timed out (~30 min) waiting for CI on ${sha}."
           exit 1
-  publish:
+  # A job that calls a reusable workflow cannot also mint a token: the app
+  # token is produced here and passed as a secret, not a build-arg.
+  git-token:
+    name: Mint private-repo token
     needs: [ci-gate]
-    # Run when the gate passed (staging) OR was skipped (tag push / manual dispatch).
     if: ${{ always() && needs.ci-gate.result != 'failure' && needs.ci-gate.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.app.outputs.token }}
+    steps:
+      - name: Mint a token for the private roxabi-inference dependency
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.ROXABI_CI_APP_ID }}
+          private-key: ${{ secrets.ROXABI_CI_APP_PRIVATE_KEY }}
+          owner: Roxabi
+          repositories: roxabi-inference
+  publish:
+    needs: [ci-gate, git-token]
+    # Run when the gate passed (staging) OR was skipped (tag push / manual dispatch),
+    # and the app token was minted. Never publish without it: the image build
+    # clones private Roxabi/roxabi-inference.
+    if: ${{ always() && needs.ci-gate.result != 'failure' && needs.ci-gate.result != 'cancelled' && needs.git-token.result == 'success' }}
     uses: Roxabi/.github/.github/workflows/publish-container.yml@staging
+    secrets:
+      git_token: ${{ needs.git-token.outputs.token }}
     with:
       image_name: ghcr.io/roxabi/llmcli
       release_please_component: llmcli
