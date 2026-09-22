@@ -62,3 +62,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: healthcmd-quoting
+        name: Quadlet HealthCmd quoting
+        entry: tools/check_healthcmd_quoting.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
