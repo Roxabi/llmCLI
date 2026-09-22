@@ -41,7 +41,8 @@ jobs:
     needs: [ci-gate]
     # Run when the gate passed (staging) OR was skipped (tag push / manual dispatch).
     if: ${{ always() && needs.ci-gate.result != 'failure' && needs.ci-gate.result != 'cancelled' }}
-    uses: Roxabi/.github/.github/workflows/publish-container.yml@staging
+    # Immutable tag. A branch pin (@staging, @main) ships every future edit with no review and no rollback by reference.
+    uses: Roxabi/.github/.github/workflows/publish-container.yml@v1.0.0
     # The reusable workflow mints the token in its own job. An upstream job
     # output cannot carry it: the runner drops outputs that contain secrets.
     secrets:
